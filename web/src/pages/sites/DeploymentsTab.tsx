@@ -23,6 +23,7 @@ import { useToast } from '@/components/Toast';
 import { useSitePermissions } from '@/hooks/useAuth';
 import { useNow } from '@/hooks/useNow';
 import { durationBetween, formatDateTime, relativeTime } from '@/lib/format';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './editors/types';
 
@@ -53,7 +54,7 @@ export function DeployConfigCard({ site, update }: SiteEditorProps) {
         </FormSection>
         <FormSection title="Build" description="Commands run in the release folder before it is activated.">
           <Field label="Install command" path="deploy.installCommand">
-            <Input mono value={d.installCommand ?? ''} placeholder={site.type === 'node' ? 'npm ci --omit=dev' : ''} onChange={(e) => set({ installCommand: e.target.value })} />
+            <Input mono value={d.installCommand ?? ''} placeholder={runsNode(site.type) ? 'npm ci --omit=dev' : ''} onChange={(e) => set({ installCommand: e.target.value })} />
           </Field>
           <Field label="Build command" path="deploy.buildCommand">
             <Input mono value={d.buildCommand ?? ''} placeholder="npm run build" onChange={(e) => set({ buildCommand: e.target.value })} />

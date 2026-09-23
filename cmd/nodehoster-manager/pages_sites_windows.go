@@ -204,7 +204,7 @@ func (s *sitesPage) redraw(m *manager) {
 	for i, st := range m.sites {
 		cpu, mem := desktop.SiteUsage(st.Status)
 		usage := [2]string{"–", "–"}
-		if st.Type == model.SiteNode {
+		if st.RunsNode() {
 			usage = [2]string{fmt.Sprintf("%.0f%%", cpu), desktop.Bytes(mem)}
 		}
 		keys[i] = st.ID
@@ -223,7 +223,7 @@ func (s *sitesPage) enable(m *manager) {
 	running := st != nil && st.Status.State != model.StateStopped
 	setEnabled(st != nil && !running, s.start)
 	setEnabled(running, s.stop, s.restart)
-	setEnabled(running && st.Type == model.SiteNode, s.recycle)
+	setEnabled(running && st.RunsNode(), s.recycle)
 	setEnabled(st != nil && len(st.Bindings) > 0, s.browse)
 }
 
@@ -289,11 +289,12 @@ func (m *manager) saveSite(site *model.Site, then func()) {
 
 type sitePage struct {
 	page
-	tabs                                    *walk.TabWidget
-	props, instances, bindings, env, deploy table
-	logView                                 *walk.TextEdit
-	logState                                *walk.Label
-	logs                                    *logFollower
+	tabs                                           *walk.TabWidget
+	props, instances, bindings, env, deploy, tasks table
+	taskViews                                      []model.TaskView
+	logView                                        *walk.TextEdit
+	logState                                       *walk.Label
+	logs                                           *logFollower
 
 	start, stop, restart, recycle *walk.LinkLabel
 	browse                        [4]*walk.LinkLabel
@@ -307,6 +308,7 @@ const (
 	tabEnvironment
 	tabLogs
 	tabDeployments
+	tabTasks
 )
 
 func (s *sitePage) init(m *manager) *page {
@@ -375,6 +377,19 @@ func (s *sitePage) content(m *manager) []Widget {
 						PushButton{Text: "Activate selected release", OnClicked: func() { s.activateRelease(m) }},
 					}},
 				}},
+				{Title: "Tasks", Layout: VBox{}, Children: []Widget{
+					s.tasks.view(func() { s.runTask(m) }, col("Task", 160), col("Schedule", 130), col("Command", 150),
+						col("Next run", 130), col("Last result", 300)),
+					Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
+						Label{Text: "Tasks are defined in the web console (site → Tasks).", TextColor: colorMuted},
+						HSpacer{},
+						PushButton{Text: "Refresh", OnClicked: func() { s.loadTab(m) }},
+						PushButton{Text: "Open run logs", OnClicked: func() {
+							shellOpen(filepath.Join(m.dataDir(), "logs", "sites", m.site, "tasks"))
+						}},
+						PushButton{Text: "Run now", OnClicked: func() { s.runTask(m) }},
+					}},
+				}},
 			},
 		},
 	}
@@ -417,7 +432,7 @@ func (s *sitePage) redraw(m *manager) {
 	running := st.Status.State != model.StateStopped
 	setEnabled(!running, s.start)
 	setEnabled(running, s.stop, s.restart)
-	setEnabled(running && st.Type == model.SiteNode, s.recycle)
+	setEnabled(running && st.RunsNode(), s.recycle)
 	setEnabled(sitePath(st.Site) != "", s.explore)
 
 	for i := range s.browse {
@@ -558,8 +573,73 @@ func (s *sitePage) loadTab(m *manager) {
 				s.deploy.set(keys, rows)
 			})
 		}()
+	case tabTasks:
+		id := m.site
+		go func() {
+			var list []model.TaskView
+			err := m.cl.Get(context.Background(), "/api/sites/"+url.PathEscape(id)+"/tasks", &list)
+			m.mw.Synchronize(func() {
+				if err != nil || id != m.site {
+					return
+				}
+				s.taskViews = list
+				now := time.Now()
+				var keys []string
+				var rows [][]string
+				for _, t := range list {
+					next := "–"
+					if t.NextRunAt != nil {
+						next = t.NextRunAt.Local().Format("2006-01-02 15:04")
+					}
+					how := "node " + t.Script
+					if t.NpmScript != "" {
+						how = "npm run " + t.NpmScript
+					}
+					last := desktop.TaskRunText(t.LastRun, now)
+					if t.Queued {
+						last += "; another run is queued"
+					}
+					keys = append(keys, t.ID)
+					rows = append(rows, []string{t.Name, desktop.ScheduleText(t.ScheduledTask), how, next, last})
+				}
+				s.tasks.set(keys, rows)
+			})
+		}()
 	}
 	s.logs.stop()
+}
+
+// runTask starts the selected scheduled task now, as "Run" in Task
+// Scheduler does, and shows the result in the list once it finishes.
+func (s *sitePage) runTask(m *manager) {
+	taskID := s.tasks.selected()
+	if taskID == "" {
+		walk.MsgBox(m.mw, "Run task", "Select a task first.", walk.MsgBoxIconInformation)
+		return
+	}
+	name := taskID
+	for _, t := range s.taskViews {
+		if t.ID == taskID {
+			name = t.Name
+		}
+	}
+	id := m.site
+	m.do("Starting task "+name, func(ctx context.Context) error {
+		err := m.cl.Post(ctx, "/api/sites/"+url.PathEscape(id)+"/tasks/"+url.PathEscape(taskID)+"/run", nil, nil)
+		if err == nil {
+			// Refresh now (running) and again shortly (a quick task's result).
+			for _, d := range []time.Duration{0, 3 * time.Second} {
+				time.AfterFunc(d, func() {
+					m.mw.Synchronize(func() {
+						if m.site == id && s.tabs.CurrentIndex() == tabTasks {
+							s.loadTab(m)
+						}
+					})
+				})
+			}
+		}
+		return err
+	})
 }
 
 func (s *sitePage) activateRelease(m *manager) {

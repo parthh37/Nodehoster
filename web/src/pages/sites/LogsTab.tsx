@@ -14,13 +14,16 @@ import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { useSitePermissions } from '@/hooks/useAuth';
 import { formatTime } from '@/lib/format';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 
 const MAX_LINES = 5000;
 const RENDER_LINES = 2000;
 
 export function LogsTab({ site }: { site: SiteView }) {
-  const hasApp = site.type === 'node';
+  const hasApp = runsNode(site.type);
+  // A background worker serves no HTTP, so it has no access log.
+  const hasAccess = site.type !== 'worker';
   const [type, setType] = useState<LogType>(hasApp ? 'app' : 'access');
   const [lines, setLines] = useState<LogLine[]>([]);
   const [paused, setPaused] = useState(false);
@@ -145,7 +148,10 @@ export function LogsTab({ site }: { site: SiteView }) {
         <Segmented<LogType>
           value={type}
           onChange={setType}
-          options={hasApp ? [{ value: 'app', label: 'Application' }, { value: 'access', label: 'Access log' }] : [{ value: 'access', label: 'Access log' }]}
+          options={[
+            ...(hasApp ? [{ value: 'app' as const, label: 'Application' }] : []),
+            ...(hasAccess ? [{ value: 'access' as const, label: 'Access log' }] : []),
+          ]}
         />
         <Input className="w-56" prefix={<Search className="h-3.5 w-3.5" />} placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {type === 'app' && (

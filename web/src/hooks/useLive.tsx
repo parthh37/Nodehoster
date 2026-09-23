@@ -44,6 +44,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         const t = e.type || '';
         if (t.startsWith('cert')) void q.invalidateQueries({ queryKey: qk.certs });
         if (t.startsWith('deploy') && e.siteId) void q.invalidateQueries({ queryKey: qk.deployments(e.siteId) });
+        if (t.startsWith('task.') && e.siteId) {
+          void q.invalidateQueries({ queryKey: qk.siteTasks(e.siteId) });
+          void q.invalidateQueries({ queryKey: qk.siteRuns(e.siteId) });
+        }
         if (t.startsWith('node')) void q.invalidateQueries({ queryKey: qk.nodeVersions });
         if (t.startsWith('site.created') || t.startsWith('site.deleted')) void q.invalidateQueries({ queryKey: qk.sites, exact: true });
       },

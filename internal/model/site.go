@@ -16,7 +16,14 @@ const (
 	SiteProxy    SiteType = "proxy"    // reverse proxy to arbitrary upstream URLs
 	SiteStatic   SiteType = "static"   // static files from a directory
 	SiteRedirect SiteType = "redirect" // redirect every request elsewhere
+	// A managed Node.js process without HTTP: a queue consumer, a bot, a
+	// long-running script. Supervised like a node site but never routed.
+	SiteWorker SiteType = "worker"
 )
+
+// RunsNode reports whether the site is Node.js processes supervised by the
+// process manager (node and worker sites, both configured by Node).
+func (s *Site) RunsNode() bool { return s.Type == SiteNode || s.Type == SiteWorker }
 
 // Site is the unit of hosting, the equivalent of an IIS site: a set of
 // bindings plus what answers the requests arriving on them.
@@ -35,6 +42,10 @@ type Site struct {
 
 	Routing RoutingConfig `json:"routing"`
 	Deploy  DeployConfig  `json:"deploy"`
+
+	// Scheduled tasks (node and worker sites): scripts run on a schedule
+	// in the site's release, environment and identity.
+	Tasks []ScheduledTask `json:"tasks,omitempty"`
 
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.

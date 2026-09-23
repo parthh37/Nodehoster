@@ -20,11 +20,12 @@ import { Switch } from '@/components/Switch';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { formatDateTime } from '@/lib/format';
-import { NAME_RE } from '@/lib/siteDefaults';
+import { NAME_RE, runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { BindingLink, SiteHeaderActions } from './shared';
 import { OverviewTab } from './OverviewTab';
 import { LogsTab } from './LogsTab';
+import { TasksTab } from './TasksTab';
 import { DeployConfigCard, DeploymentsPanel } from './DeploymentsTab';
 import { BindingsEditor } from './editors/BindingsEditor';
 import { EnvEditor } from './editors/EnvEditor';
@@ -36,17 +37,20 @@ import { NodeAdvanced, NodeEssentials, NodeLoadBalancer, ProxyAdvanced, ProxyEss
 import { useSiteDraft } from './useSiteDraft';
 import type { SiteEditorProps } from './editors/types';
 
-type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'deployments' | 'logs';
+type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'deployments' | 'tasks' | 'logs';
 
-const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'deployments'];
+const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'deployments', 'tasks'];
 
 /** Which tab shows the field named in a validation error. */
 function tabForField(field: string | undefined, type: string): TabKey | null {
   if (!field) return null;
-  if (field.startsWith('bindings')) return 'bindings';
+  // A worker has no Bindings or Routing tab; the settings tab shows the error in its banner.
+  const http = type !== 'worker';
+  if (field.startsWith('tasks')) return 'tasks';
+  if (field.startsWith('bindings')) return http ? 'bindings' : 'settings';
   if (field.startsWith('node.env')) return 'environment';
-  if (field.startsWith('routing')) return 'routing';
-  if (field.startsWith('deploy')) return type === 'node' || type === 'static' ? 'deployments' : 'settings';
+  if (field.startsWith('routing')) return http ? 'routing' : 'settings';
+  if (field.startsWith('deploy')) return runsNode(type) || type === 'static' ? 'deployments' : 'settings';
   return 'settings';
 }
 
@@ -63,13 +67,15 @@ export function SiteDetailPage() {
 
   const site = q.data;
   const type = site?.type ?? 'node';
+  const worker = type === 'worker';
   const tabs: TabItem<TabKey>[] = [
     { key: 'overview', label: 'Overview' },
-    { key: 'bindings', label: 'Bindings' },
+    { key: 'bindings', label: 'Bindings', hidden: worker },
     { key: 'settings', label: 'Settings' },
-    { key: 'environment', label: 'Environment', hidden: type !== 'node' },
-    { key: 'routing', label: 'Routing' },
-    { key: 'deployments', label: 'Deployments', hidden: type !== 'node' && type !== 'static' },
+    { key: 'environment', label: 'Environment', hidden: !runsNode(type) },
+    { key: 'routing', label: 'Routing', hidden: worker },
+    { key: 'deployments', label: 'Deployments', hidden: !runsNode(type) && type !== 'static' },
+    { key: 'tasks', label: 'Tasks', hidden: !runsNode(type) },
     { key: 'logs', label: 'Logs' },
   ];
   const tab: TabKey = (tabs.find((t) => t.key === tabParam && !t.hidden)?.key ?? 'overview') as TabKey;
@@ -85,7 +91,7 @@ export function SiteDetailPage() {
       void qc.invalidateQueries({ queryKey: qk.sites, exact: true });
       commit(saved);
       setSaveError(null);
-      toast.success('Changes saved', type === 'node' ? 'Process changes are applied with a rolling recycle.' : 'Applied live.');
+      toast.success('Changes saved', runsNode(type) ? 'Process changes are applied with a rolling recycle.' : 'Applied live.');
     },
     onError: (e) => {
       setSaveError(e instanceof Error ? e : new Error(String(e)));
@@ -144,7 +150,11 @@ export function SiteDetailPage() {
               {(site.bindings ?? []).map((b, i) => (
                 <BindingLink key={b.id || i} b={b} />
               ))}
-              {(site.bindings ?? []).length === 0 && <span className="text-xs text-amber-600">No bindings — the site is unreachable</span>}
+              {worker ? (
+                <span className="text-xs text-zinc-500">Background worker — not reachable over HTTP</span>
+              ) : (
+                (site.bindings ?? []).length === 0 && <span className="text-xs text-amber-600">No bindings — the site is unreachable</span>
+              )}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -204,6 +214,8 @@ export function SiteDetailPage() {
             </fieldset>
           </div>
         )}
+        {/* Not in the fieldset: operators run and cancel tasks; the definitions are read-only for them. */}
+        {tab === 'tasks' && editorProps && base && <TasksTab {...editorProps} savedSite={base} />}
       </FormErrors>
 
       {dirty && isAdmin && (
@@ -266,8 +278,8 @@ function SettingsTab(props: SiteEditorProps & { view: SiteView }) {
         </Sections>
       </Card>
 
-      {site.type === 'node' && site.node && (
-        <Card title="Node.js application">
+      {runsNode(site.type) && site.node && (
+        <Card title={site.type === 'worker' ? 'Background worker' : 'Node.js application'}>
           <Sections>
             <FormSection title="Application" description="Where the app lives and how it starts.">
               <NodeEssentials {...props} withInstances={false} />

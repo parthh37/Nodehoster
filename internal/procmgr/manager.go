@@ -115,7 +115,7 @@ func (m *Manager) app(id string) *App {
 // picks the change up: instance count changes are applied directly, and any
 // other change to how the process runs triggers a rolling recycle.
 func (m *Manager) Apply(site *model.Site) {
-	if site.Type != model.SiteNode {
+	if !site.RunsNode() {
 		m.Remove(site.ID)
 		return
 	}

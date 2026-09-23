@@ -105,6 +105,22 @@ var migrations = []string{
 	ALTER TABLE tokens ADD COLUMN site_ids TEXT;`,
 	// Single sign-on: users.sso marks a user created by an SSO sign-in.
 	`ALTER TABLE users ADD COLUMN sso INTEGER NOT NULL DEFAULT 0;`,
+	// Scheduled task run history (see model.TaskRun).
+	`CREATE TABLE task_runs (
+		id TEXT PRIMARY KEY,
+		site_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		task_name TEXT NOT NULL,
+		trigger TEXT NOT NULL,
+		user TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		started INTEGER NOT NULL,
+		finished INTEGER,
+		exit_code INTEGER,
+		log_path TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX task_runs_task ON task_runs(site_id, task_id, started DESC);`,
 }
 
 func Open(path string) (*Store, error) {
@@ -220,6 +236,7 @@ func (s *Store) DeleteSite(ctx context.Context, id string) error {
 		`DELETE FROM sites WHERE id = ?1`,
 		`DELETE FROM deployments WHERE site_id = ?1`,
 		`DELETE FROM metrics WHERE site_id = ?1`,
+		`DELETE FROM task_runs WHERE site_id = ?1`,
 		// Grants and token restrictions naming the site go with it. A
 		// token restricted to only this site is left restricted to no
 		// site ('[]'), never widened to NULL ("every site").

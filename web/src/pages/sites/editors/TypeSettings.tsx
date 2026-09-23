@@ -29,9 +29,10 @@ export function useNodeVersionOptions(current?: string) {
   return { options, loading: q.isPending };
 }
 
-/** App root, entry point, node version and instances — used by the wizard and the settings tab. */
+/** App root, entry point, node version and instances — used by the wizard and the settings tab (node and worker sites). */
 export function NodeEssentials({ site, update, withInstances = true }: SiteEditorProps & { withInstances?: boolean }) {
   const n = site.node!;
+  const worker = site.type === 'worker';
   const { options } = useNodeVersionOptions(n.nodeVersion);
   const mode: 'script' | 'npm' = n.npmScript ? 'npm' : 'script';
   const set = (patch: Partial<NodeConfig>) =>
@@ -78,7 +79,11 @@ export function NodeEssentials({ site, update, withInstances = true }: SiteEdito
         </Field>
       </Grid>
       {withInstances && (
-        <Field label="Instances" path="node.instances" hint="Processes load-balanced behind the site (1–64). Each gets its own PORT.">
+        <Field
+          label="Instances"
+          path="node.instances"
+          hint={worker ? 'Copies of the process to run (1–64), e.g. several consumers of one queue.' : 'Processes load-balanced behind the site (1–64). Each gets its own PORT.'}
+        >
           <NumberInput className="w-32" min={1} max={64} value={n.instances} onChange={(v) => set({ instances: v })} />
         </Field>
       )}
@@ -86,8 +91,10 @@ export function NodeEssentials({ site, update, withInstances = true }: SiteEdito
   );
 }
 
+/** Everything else of a node site. A worker has no port, no HTTP health check and no requests, so those settings are hidden. */
 export function NodeAdvanced({ site, update }: SiteEditorProps) {
   const n = site.node!;
+  const worker = site.type === 'worker';
   const set = (patch: Partial<NodeConfig>) =>
     update((d) => {
       d.node = { ...d.node!, ...patch };
@@ -107,23 +114,32 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
         </Field>
       </FormSection>
 
-      <FormSection title="Processes" description="How many processes run and how they receive their port.">
+      <FormSection
+        title="Processes"
+        description={
+          worker
+            ? 'How many copies of the process run. A worker gets no PORT and counts as running once it has stayed up for 2 seconds.'
+            : 'How many processes run and how they receive their port.'
+        }
+      >
         <Grid>
-          <Field label="Instances" path="node.instances" hint="1–64. A fixed port allows only one instance.">
+          <Field label="Instances" path="node.instances" hint={worker ? '1–64.' : '1–64. A fixed port allows only one instance.'}>
             <NumberInput min={1} max={64} value={n.instances} onChange={(v) => set({ instances: v })} />
           </Field>
-          <Field label="Port" path="node.portMode">
-            <Select
-              value={n.portMode}
-              onChange={(v) => set({ portMode: v, fixedPort: v === 'fixed' ? n.fixedPort || 3000 : 0, instances: v === 'fixed' ? 1 : n.instances })}
-              options={[
-                { value: 'auto', label: 'Automatic (PORT env var)' },
-                { value: 'fixed', label: 'Fixed port' },
-              ]}
-            />
-          </Field>
+          {!worker && (
+            <Field label="Port" path="node.portMode">
+              <Select
+                value={n.portMode}
+                onChange={(v) => set({ portMode: v, fixedPort: v === 'fixed' ? n.fixedPort || 3000 : 0, instances: v === 'fixed' ? 1 : n.instances })}
+                options={[
+                  { value: 'auto', label: 'Automatic (PORT env var)' },
+                  { value: 'fixed', label: 'Fixed port' },
+                ]}
+              />
+            </Field>
+          )}
         </Grid>
-        {n.portMode === 'fixed' && (
+        {!worker && n.portMode === 'fixed' && (
           <Field label="Fixed port" path="node.fixedPort" hint="The port your app listens on. The proxy forwards to it.">
             <NumberInput className="w-32" mono min={1} max={65535} value={n.fixedPort} onChange={(v) => set({ fixedPort: v })} />
           </Field>
@@ -171,9 +187,11 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
               <NumberInput min={10} max={86400} value={n.recoverAfterSec} onChange={(v) => set({ recoverAfterSec: v })} suffix="sec" />
             </Field>
           )}
-          <Field label="Startup timeout" path="node.startupTimeoutSec" hint="Time allowed to start listening.">
-            <NumberInput min={1} value={n.startupTimeoutSec} onChange={(v) => set({ startupTimeoutSec: v })} suffix="sec" />
-          </Field>
+          {!worker && (
+            <Field label="Startup timeout" path="node.startupTimeoutSec" hint="Time allowed to start listening.">
+              <NumberInput min={1} value={n.startupTimeoutSec} onChange={(v) => set({ startupTimeoutSec: v })} suffix="sec" />
+            </Field>
+          )}
           <Field label="Shutdown timeout" path="node.shutdownTimeoutSec" hint="Graceful stop before the process is killed.">
             <NumberInput min={1} value={n.shutdownTimeoutSec} onChange={(v) => set({ shutdownTimeoutSec: v })} suffix="sec" />
           </Field>
@@ -189,11 +207,20 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
         )}
       </FormSection>
 
-      <FormSection title="Health check" description="Instances failing the check are taken out of rotation and restarted.">
-        <HealthCheckFields value={n.healthCheck} onChange={(h) => set({ healthCheck: h })} pathPrefix="node.healthCheck" />
-      </FormSection>
+      {!worker && (
+        <FormSection title="Health check" description="Instances failing the check are taken out of rotation and restarted.">
+          <HealthCheckFields value={n.healthCheck} onChange={(h) => set({ healthCheck: h })} pathPrefix="node.healthCheck" />
+        </FormSection>
+      )}
 
-      <FormSection title="Recycling" description="Periodically replace processes with fresh ones using a zero-downtime rolling restart. Leave blank to disable a condition.">
+      <FormSection
+        title="Recycling"
+        description={
+          worker
+            ? 'Periodically replace processes with fresh ones; each new process starts before the old one is stopped. Leave blank to disable a condition.'
+            : 'Periodically replace processes with fresh ones using a zero-downtime rolling restart. Leave blank to disable a condition.'
+        }
+      >
         <Grid>
           <Field label="Memory limit" path="node.recycle.memoryLimitMB" hint="Recycle when private memory exceeds this.">
             <NumberInput blankZero min={0} value={n.recycle.memoryLimitMB} onChange={(v) => setRecycle({ memoryLimitMB: v })} suffix="MB" />
@@ -201,9 +228,11 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
           <Field label="Regular interval" path="node.recycle.periodicMinutes">
             <NumberInput blankZero min={0} value={n.recycle.periodicMinutes} onChange={(v) => setRecycle({ periodicMinutes: v })} suffix="min" />
           </Field>
-          <Field label="Request limit" path="node.recycle.maxRequests" hint="Recycle after this many requests per instance.">
-            <NumberInput blankZero min={0} value={n.recycle.maxRequests} onChange={(v) => setRecycle({ maxRequests: v })} />
-          </Field>
+          {!worker && (
+            <Field label="Request limit" path="node.recycle.maxRequests" hint="Recycle after this many requests per instance.">
+              <NumberInput blankZero min={0} value={n.recycle.maxRequests} onChange={(v) => setRecycle({ maxRequests: v })} />
+            </Field>
+          )}
         </Grid>
         <Field label="Specific times" path="node.recycle.scheduleTimes" prefix hint="Local server time, 24h HH:MM.">
           <ListEditor

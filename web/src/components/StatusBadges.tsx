@@ -40,7 +40,7 @@ export function StateBadge({ state, title }: { state: SiteState | string | undef
   );
 }
 
-const typeTone: Record<string, Tone> = { node: 'green', proxy: 'blue', static: 'violet', redirect: 'gray' };
+const typeTone: Record<string, Tone> = { node: 'green', worker: 'accent', proxy: 'blue', static: 'violet', redirect: 'gray' };
 
 export function SiteTypeBadge({ type }: { type: string }) {
   return <Badge tone={typeTone[type] ?? 'gray'}>{siteTypeLabel(type)}</Badge>;

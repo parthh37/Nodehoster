@@ -189,7 +189,8 @@ export function HeadersCard(props: SiteEditorProps) {
 export function LocationsCard(props: SiteEditorProps) {
   const { r, set } = useRouting(props);
   const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000 });
-  const others = (sites.data ?? []).filter((s) => s.id !== props.site.id);
+  // A background worker serves no HTTP, so it cannot answer a location.
+  const others = (sites.data ?? []).filter((s) => s.id !== props.site.id && s.type !== 'worker');
   return (
     <Card
       title={<span className="flex items-center gap-2"><Route className="h-4 w-4 text-zinc-400" />Locations</span>}

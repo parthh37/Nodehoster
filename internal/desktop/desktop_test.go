@@ -106,3 +106,31 @@ func TestConsoleURL(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskRunText(t *testing.T) {
+	now := time.Date(2026, 5, 4, 15, 0, 0, 0, time.Local)
+	started := time.Date(2026, 5, 4, 14, 3, 0, 0, time.Local)
+	later := started.Add(12 * time.Second)
+	code := 2
+	for _, tc := range []struct {
+		run  *model.TaskRun
+		want string
+	}{
+		{nil, "Never run"},
+		{&model.TaskRun{Status: model.RunRunning, StartedAt: started}, "Running since 14:03"},
+		{&model.TaskRun{Status: model.RunSucceeded, StartedAt: started, FinishedAt: &later}, "Succeeded 14:03 (12s)"},
+		{&model.TaskRun{Status: model.RunFailed, StartedAt: started.AddDate(0, 0, -3), FinishedAt: &later, ExitCode: &code}, "Failed 2026-05-01 14:03 (exit code 2)"},
+		{&model.TaskRun{Status: model.RunFailed, StartedAt: started, FinishedAt: &later, Error: "node was not found"}, "Failed 14:03 (node was not found)"},
+		{&model.TaskRun{Status: model.RunTimeout, StartedAt: started, FinishedAt: &later}, "Timeout 14:03 (12s)"},
+	} {
+		if got := TaskRunText(tc.run, now); got != tc.want {
+			t.Errorf("TaskRunText = %q, want %q", got, tc.want)
+		}
+	}
+	if got := ScheduleText(model.ScheduledTask{Schedule: "@daily"}); got != "@daily (disabled)" {
+		t.Errorf("disabled: %q", got)
+	}
+	if got := ScheduleText(model.ScheduledTask{Enabled: true}); got != "On demand" {
+		t.Errorf("on demand: %q", got)
+	}
+}

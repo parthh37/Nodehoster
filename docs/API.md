@@ -141,7 +141,7 @@ The desktop manager's local pipe always acts as `admin`.
 | GET | `/api/sites` | | `SiteView[]` |
 | POST | `/api/sites` | `Site` (id ignored) | `SiteView` 201 |
 | GET | `/api/sites/{id}` | | `SiteView` |
-| PUT | `/api/sites/{id}` | `Site` | `SiteView` (applied live; node sites are recycled if process settings changed) |
+| PUT | `/api/sites/{id}` | `Site` | `SiteView` (applied live; node and worker sites are recycled if process settings changed) |
 | DELETE | `/api/sites/{id}?deleteFiles=true` | | 204 |
 | POST | `/api/sites/{id}/start` | | `SiteStatus` |
 | POST | `/api/sites/{id}/stop` | | `SiteStatus` |
@@ -168,6 +168,73 @@ The desktop manager's local pipe always acts as `admin`.
 
 Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 `X-Hub-Signature-256: sha256=<hmac of body with deploy.webhookSecret>`, or `?secret=`.
+
+### Background workers
+
+`type: "worker"` is a managed Node.js process without HTTP (queue consumer,
+bot, long-running script). It is configured by `node` like a node site
+(script / npm script, instances, restart policy and rapid-fail protection,
+recycling on memory / schedule / interval / file change, limits, run-as,
+agent) and has deployments, releases and rollback, but:
+
+- no `bindings` (422 `bindings`), no `PORT` variable, and no HTTP-only
+  settings: `node.portMode: "fixed"`, `node.healthCheck.enabled`,
+  `node.loadBalancer.enabled`, `node.recycle.maxRequests` and routing
+  features (locations, rewrites, headers, IP restrictions, basic auth, rate
+  limit, maintenance, error pages, HTTPS redirect, HSTS, MIME types) are
+  refused with 422 on that field;
+- an instance is `ready` once it has stayed up for 2 s (the settle period);
+  one that exits sooner failed to start and counts for rapid-fail
+  protection;
+- recycle starts the new process, then stops the old one gracefully, so for
+  a few seconds both run (fine for queue consumers; use restart for a
+  singleton that cannot share its work);
+- the proxy ignores workers, and a location of kind `site` cannot target one
+  (422 `routing.locations[n].siteId`).
+
+### Scheduled tasks
+
+Node and worker sites have `tasks: ScheduledTask[]`, edited with the site
+(`PUT /api/sites/{id}`, admin):
+
+| Field | |
+|---|---|
+| `id` | generated when empty; keeps history across renames |
+| `name` | 1-64 characters like a site name, unique in the site (case-insensitive) |
+| `schedule` | 5-field cron in **server local time** (`*/15 * * * *`, `0 3 * * mon-fri`, `0 0 1 jan,jul *`; ranges, steps, lists, month and day names, `7` = Sunday; day of month and day of week both restricted = either matches), `@hourly` `@daily` `@weekly` `@monthly` `@yearly`, or `@every <duration>` (`@every 90m`, at least `1m`). Empty = only on demand |
+| `script` / `npmScript` | what to run, in the site's active release (one is required) |
+| `args` | arguments |
+| `enabled` | disabled tasks are not scheduled but can be run on demand |
+| `timeoutSec` | default 3600, at most 604800; the whole process tree is killed at the timeout |
+| `overlap` | when a run is due while one is still going: `skip` (default; a `skipped` run is recorded), `queue` (runs right after it; at most one waiting), `allow` (concurrently, at most 10) |
+| `env` | extra variables (`secret` supported, masked like the site's) |
+
+A run uses the site's Node.js version, environment and secrets, run-as
+identity and Job Object limits (on Windows each run has its own job), with
+`NODEHOSTER_TASK=<name>` and `NODEHOSTER_TASK_RUN=<run id>` and no `PORT`.
+Tasks run whether the site is started or stopped (disable a task to stop
+it). Around DST changes a local time that does not exist does not run and a
+repeated one runs once. Runs missed while the service was down are not
+caught up; runs still in progress when the service stops are asked to stop
+gracefully (agent / SIGTERM) within the site's shutdown timeout, and runs
+found `running` at startup are marked `failed`. Deleting a site stops its
+runs; deleting a task deletes its history. The last 50 runs of each task
+are kept, each with a log of up to 10 MB in `logs\sites\<id>\tasks\`.
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/sites/{id}/tasks` | viewer | `TaskView[]`: `ScheduledTask` + `nextRunAt?`, `lastRun?` (in progress, else the last that was not skipped), `running` (run ids), `queued` |
+| POST | `/api/sites/{id}/tasks/{task}/run` | operator | 202 `{run: TaskRun \| null, queued}` (`{task}` = id or name); 409 when the overlap policy does not allow a run now |
+| POST | `/api/sites/{id}/runs/{run}/cancel` | operator | 202 `TaskRun`; 409 when it is not in progress |
+| GET | `/api/sites/{id}/runs?task=&limit=50` | viewer | `TaskRun[]` newest first |
+| GET | `/api/sites/{id}/runs/{run}/log?download=true` | viewer | `text/plain` (404 for skipped runs) |
+| GET | `/api/sites/{id}/runs/{run}/log/stream` | viewer | SSE `event: log` data string, `event: done` data `TaskRun` |
+
+`TaskRun`: `{id, siteId, taskId, taskName, trigger: schedule|manual, user?,
+status: running|succeeded|failed|timeout|cancelled|skipped, startedAt,
+finishedAt?, exitCode?, error?}`. Events: `task.failed` (error: non-zero
+exit or could not start) and `task.timeout` (warning); audit: `task.run`,
+`task.cancel`.
 
 ## Certificates
 

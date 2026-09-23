@@ -17,7 +17,15 @@ type agentServer struct {
 	path string
 
 	mu    sync.Mutex
-	byTok map[string]*Instance
+	byTok map[string]agentPeer
+}
+
+// agentPeer is the process an agent connection belongs to: an instance of
+// a site or a scheduled task run.
+type agentPeer interface {
+	attachAgent(c net.Conn, hello agentMsg)
+	detachAgent(c net.Conn)
+	agentMessage(m agentMsg)
 }
 
 type agentMsg struct {
@@ -37,12 +45,12 @@ func newAgentServer(dir string, log *slog.Logger) (*agentServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &agentServer{log: log, l: l, path: path, byTok: map[string]*Instance{}}
+	s := &agentServer{log: log, l: l, path: path, byTok: map[string]agentPeer{}}
 	go s.accept()
 	return s, nil
 }
 
-func (s *agentServer) register(token string, inst *Instance) {
+func (s *agentServer) register(token string, inst agentPeer) {
 	s.mu.Lock()
 	s.byTok[token] = inst
 	s.mu.Unlock()

@@ -36,6 +36,9 @@ import type {
   SiteView,
   SSOSettings,
   SSOTestResult,
+  TaskRun,
+  TaskRunStart,
+  TaskView,
   TOTPSetup,
   User,
   WebhookTarget,
@@ -104,6 +107,17 @@ export const sitesApi = {
   activate: (id: string, depId: string) =>
     http.post<Deployment>(`/api/sites/${enc(id)}/deployments/${enc(depId)}/activate`),
   deploymentLog: (id: string, depId: string) => http.text(`/api/sites/${enc(id)}/deployments/${enc(depId)}/log`),
+};
+
+/** Scheduled tasks. Definitions are edited as part of the site (sitesApi.update). */
+export const tasksApi = {
+  list: (id: string) => http.get<TaskView[]>(`/api/sites/${enc(id)}/tasks`),
+  /** `task` is the task's id or name. */
+  run: (id: string, task: string) => http.post<TaskRunStart>(`/api/sites/${enc(id)}/tasks/${enc(task)}/run`),
+  runs: (id: string, task?: string, limit = 50) => http.get<TaskRun[]>(`/api/sites/${enc(id)}/runs${qs({ task, limit })}`),
+  cancel: (id: string, runId: string) => http.post<TaskRun>(`/api/sites/${enc(id)}/runs/${enc(runId)}/cancel`),
+  log: (id: string, runId: string) => http.text(`/api/sites/${enc(id)}/runs/${enc(runId)}/log`),
+  logDownloadUrl: (id: string, runId: string) => `/api/sites/${enc(id)}/runs/${enc(runId)}/log${qs({ download: true })}`,
 };
 
 export interface AcmeRequest {

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Check, CornerUpRight, FolderOpen, Hexagon, Network, Rocket } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Cog, CornerUpRight, FolderOpen, Hexagon, Network, Rocket } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -15,31 +15,34 @@ import { Switch } from '@/components/Switch';
 import { useToast } from '@/components/Toast';
 import { bindingLabel } from '@/lib/bindings';
 import { clone } from '@/lib/obj';
-import { HOST_RE, LB_STRATEGIES, NAME_RE, newSite, SITE_TYPES, siteTypeLabel } from '@/lib/siteDefaults';
+import { HOST_RE, LB_STRATEGIES, NAME_RE, newSite, runsNode, SITE_TYPES, siteTypeLabel } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { BindingsEditor } from './editors/BindingsEditor';
 import { NodeEssentials, ProxyEssentials, RedirectEssentials, StaticEssentials } from './editors/TypeSettings';
 
-const STEPS = ['Type', 'Essentials', 'Bindings', 'Review'] as const;
+type Step = 'Type' | 'Essentials' | 'Bindings' | 'Review';
+
+// A background worker serves no HTTP, so it has no bindings to pick.
+const stepsFor = (t: SiteType): Step[] => (t === 'worker' ? ['Type', 'Essentials', 'Review'] : ['Type', 'Essentials', 'Bindings', 'Review']);
 
 const typeIcons: Record<SiteType, typeof Hexagon> = {
   node: Hexagon,
+  worker: Cog,
   proxy: Network,
   static: FolderOpen,
   redirect: CornerUpRight,
 };
 
-function stepForField(field: string | undefined): number {
-  if (!field) return 3;
-  if (field.startsWith('bindings')) return 2;
-  if (field === 'type') return 0;
-  return 1;
+function stepForField(field: string | undefined, steps: Step[]): number {
+  const name: Step = !field ? 'Review' : field.startsWith('bindings') ? 'Bindings' : field === 'type' ? 'Type' : 'Essentials';
+  const i = steps.indexOf(name);
+  return i < 0 ? steps.length - 1 : i;
 }
 
 /** Client-side checks for the essentials step; the server validates again. */
 function essentialsError(s: Site): string | null {
   if (!NAME_RE.test(s.name)) return 'Enter a site name (letters, digits, space, . _ -).';
-  if (s.type === 'node') {
+  if (runsNode(s.type)) {
     if (!s.node?.appRoot.trim()) return 'Enter the application path.';
     if (!s.node?.script && !s.node?.npmScript) return 'Enter an entry script or an npm script.';
     if ((s.node?.instances ?? 1) < 1 || (s.node?.instances ?? 1) > 64) return 'Instances must be between 1 and 64.';
@@ -72,6 +75,8 @@ export function NewSitePage() {
   const [site, setSite] = useState<Site>(() => newSite('node'));
   const [touched, setTouched] = useState(false);
   const [startNow, setStartNow] = useState(true);
+  const steps = stepsFor(site.type);
+  const current = steps[step];
 
   const update = (fn: (d: Site) => void) =>
     setSite((s) => {
@@ -85,7 +90,8 @@ export function NewSitePage() {
     const next = newSite(t);
     next.name = site.name;
     next.description = site.description;
-    next.bindings = site.bindings;
+    // Keep bindings entered so far, except that a worker has none.
+    if (t !== 'worker' && site.type !== 'worker') next.bindings = site.bindings;
     setSite(next);
   };
 
@@ -108,21 +114,21 @@ export function NewSitePage() {
       navigate(`/sites/${created.id}`);
     },
     onError: (e) => {
-      if (e instanceof ApiError && e.field) setStep(stepForField(e.field));
+      if (e instanceof ApiError && e.field) setStep(stepForField(e.field, steps));
     },
   });
 
   const clientErr = useMemo(() => {
-    if (step === 1) return essentialsError(site);
-    if (step === 2) return bindingsError(site);
+    if (current === 'Essentials') return essentialsError(site);
+    if (current === 'Bindings') return bindingsError(site);
     return null;
-  }, [step, site]);
+  }, [current, site]);
 
   const next = () => {
     setTouched(true);
     if (clientErr) return;
     setTouched(false);
-    setStep((s) => Math.min(STEPS.length - 1, s + 1));
+    setStep((s) => Math.min(steps.length - 1, s + 1));
   };
 
   if (!isAdmin) {
@@ -144,7 +150,7 @@ export function NewSitePage() {
 
       {/* Stepper */}
       <ol className="mb-5 flex items-center gap-2">
-        {STEPS.map((label, i) => (
+        {steps.map((label, i) => (
           <li key={label} className="flex flex-1 items-center gap-2">
             <button
               type="button"
@@ -169,7 +175,7 @@ export function NewSitePage() {
               </span>
               {label}
             </button>
-            {i < STEPS.length - 1 && <span className={cn('h-px flex-1', i < step ? 'bg-accent-500' : 'bg-zinc-200 dark:bg-zinc-800')} />}
+            {i < steps.length - 1 && <span className={cn('h-px flex-1', i < step ? 'bg-accent-500' : 'bg-zinc-200 dark:bg-zinc-800')} />}
           </li>
         ))}
       </ol>
@@ -178,7 +184,7 @@ export function NewSitePage() {
         <FormErrorBanner className="mb-4" />
         {touched && clientErr && <Callout tone="danger" className="mb-4">{clientErr}</Callout>}
 
-        {step === 0 && (
+        {current === 'Type' && (
           <div className="grid gap-3 sm:grid-cols-2">
             {SITE_TYPES.map((t) => {
               const TIcon = typeIcons[t.value];
@@ -215,7 +221,7 @@ export function NewSitePage() {
           </div>
         )}
 
-        {step === 1 && (
+        {current === 'Essentials' && (
           <Card title={<span className="flex items-center gap-2"><Icon className="h-4 w-4 text-zinc-400" />{siteTypeLabel(site.type)}</span>}>
             <div className="space-y-4">
               <Field label="Site name" path="name" required hint="Shown in the console. Letters, digits, spaces, '.', '_' and '-'.">
@@ -243,7 +249,7 @@ export function NewSitePage() {
                 />
               </Field>
               <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-                {site.type === 'node' && <NodeEssentials site={site} update={update} />}
+                {runsNode(site.type) && <NodeEssentials site={site} update={update} />}
                 {site.type === 'proxy' && <ProxyEssentials site={site} update={update} />}
                 {site.type === 'static' && <StaticEssentials site={site} update={update} />}
                 {site.type === 'redirect' && <RedirectEssentials site={site} update={update} />}
@@ -252,7 +258,7 @@ export function NewSitePage() {
           </Card>
         )}
 
-        {step === 2 && (
+        {current === 'Bindings' && (
           <Card
             title="Bindings"
             description="How requests reach this site. A binding is a protocol, IP address, port and optional host name — just like IIS."
@@ -261,7 +267,7 @@ export function NewSitePage() {
           </Card>
         )}
 
-        {step === 3 && (
+        {current === 'Review' && (
           <Card title="Review">
             <div className="space-y-5">
               <KV
@@ -270,23 +276,15 @@ export function NewSitePage() {
                   ['Type', siteTypeLabel(site.type)],
                   ...(site.description ? ([['Description', site.description]] as [string, string][]) : []),
                   ...reviewItems(site),
-                  [
-                    'Bindings',
-                    site.bindings.length ? (
-                      <div className="space-y-0.5">
-                        {site.bindings.map((b, i) => (
-                          <div key={i} className="font-mono text-[12.5px]">
-                            {bindingLabel(b)}
-                            {b.protocol === 'https' && <span className="ml-2 font-sans text-xs text-zinc-500">{b.certMode === 'auto' ? "Let's Encrypt" : 'selected certificate'}</span>}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-amber-600">None — the site will not be reachable</span>
-                    ),
-                  ],
+                  ...bindingsReview(site),
                 ]}
               />
+              {site.type === 'worker' && (
+                <Callout tone="info">
+                  A background worker is not reachable over HTTP: it gets no bindings and no <span className="font-mono">PORT</span>, and counts as
+                  running once its process has stayed up for 2 seconds.
+                </Callout>
+              )}
               <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
                 <Switch
                   checked={startNow}
@@ -295,10 +293,10 @@ export function NewSitePage() {
                   description="Also starts automatically with the NodeHoster service."
                 />
               </div>
-              {site.type === 'node' && (
+              {runsNode(site.type) && (
                 <Callout tone="info">
-                  After creating, add environment variables on the <em>Environment</em> tab or set up Git / .zip deployments on the{' '}
-                  <em>Deployments</em> tab.
+                  After creating, add environment variables on the <em>Environment</em> tab, set up Git / .zip deployments on the{' '}
+                  <em>Deployments</em> tab, or schedule scripts on the <em>Tasks</em> tab.
                 </Callout>
               )}
             </div>
@@ -310,7 +308,7 @@ export function NewSitePage() {
         <Button icon={<ArrowLeft className="h-4 w-4" />} disabled={step === 0} onClick={() => setStep((s) => s - 1)}>
           Back
         </Button>
-        {step < STEPS.length - 1 ? (
+        {step < steps.length - 1 ? (
           <Button variant="primary" iconRight={<ArrowRight className="h-4 w-4" />} onClick={next}>
             Next
           </Button>
@@ -324,10 +322,32 @@ export function NewSitePage() {
   );
 }
 
+function bindingsReview(s: Site): [string, React.ReactNode][] {
+  if (s.type === 'worker') return [];
+  return [
+    [
+      'Bindings',
+      s.bindings.length ? (
+        <div className="space-y-0.5">
+          {s.bindings.map((b, i) => (
+            <div key={i} className="font-mono text-[12.5px]">
+              {bindingLabel(b)}
+              {b.protocol === 'https' && <span className="ml-2 font-sans text-xs text-zinc-500">{b.certMode === 'auto' ? "Let's Encrypt" : 'selected certificate'}</span>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <span className="text-amber-600">None — the site will not be reachable</span>
+      ),
+    ],
+  ];
+}
+
 function reviewItems(s: Site): [string, React.ReactNode][] {
   const mono = (v: React.ReactNode) => <span className="font-mono text-[12.5px]">{v}</span>;
   switch (s.type) {
     case 'node':
+    case 'worker':
       return [
         ['Application path', mono(s.node!.appRoot)],
         ['Start', mono(s.node!.npmScript ? `npm run ${s.node!.npmScript}` : `node ${s.node!.script}`)],

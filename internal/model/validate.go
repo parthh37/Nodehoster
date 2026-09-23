@@ -57,7 +57,7 @@ func (s *Site) ApplyDefaults() {
 		}
 	}
 	switch s.Type {
-	case SiteNode:
+	case SiteNode, SiteWorker:
 		if s.Node == nil {
 			s.Node = &NodeConfig{}
 		}
@@ -150,8 +150,11 @@ func (s *Site) ApplyDefaults() {
 	if s.Deploy.KeepReleases <= 0 {
 		s.Deploy.KeepReleases = 5
 	}
-	if s.Deploy.InstallCommand == "" && s.Type == SiteNode {
+	if s.Deploy.InstallCommand == "" && s.RunsNode() {
 		s.Deploy.InstallCommand = "npm ci --omit=dev"
+	}
+	for i := range s.Tasks {
+		s.Tasks[i].applyDefaults()
 	}
 }
 
@@ -177,9 +180,14 @@ func (s *Site) Validate() error {
 		return verr("name", "must be 1-64 characters: letters, digits, space, '.', '_' or '-'")
 	}
 	switch s.Type {
-	case SiteNode, SiteProxy, SiteStatic, SiteRedirect:
+	case SiteNode, SiteProxy, SiteStatic, SiteRedirect, SiteWorker:
 	default:
 		return verr("type", "unknown site type %q", s.Type)
+	}
+	if s.Type == SiteWorker {
+		if err := s.validateWorker(); err != nil {
+			return err
+		}
 	}
 	seen := map[string]bool{}
 	for i, b := range s.Bindings {
@@ -217,7 +225,7 @@ func (s *Site) Validate() error {
 		seen[k] = true
 	}
 	switch s.Type {
-	case SiteNode:
+	case SiteNode, SiteWorker:
 		n := s.Node
 		if strings.TrimSpace(n.AppRoot) == "" && s.ActiveRelease == "" {
 			return verr("node.appRoot", "application path is required")
@@ -308,6 +316,12 @@ func (s *Site) Validate() error {
 		default:
 			return verr("redirect.statusCode", "must be 301, 302, 303, 307 or 308")
 		}
+	}
+	if len(s.Tasks) > 0 && !s.RunsNode() {
+		return verr("tasks", "scheduled tasks need a Node.js application or background worker site")
+	}
+	if err := validateTasks(s.Tasks); err != nil {
+		return err
 	}
 	r := s.Routing
 	if err := r.ValidateRewrites(); err != nil {
@@ -403,6 +417,52 @@ func (c CacheConfig) validate() error {
 	for i, p := range c.BypassPaths {
 		if !strings.HasPrefix(p, "/") {
 			return verr(fmt.Sprintf("routing.cache.bypassPaths[%d]", i), "must start with /")
+		}
+	}
+	return nil
+}
+
+// validateWorker refuses what only makes sense for a site that serves
+// HTTP: a worker has no bindings, no port and nothing to route, so these
+// settings would silently do nothing.
+func (s *Site) validateWorker() error {
+	if len(s.Bindings) > 0 {
+		return verr("bindings", "a background worker does not serve HTTP and has no bindings; use a Node.js application site for that")
+	}
+	if n := s.Node; n != nil {
+		switch {
+		case n.PortMode == "fixed":
+			return verr("node.portMode", "a background worker gets no port")
+		case n.HealthCheck.Enabled:
+			return verr("node.healthCheck.enabled", "health checks send HTTP requests; a background worker has none")
+		case n.LoadBalancer.Enabled:
+			return verr("node.loadBalancer.enabled", "a background worker receives no requests to balance")
+		case n.Recycle.MaxRequests > 0:
+			return verr("node.recycle.maxRequests", "a background worker receives no requests")
+		}
+	}
+	r := s.Routing
+	for _, c := range []struct {
+		set   bool
+		field string
+	}{
+		{r.HTTPSRedirect, "routing.httpsRedirect"},
+		{r.HSTS.Enabled, "routing.hsts"},
+		{len(r.Locations) > 0, "routing.locations"},
+		{len(r.Rewrites) > 0, "routing.rewrites"},
+		{len(r.OutboundRules) > 0, "routing.outboundRules"},
+		{len(r.RewriteMaps) > 0, "routing.rewriteMaps"},
+		{len(r.RequestHeaders) > 0, "routing.requestHeaders"},
+		{len(r.ResponseHeaders) > 0, "routing.responseHeaders"},
+		{len(r.MimeTypes) > 0, "routing.mimeTypes"},
+		{len(r.IP.Allow)+len(r.IP.Deny) > 0, "routing.ip"},
+		{r.BasicAuth.Enabled, "routing.basicAuth"},
+		{r.RateLimit.Enabled, "routing.rateLimit"},
+		{r.Maintenance.Enabled, "routing.maintenance"},
+		{len(r.ErrorPages) > 0, "routing.errorPages"},
+	} {
+		if c.set {
+			return verr(c.field, "a background worker does not serve HTTP; remove this routing setting")
 		}
 	}
 	return nil

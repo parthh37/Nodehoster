@@ -10,7 +10,7 @@ IIS Manager, with a status icon in the notification area.
 ## Features
 
 **Sites & bindings**
-- Site types: **Node.js application**, **reverse proxy**, **static site**, **redirect**
+- Site types: **Node.js application**, **background worker** (a Node.js process without HTTP), **reverse proxy**, **static site**, **redirect**
 - IIS bindings: protocol, IP address (or all unassigned), port, host name; wildcard host names
 - IIS precedence: specific IP › all addresses, exact host › `*.wildcard` › empty host
 - SNI: any number of HTTPS sites on one IP:port, each with its own certificate
@@ -30,6 +30,8 @@ IIS Manager, with a status icon in the notification area.
 - **Run as user** (application pool identity) via `LogonUser`
 - Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish
 - Per-instance CPU, memory, heap, event-loop lag, requests; stdout/stderr captured to rotating logs with live tail
+- **Background workers**: queue consumers (BullMQ…), bots and long-running scripts supervised like web apps (no port; running once up for 2 s; rapid-fail protection, recycling, Job Objects, secrets, logs and metrics included)
+- **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 
@@ -211,6 +213,13 @@ Get-Help Publish-NHSite -Examples
 Environment set for every instance: `PORT`, `NODE_ENV=production` (unless
 overridden), `NODEHOSTER_SITE`, `NODEHOSTER_INSTANCE`, `NODE_APP_INSTANCE`.
 
+A process that does not serve HTTP (a BullMQ consumer, a Discord bot) is a
+**Background worker** site instead: no bindings and no `PORT`; it counts as
+running once it has stayed up for 2 seconds. Recurring jobs (a nightly
+report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
+site: each run starts the script in the site's current release with its
+Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`.
+
 ## Data directory
 
 `C:\ProgramData\NodeHoster`
@@ -223,7 +232,7 @@ overridden), `NODEHOSTER_SITE`, `NODEHOSTER_INSTANCE`, `NODE_APP_INSTANCE`.
 | `certs\` | certificates and keys |
 | `node\` | installed Node.js versions |
 | `sites\<id>\releases\` | deployed releases; `shared\` persisted files |
-| `logs\` | server log; `logs\sites\<id>\` app and access logs |
+| `logs\` | server log; `logs\sites\<id>\` app and access logs, `tasks\` scheduled task runs |
 
 ## Development
 

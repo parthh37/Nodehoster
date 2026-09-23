@@ -2,6 +2,7 @@ import { ExternalLink, Play, RefreshCw, RotateCw, Square } from 'lucide-react';
 import type { Binding, SiteState, SiteView } from '@/api/types';
 import { IconButton, Button } from '@/components/Button';
 import { bindingHref, bindingLabel } from '@/lib/bindings';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { useSiteActions } from '@/hooks/useSiteActions';
 import { useSitePermissions } from '@/hooks/useAuth';
@@ -47,7 +48,7 @@ export function SiteRowActions({ site, state }: { site: SiteView; state: SiteSta
       ) : (
         <IconButton label="Stop" icon={<Square className="h-3.5 w-3.5" />} disabled={busy} onClick={() => run(site.id, site.name, 'stop')} />
       )}
-      {site.type === 'node' && (
+      {runsNode(site.type) && (
         <IconButton
           label="Recycle (zero-downtime)"
           icon={<RefreshCw className="h-3.5 w-3.5" />}
@@ -80,7 +81,7 @@ export function SiteHeaderActions({ site, state }: { site: SiteView; state: Site
               Stop
             </Button>
           )}
-          {site.type === 'node' && (
+          {runsNode(site.type) && (
             <Button
               icon={<RefreshCw className="h-3.5 w-3.5" />}
               loading={busy === 'recycle'}
@@ -96,14 +97,17 @@ export function SiteHeaderActions({ site, state }: { site: SiteView; state: Site
           </Button>
         </>
       )}
-      <Button
-        icon={<ExternalLink className="h-3.5 w-3.5" />}
-        disabled={!browse}
-        onClick={() => browse && window.open(browse, '_blank', 'noopener')}
-        title={browse ?? 'No browsable binding'}
-      >
-        Browse
-      </Button>
+      {/* A background worker serves no HTTP: nothing to browse. */}
+      {site.type !== 'worker' && (
+        <Button
+          icon={<ExternalLink className="h-3.5 w-3.5" />}
+          disabled={!browse}
+          onClick={() => browse && window.open(browse, '_blank', 'noopener')}
+          title={browse ?? 'No browsable binding'}
+        >
+          Browse
+        </Button>
+      )}
     </>
   );
 }

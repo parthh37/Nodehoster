@@ -125,6 +125,10 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/deployments", a.listDeployments)
 		r.Get("/sites/{id}/deployments/{dep}/log", a.deploymentLog)
 		r.Get("/sites/{id}/deployments/{dep}/log/stream", a.deploymentLogStream)
+		r.Get("/sites/{id}/tasks", a.listTasks)
+		r.Get("/sites/{id}/runs", a.listRuns)
+		r.Get("/sites/{id}/runs/{run}/log", a.runLog)
+		r.Get("/sites/{id}/runs/{run}/log/stream", a.runLogStream)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))
@@ -137,6 +141,8 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/deploy/git", a.deployGit)
 		r.Post("/sites/{id}/deployments/{dep}/activate", a.activateDeployment)
 		r.Post("/sites/{id}/cache/purge", a.siteCachePurge)
+		r.Post("/sites/{id}/tasks/{task}/run", a.runTask)
+		r.Post("/sites/{id}/runs/{run}/cancel", a.cancelRun)
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant

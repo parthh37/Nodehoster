@@ -9,6 +9,7 @@ import type {
   ProxyConfig,
   RedirectConfig,
   RoutingConfig,
+  ScheduledTask,
   Site,
   SiteType,
   StaticConfig,
@@ -16,6 +17,7 @@ import type {
 
 export const SITE_TYPES: { value: SiteType; label: string; description: string }[] = [
   { value: 'node', label: 'Node.js app', description: 'Run and supervise Node.js processes behind the reverse proxy.' },
+  { value: 'worker', label: 'Background worker', description: 'Run a Node.js process that does not serve HTTP: queue consumers, bots, long-running scripts.' },
   { value: 'proxy', label: 'Reverse proxy', description: 'Forward requests to one or more upstream URLs with load balancing.' },
   { value: 'static', label: 'Static site', description: 'Serve files from a folder, with optional SPA fallback.' },
   { value: 'redirect', label: 'Redirect', description: 'Send every request to another URL with a 30x status.' },
@@ -23,6 +25,11 @@ export const SITE_TYPES: { value: SiteType; label: string; description: string }
 
 export function siteTypeLabel(t: SiteType | string): string {
   return SITE_TYPES.find((x) => x.value === t)?.label ?? t;
+}
+
+/** Node and worker sites: supervised Node.js processes configured by `node`. */
+export function runsNode(t: SiteType | string | undefined): boolean {
+  return t === 'node' || t === 'worker';
 }
 
 export const LB_STRATEGIES = [
@@ -79,6 +86,13 @@ export function defaultNode(): NodeConfig {
     runAs: { enabled: false },
     loadBalancer: defaultLoadBalancer(),
   };
+}
+
+/** A worker gets no PORT and serves no HTTP, so there is nothing to health-check. */
+export function defaultWorker(): NodeConfig {
+  const n = defaultNode();
+  n.healthCheck.enabled = false;
+  return n;
 }
 
 export function defaultLoadBalancer(): LoadBalancerConfig {
@@ -144,6 +158,29 @@ export function defaultRouting(): RoutingConfig {
   };
 }
 
+export const DEFAULT_TASK_TIMEOUT_SEC = 3600;
+export const MAX_TASK_TIMEOUT_SEC = 7 * 24 * 3600;
+
+export function defaultTask(): ScheduledTask {
+  return { id: '', name: '', schedule: '0 3 * * *', script: '', npmScript: '', args: [], enabled: true, timeoutSec: DEFAULT_TASK_TIMEOUT_SEC, overlap: 'skip', env: [] };
+}
+
+/** Fill in what the server omits (empty script, null lists) and its defaults. */
+export function normalizeTask(t: ScheduledTask): ScheduledTask {
+  return {
+    ...defaultTask(),
+    ...t,
+    // Empty is meaningful (on demand only), so it is not defaulted.
+    schedule: t.schedule ?? '',
+    script: t.script ?? '',
+    npmScript: t.npmScript ?? '',
+    args: t.args ?? [],
+    env: t.env ?? [],
+    timeoutSec: t.timeoutSec > 0 ? t.timeoutSec : DEFAULT_TASK_TIMEOUT_SEC,
+    overlap: t.overlap || 'skip',
+  };
+}
+
 export function defaultBinding(protocol: 'http' | 'https' = 'http', host = ''): Binding {
   return {
     id: '',
@@ -163,11 +200,12 @@ export function newSite(type: SiteType): Site {
     description: '',
     type,
     autoStart: true,
-    bindings: [defaultBinding('http')],
+    // A worker serves no HTTP and may not have bindings.
+    bindings: type === 'worker' ? [] : [defaultBinding('http')],
     routing: defaultRouting(),
     deploy: {
       git: { repo: '', branch: 'main', token: '' },
-      installCommand: type === 'node' ? 'npm ci --omit=dev' : '',
+      installCommand: runsNode(type) ? 'npm ci --omit=dev' : '',
       buildCommand: '',
       keepReleases: 5,
       sharedPaths: [],
@@ -177,6 +215,8 @@ export function newSite(type: SiteType): Site {
     updatedAt: '',
   };
   if (type === 'node') s.node = defaultNode();
+  if (type === 'worker') s.node = defaultWorker();
+  if (runsNode(type)) s.tasks = [];
   if (type === 'proxy') s.proxy = defaultProxy();
   if (type === 'static') s.static = defaultStatic();
   if (type === 'redirect') s.redirect = defaultRedirect();
@@ -201,8 +241,8 @@ export function normalizeSite(input: Site): Site {
     banning: { ...r.banning, ...s.routing?.banning },
   };
   s.deploy = { ...s.deploy, git: { ...s.deploy?.git }, keepReleases: s.deploy?.keepReleases ?? 5 };
-  if (s.type === 'node') {
-    const d = defaultNode();
+  if (runsNode(s.type)) {
+    const d = s.type === 'worker' ? defaultWorker() : defaultNode();
     const n = s.node ?? d;
     s.node = {
       ...d,
@@ -219,6 +259,7 @@ export function normalizeSite(input: Site): Site {
       },
       env: n.env ?? [],
     };
+    s.tasks = (s.tasks ?? []).map(normalizeTask);
   }
   if (s.type === 'proxy') {
     const d = defaultProxy();

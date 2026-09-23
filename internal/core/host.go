@@ -110,6 +110,7 @@ func (c *Core) Restore(ctx context.Context, data []byte) error {
 		c.sites[s.ID] = s
 		c.cacheMu.Unlock()
 		c.Procs.Apply(s)
+		c.Tasks.Apply(s)
 	}
 	c.sitesMu.Unlock()
 	for _, cert := range b.Certificates {

@@ -138,3 +138,16 @@ export function durationBetween(start: string | null | undefined, end: string | 
   const e = parseDate(end);
   return formatDuration(((e ? e.getTime() : now) - s.getTime()) / 1000);
 }
+
+/** Spelled-out duration with every non-zero unit: "1 hour 30 minutes", "7 days". */
+export function formatSpan(totalSeconds: number | undefined | null): string {
+  if (totalSeconds === undefined || totalSeconds === null || !Number.isFinite(totalSeconds)) return '—';
+  let s = Math.max(0, Math.floor(totalSeconds));
+  const parts: string[] = [];
+  for (const [unit, size] of [['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]] as const) {
+    const n = Math.floor(s / size);
+    s -= n * size;
+    if (n > 0) parts.push(`${n} ${unit}${n === 1 ? '' : 's'}`);
+  }
+  return parts.length ? parts.join(' ') : '0 seconds';
+}

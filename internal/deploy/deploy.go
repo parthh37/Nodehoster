@@ -288,7 +288,7 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		return err
 	}
 	workDir := dep.ReleaseDir
-	if site.Type == model.SiteNode && site.Node.AppRoot != "" && !filepath.IsAbs(site.Node.AppRoot) {
+	if site.RunsNode() && site.Node.AppRoot != "" && !filepath.IsAbs(site.Node.AppRoot) {
 		workDir = filepath.Join(dep.ReleaseDir, site.Node.AppRoot)
 	}
 	env, err := d.commandEnv(site)
@@ -326,7 +326,7 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env := os.Environ()
 	version := ""
-	if site.Type == model.SiteNode {
+	if site.RunsNode() {
 		version = site.Node.NodeVersion
 	}
 	if version == "" {
@@ -335,12 +335,12 @@ func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	rt, err := d.opts.ResolveNode(version)
 	if err == nil {
 		env = prependPath(env, filepath.Dir(rt.Exe))
-	} else if site.Type == model.SiteNode {
+	} else if site.RunsNode() {
 		return nil, err
 	}
 	env = append(env, "npm_config_cache="+filepath.Join(d.opts.SitesDir, site.ID, ".npm-cache"),
 		"npm_config_update_notifier=false", "CI=true")
-	if site.Type == model.SiteNode {
+	if site.RunsNode() {
 		for _, e := range site.Node.Env {
 			v := e.Value
 			if e.Secret {
