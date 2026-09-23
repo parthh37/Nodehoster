@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
@@ -16,6 +17,12 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
+  },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+    restoreMocks: true,
+    unstubGlobals: true,
   },
   server: {
     port: 5173,

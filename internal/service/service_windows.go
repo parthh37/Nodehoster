@@ -65,7 +65,10 @@ func Run(fn func(stop <-chan struct{}) error) error {
 }
 
 // Install registers the service to start automatically (delayed) as
-// LocalSystem, restarting on failure.
+// LocalSystem, restarting on failure. It is idempotent so that installers
+// can run it on every upgrade: an existing registration keeps its command
+// line (and so its data folder) but gets the current start type and
+// recovery settings.
 func Install(exe string, args ...string) error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -73,8 +76,17 @@ func Install(exe string, args ...string) error {
 	}
 	defer m.Disconnect()
 	if s, err := m.OpenService(Name); err == nil {
-		s.Close()
-		return fmt.Errorf("service %s is already installed", Name)
+		defer s.Close()
+		c, err := s.Config()
+		if err != nil {
+			return err
+		}
+		c.StartType, c.DelayedAutoStart = mgr.StartAutomatic, true
+		c.DisplayName, c.Description = DisplayName, Description
+		if err := s.UpdateConfig(c); err != nil {
+			return err
+		}
+		return setRecovery(s)
 	}
 	s, err := m.CreateService(Name, exe, mgr.Config{
 		DisplayName:      DisplayName,
@@ -87,13 +99,23 @@ func Install(exe string, args ...string) error {
 		return err
 	}
 	defer s.Close()
-	s.SetRecoveryActions([]mgr.RecoveryAction{
+	return setRecovery(s)
+}
+
+// setRecovery makes the SCM restart NodeHoster whenever it dies: after 5s,
+// 15s, then every 60s (the last action repeats), with the failure count
+// reset after a day without failures. Non-crash failures (the service
+// stopping itself with an error) count too.
+func setRecovery(s *mgr.Service) error {
+	err := s.SetRecoveryActions([]mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 15 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
 	}, 86400)
-	s.SetRecoveryActionsOnNonCrashFailures(true)
-	return nil
+	if err != nil {
+		return fmt.Errorf("set recovery actions: %w", err)
+	}
+	return s.SetRecoveryActionsOnNonCrashFailures(true)
 }
 
 func Uninstall() error {
