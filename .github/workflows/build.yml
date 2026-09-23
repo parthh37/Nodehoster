@@ -34,16 +34,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      # Toolchains are installed here rather than with actions/setup-go and
+      # actions/setup-node: setup-go runs `go version` through the shell with
+      # an unquoted path, which breaks when the runner lives in a folder with
+      # spaces ("D:\Action runner Node Hoster"). Downloads are verified
+      # against the publishers' SHA-256 checksums and kept in the tool cache.
+      - name: Install Go and Node.js
+        env:
+          NODE_MAJOR: "22"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $cache = $env:RUNNER_TOOL_CACHE
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          function Get-Verified([string]$url, [string]$sha, [string]$out) {
+            Invoke-WebRequest -UseBasicParsing $url -OutFile $out
+            $got = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $sha.ToLower()) { throw "checksum mismatch for $url" }
+          }
+
+          # Go: version from go.mod, checksum from go.dev.
+          $goVersion = (Select-String -Path go.mod -Pattern '^go (\S+)').Matches[0].Groups[1].Value
+          $goRoot = Join-Path $cache "go-$goVersion"
+          if (-not (Test-Path (Join-Path $goRoot "bin\go.exe"))) {
+            $file = "go$goVersion.windows-amd64.zip"
+            $rel = (Invoke-RestMethod "https://go.dev/dl/?mode=json&include=all") | Where-Object { $_.version -eq "go$goVersion" }
+            $sha = ($rel.files | Where-Object { $_.filename -eq $file }).sha256
+            if (-not $sha) { throw "go$goVersion is not published for windows-amd64" }
+            $zip = Join-Path $env:RUNNER_TEMP $file
+            Get-Verified "https://go.dev/dl/$file" $sha $zip
+            $tmp = "$goRoot.partial"
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+            Move-Item (Join-Path $tmp "go") $goRoot
+            Remove-Item -Recurse -Force $tmp, $zip
+          }
+
+          # Node.js: latest release of the major line, checksum from SHASUMS256.
+          $nodeVersion = ((Invoke-RestMethod "https://nodejs.org/dist/index.json") | Where-Object { $_.version -like "v$($env:NODE_MAJOR).*" } | Select-Object -First 1).version
+          $nodeRoot = Join-Path $cache "node-$nodeVersion"
+          if (-not (Test-Path (Join-Path $nodeRoot "node.exe"))) {
+            $file = "node-$nodeVersion-win-x64.zip"
+            $sums = (Invoke-WebRequest -UseBasicParsing "https://nodejs.org/dist/$nodeVersion/SHASUMS256.txt").Content
+            $sha = ($sums -split "`n" | Where-Object { $_ -match "  $([regex]::Escape($file))$" }) -replace '\s.*$', ''
+            $zip = Join-Path $env:RUNNER_TEMP $file
+            Get-Verified "https://nodejs.org/dist/$nodeVersion/$file" $sha $zip
+            $tmp = "$nodeRoot.partial"
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+            Move-Item (Join-Path $tmp "node-$nodeVersion-win-x64") $nodeRoot
+            Remove-Item -Recurse -Force $tmp, $zip
+          }
+
+          # The machine persists between runs, so caches live in the work folder.
+          $work = Split-Path $env:GITHUB_WORKSPACE -Parent
+          [IO.File]::AppendAllText($env:GITHUB_PATH, "$goRoot\bin`n$nodeRoot`n")
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "GOROOT=$goRoot`nGOPATH=$work\.go`nGOCACHE=$work\.go-build`nGOTOOLCHAIN=local`nnpm_config_cache=$work\.npm`n")
+          & "$goRoot\bin\go.exe" version
+          & "$nodeRoot\node.exe" --version
 
       - name: Version
         id: ver
