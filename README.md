@@ -36,6 +36,7 @@ IIS Manager, with a status icon in the notification area.
 **Reverse proxy & request pipeline**
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
 - Upstream load balancing: round-robin (weighted), least connections, IP hash, random; active and passive health checks
+- **Session affinity** like ARR's client affinity: a signed, opaque cookie keeps each client on its instance, server or upstream (works behind CDNs/NAT, survives zero-downtime recycles, WebSockets included); moved and re-issued when the backend goes down
 - HTTPS redirect, HSTS, gzip compression, request body limit, upstream timeout
 - **URL Rewrite** like the IIS module: ordered rules with conditions (headers, query string, server variables, file/directory exists), match all/any, negation, `{R:1}` / `{C:1}` back-references, rewrite maps and `{ToLower:…}`-style functions; rewrite, redirect, block, custom response
 - Rewrite to an absolute URL proxies the request there (like URL Rewrite with ARR); **outbound rules** rewrite response headers (`Location`), URLs in HTML tags or any text in a body

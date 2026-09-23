@@ -138,6 +138,7 @@ export function defaultRouting(): RoutingConfig {
     maintenance: { enabled: false, html: '', allowIps: [], retryAfterSec: 0 },
     errorPages: {},
     accessLog: true,
+    affinity: { enabled: false, cookieName: 'NHAffinity', lifetimeSec: 0 },
   };
 }
 
@@ -193,6 +194,7 @@ export function normalizeSite(input: Site): Site {
     basicAuth: { ...r.basicAuth, ...s.routing?.basicAuth, users: s.routing?.basicAuth?.users ?? [] },
     rateLimit: { ...r.rateLimit, ...s.routing?.rateLimit },
     maintenance: { ...r.maintenance, ...s.routing?.maintenance },
+    affinity: { ...r.affinity, ...s.routing?.affinity },
   };
   s.deploy = { ...s.deploy, git: { ...s.deploy?.git }, keepReleases: s.deploy?.keepReleases ?? 5 };
   if (s.type === 'node') {

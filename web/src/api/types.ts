@@ -285,6 +285,16 @@ export interface RoutingConfig {
   maintenance: MaintenanceConfig;
   errorPages?: Record<string, string>;
   accessLog: boolean;
+  affinity: AffinityConfig;
+}
+
+/** Cookie-based session affinity (ARR client affinity). */
+export interface AffinityConfig {
+  enabled: boolean;
+  /** '' = NHAffinity */
+  cookieName: string;
+  /** 0 = until the browser closes */
+  lifetimeSec?: number;
 }
 
 export interface GitSource {

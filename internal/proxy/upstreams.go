@@ -16,6 +16,27 @@ import (
 	"github.com/parthh37/nodehoster/internal/procmgr"
 )
 
+// pickBackendIn chooses a Node.js instance, preferring the slot a session
+// affinity cookie pins (noSlot = none). A pinned slot that has no ready
+// instance, because it is restarting or the site was scaled down, falls
+// back to the normal choice.
+func pickBackendIn(list []*procmgr.Backend, rr *atomic.Uint64, slot int) *procmgr.Backend {
+	if slot != noSlot {
+		// While a slot is being recycled, its old and new instances are
+		// both listed; either may answer.
+		var best *procmgr.Backend
+		for _, b := range list {
+			if b.Slot == slot && (best == nil || b.Active.Load() < best.Active.Load()) {
+				best = b
+			}
+		}
+		if best != nil {
+			return best
+		}
+	}
+	return pickBackend(list, rr)
+}
+
 // pickBackend chooses a Node.js instance: least active requests, with a
 // rotating start so equal loads are spread round-robin.
 func pickBackend(list []*procmgr.Backend, rr *atomic.Uint64) *procmgr.Backend {
@@ -44,6 +65,7 @@ type upstream struct {
 	active  atomic.Int64
 	fails   atomic.Int32
 	downAt  atomic.Int64 // unix nano of passive failure
+	affID   affinityID   // how session affinity cookies name it
 
 	mu      sync.Mutex
 	lastErr string
@@ -116,6 +138,32 @@ func newUpstreamPool(site *model.Site, cfg poolConfig, bus *events.Bus, prev *up
 }
 
 func (p *upstreamPool) close() { p.once.Do(func() { close(p.stop) }) }
+
+// setAffinity names the members for session affinity cookies.
+func (p *upstreamPool) setAffinity(a *affinityRuntime) {
+	if a == nil {
+		return
+	}
+	for _, u := range p.list {
+		if u.local {
+			u.affID = a.localID
+		} else {
+			u.affID = a.memberID(u.url.String())
+		}
+	}
+}
+
+// pinned returns the member a session affinity cookie names if it can take
+// requests now; nil sends the client to the strategy's choice (and a new
+// cookie) instead.
+func (p *upstreamPool) pinned(id affinityID) *upstream {
+	for _, u := range p.available() {
+		if u.affID == id {
+			return u
+		}
+	}
+	return nil
+}
 
 // available returns healthy upstreams, or all of them if none are healthy:
 // trying a possibly-down upstream beats refusing every request.

@@ -17,7 +17,11 @@ import (
 // counters. The proxy increments Active around every request, which is what
 // lets a recycle drain an instance before stopping it.
 type Backend struct {
-	Addr     string
+	Addr string
+	// Slot is the instance number (NODEHOSTER_INSTANCE). A recycled
+	// instance's replacement has the same slot, so session affinity binds
+	// to the slot and survives a zero-downtime recycle.
+	Slot     int
 	Active   atomic.Int64
 	Requests atomic.Int64
 }

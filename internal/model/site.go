@@ -341,7 +341,22 @@ type RoutingConfig struct {
 	Maintenance      MaintenanceConfig `json:"maintenance"`
 	ErrorPages       map[string]string `json:"errorPages,omitempty"` // "502" -> HTML
 	AccessLog        bool              `json:"accessLog"`
+	Affinity         AffinityConfig    `json:"affinity"`
 }
+
+// AffinityConfig is ARR's "client affinity": a cookie pins a client to the
+// backend that answered it first, whichever way the site spreads requests
+// (a node site's instances, its load-balanced servers, a proxy site's
+// upstreams). Unlike ip_hash it survives CDNs, NAT and changing client
+// addresses, which Socket.IO long-polling and in-memory sessions need.
+type AffinityConfig struct {
+	Enabled     bool   `json:"enabled"`
+	CookieName  string `json:"cookieName"`            // "" = NHAffinity
+	LifetimeSec int    `json:"lifetimeSec,omitempty"` // 0 = until the browser closes
+}
+
+// DefaultAffinityCookie is the affinity cookie's name unless one is set.
+const DefaultAffinityCookie = "NHAffinity"
 
 type GitSource struct {
 	Repo   string `json:"repo,omitempty"`

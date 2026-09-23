@@ -720,7 +720,7 @@ func (a *App) spawn(index int) (*Instance, error) {
 	inst := &Instance{
 		app: a, index: index, port: port, token: token,
 		cmd: cmd, os: osp, pid: cmd.Process.Pid, startedAt: time.Now(),
-		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))},
+		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), Slot: index},
 		exited:  make(chan struct{}),
 		state:   "starting", healthy: true,
 	}

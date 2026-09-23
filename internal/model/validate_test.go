@@ -24,6 +24,9 @@ func TestDefaults(t *testing.T) {
 	if lb := s.Node.LoadBalancer; lb.Enabled || lb.LocalWeight != 1 || lb.Strategy != "round_robin" || lb.HealthCheck.IntervalSec != 15 {
 		t.Fatalf("load balancer defaults not applied: %+v", lb)
 	}
+	if a := s.Routing.Affinity; a.Enabled || a.CookieName != DefaultAffinityCookie {
+		t.Fatalf("affinity defaults not applied: %+v", a)
+	}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +70,8 @@ func TestValidation(t *testing.T) {
 		"bindings[0].certMode": func(s *Site) {
 			s.Bindings[0] = Binding{Protocol: "https", Port: 443, Host: "*.example.com", CertMode: CertModeAuto}
 		},
+		"routing.affinity.cookieName":  func(s *Site) { s.Routing.Affinity.CookieName = "my cookie;" },
+		"routing.affinity.lifetimeSec": func(s *Site) { s.Routing.Affinity.LifetimeSec = -1 },
 	}
 	for field, mutate := range cases {
 		s := nodeSite()

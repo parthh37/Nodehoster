@@ -237,6 +237,27 @@ condition), server variables (`{HTTP_HOST}`, `{QUERY_STRING}`, `{URL}`,
 `{UrlDecode:…}`. A rewrite to an absolute `http(s)://` URL proxies the
 request there.
 
+## Session affinity
+
+`routing.affinity` = `{enabled, cookieName, lifetimeSec}` (saved with
+`PUT /api/sites/{id}`; node and proxy sites). Like ARR client affinity, the
+first response through a backend sets a cookie (default name `NHAffinity`;
+`HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` over HTTPS; `lifetimeSec` 0 =
+browser session, otherwise `Max-Age`, renewed after half of it, at most
+400 days) and later requests with it go to the same backend, whatever the
+strategy: a node site's instance (by slot, so it survives a zero-downtime
+recycle), its load-balanced server (and the instance when that is this
+server), or a proxy site's upstream. The value is opaque and signed
+(HMAC-SHA256 with a per-server key kept sealed in the database): it names
+no address or port and cannot be forged or moved to another site. A
+cookie that is invalid, or whose backend is unhealthy or gone, is ignored:
+the strategy picks and a new cookie is issued. WebSocket upgrades follow it.
+No cookie is set by static files, redirects, error pages, or when there is
+only one backend. On a request another NodeHoster forwarded
+(`X-NodeHoster-Hop`), the cookie is `<name>-hop`, so the front server's
+cookie is never overwritten; use distinct names when chaining sites
+behind each other in other ways.
+
 ## Mail (SMTP server)
 
 The SMTP server's configuration is `Settings.mail`. Secrets follow the

@@ -35,6 +35,9 @@ type Deps struct {
 	Settings func() model.Settings
 	SitesDir string
 	LogsDir  string
+	// AffinityKey signs session affinity cookies; persisted by the caller
+	// so cookies survive restarts. A random key is used when empty.
+	AffinityKey []byte
 }
 
 type route struct {
@@ -79,6 +82,13 @@ type Server struct {
 
 	trustedMu sync.RWMutex
 	trusted   []*net.IPNet
+
+	affKeyOnce sync.Once
+	affKey     []byte
+
+	// backends lists a node site's ready instances; the process manager's
+	// in production, replaceable in tests.
+	backends func(id string) []*procmgr.Backend
 }
 
 func New(deps Deps) *Server {
@@ -90,6 +100,7 @@ func New(deps Deps) *Server {
 		stats:     map[string]*siteStats{},
 	}
 	s.table.Store(&routeTable{byPort: map[int][]*route{}, sites: map[string]*siteRuntime{}})
+	s.backends = deps.Procs.Backends
 	deps.Certs.HTTP.HasPort80 = s.hasHTTPPort80
 	go s.retryFailedListeners()
 	return s

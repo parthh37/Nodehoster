@@ -114,9 +114,13 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if err != nil {
 		return nil, err
 	}
+	affKey, err := c.affinityKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session affinity key: %w", err)
+	}
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
-		SitesDir: paths.Sites, LogsDir: paths.SiteLogs,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,

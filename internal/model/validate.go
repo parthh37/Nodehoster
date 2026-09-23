@@ -131,6 +131,9 @@ func (s *Site) ApplyDefaults() {
 	if s.Routing.BasicAuth.Realm == "" {
 		s.Routing.BasicAuth.Realm = "Restricted"
 	}
+	if strings.TrimSpace(s.Routing.Affinity.CookieName) == "" {
+		s.Routing.Affinity.CookieName = DefaultAffinityCookie
+	}
 	if s.Routing.RateLimit.Enabled && s.Routing.RateLimit.Burst <= 0 {
 		s.Routing.RateLimit.Burst = int(s.Routing.RateLimit.RequestsPerSecond*2) + 1
 	}
@@ -346,8 +349,20 @@ func (s *Site) Validate() error {
 	if r.BasicAuth.Enabled && len(r.BasicAuth.Users) == 0 {
 		return verr("routing.basicAuth.users", "add at least one user")
 	}
+	if !cookieNameRe.MatchString(r.Affinity.CookieName) {
+		return verr("routing.affinity.cookieName", "use 1-64 letters, digits or !#$%%&'*+-.^_`|~")
+	}
+	if r.Affinity.LifetimeSec < 0 || r.Affinity.LifetimeSec > maxCookieLifetime {
+		return verr("routing.affinity.lifetimeSec", "must be between 0 (browser session) and %d seconds (400 days)", maxCookieLifetime)
+	}
 	return nil
 }
+
+// cookieNameRe is an RFC 6265 cookie name (an RFC 7230 token).
+var cookieNameRe = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+
+// Browsers cap cookie lifetimes at 400 days.
+const maxCookieLifetime = 400 * 24 * 3600
 
 func validStrategy(s string) bool {
 	switch s {

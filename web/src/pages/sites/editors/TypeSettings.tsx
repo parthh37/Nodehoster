@@ -372,7 +372,7 @@ export function NodeLoadBalancer({ site, update }: SiteEditorProps) {
               <Field label="This server's weight" path="node.loadBalancer.localWeight" hint="Share of requests answered here, compared to each server's weight.">
                 <NumberInput min={1} max={1000} value={lb.localWeight} onChange={(v) => set({ localWeight: v })} />
               </Field>
-              <Field label="Strategy" path="node.loadBalancer.strategy">
+              <Field label="Strategy" path="node.loadBalancer.strategy" hint="Session affinity (Routing tab) keeps clients on one server.">
                 <Select value={lb.strategy} onChange={(v) => set({ strategy: v })} options={LB_STRATEGIES} />
               </Field>
             </Grid>
@@ -402,7 +402,7 @@ export function ProxyEssentials({ site, update }: SiteEditorProps) {
   return (
     <div className="space-y-4">
       <UpstreamsEditor site={site} update={update} />
-      <Field label="Load balancing" path="proxy.loadBalancing">
+      <Field label="Load balancing" path="proxy.loadBalancing" hint="Session affinity (Routing tab) keeps clients on one upstream.">
         <Select
           className="w-64"
           value={p.loadBalancing}

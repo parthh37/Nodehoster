@@ -12,6 +12,7 @@ import { KeyValueEditor } from '@/components/KeyValueEditor';
 import { Badge } from '@/components/Badge';
 import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './types';
+import { AffinitySection } from './AffinityEditor';
 
 const IP_RE = /^([0-9.]+|[0-9a-fA-F:]+)(\/\d{1,3})?$/;
 export const validateIP = (v: string) => (IP_RE.test(v) ? null : 'Enter an IP address or CIDR, e.g. 10.0.0.0/8');
@@ -121,6 +122,7 @@ export function RoutingGeneral(props: SiteEditorProps) {
             </Field>
           </Grid>
         </FormSection>
+        <AffinitySection {...props} />
       </Sections>
     </Card>
   );

@@ -64,6 +64,7 @@ type siteRuntime struct {
 	pool      *upstreamPool
 	rr        atomic.Uint64
 	access    *lumberjack.Logger
+	affinity  *affinityRuntime // nil = no session affinity
 }
 
 func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
@@ -107,6 +108,9 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			break
 		}
 	}
+	if a := r.Affinity; a.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
+		rt.affinity = newAffinity(s.affinityKey(), site.ID, a.CookieName, a.LifetimeSec)
+	}
 
 	timeout := time.Duration(r.TimeoutSec) * time.Second
 	insecure := (site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify) ||
@@ -143,14 +147,16 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			cfg := poolConfig{
 				upstreams: lb.Servers, strategy: lb.Strategy, hc: lb.HealthCheck, insecure: lb.InsecureSkipVerify,
 				localWeight: lb.LocalWeight,
-				localReady:  func() bool { return len(s.deps.Procs.Backends(id)) > 0 },
-				localCount:  func() int { return len(s.deps.Procs.Backends(id)) },
+				localReady:  func() bool { return len(s.backends(id)) > 0 },
+				localCount:  func() int { return len(s.backends(id)) },
 			}
 			rt.pool = newUpstreamPool(site, cfg, s.deps.Bus, prevPool)
+			rt.pool.setAffinity(rt.affinity)
 			rt.core = rt.upstreamHandler(rt.core)
 		}
 	case model.SiteProxy:
 		rt.pool = newUpstreamPool(site, proxyPoolConfig(site), s.deps.Bus, prevPool)
+		rt.pool.setAffinity(rt.affinity)
 		rt.core = rt.upstreamHandler(nil)
 	case model.SiteStatic:
 		root := site.ResolveRoot(s.deps.SitesDir, site.Static.Root)
@@ -487,14 +493,16 @@ func (rt *siteRuntime) nodeHandler() http.Handler {
 			pr.Out.Host = pr.In.Host // applications see the public host name
 			rt.forwardHeaders(pr)
 		},
-		Transport:     rt.transport,
-		FlushInterval: -1, // stream responses (SSE, long polling) immediately
-		ErrorHandler:  rt.errorHandler,
-		ErrorLog:      rt.srv.stdLog,
+		Transport:      rt.transport,
+		FlushInterval:  -1, // stream responses (SSE, long polling) immediately
+		ErrorHandler:   rt.errorHandler,
+		ErrorLog:       rt.srv.stdLog,
+		ModifyResponse: modifyAffinity,
 	}
 	id := rt.site.ID
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b := pickBackend(rt.srv.deps.Procs.Backends(id), &rt.rr)
+		aff, r := rt.affinityState(r)
+		b := pickBackendIn(rt.srv.backends(id), &rt.rr, aff.pinnedSlot())
 		if b == nil {
 			msg := "The application is not running."
 			if st, ok := rt.srv.deps.Procs.Status(id); ok && (st.State == model.StateStarting || st.State == model.StateDegraded) {
@@ -503,6 +511,10 @@ func (rt *siteRuntime) nodeHandler() http.Handler {
 			}
 			errorPage(w, rt.site.Routing.ErrorPages, http.StatusServiceUnavailable, msg)
 			return
+		}
+		if aff != nil {
+			aff.chosen, aff.member, aff.slot = true, aff.a.localID, b.Slot
+			aff.multi = aff.multi || rt.site.Node.Instances > 1
 		}
 		b.Active.Add(1)
 		b.Requests.Add(1)
@@ -548,18 +560,30 @@ func (rt *siteRuntime) upstreamHandler(local http.Handler) http.Handler {
 			}
 			rt.errorHandler(w, r, err)
 		},
-		ErrorLog: rt.srv.stdLog,
+		ErrorLog:       rt.srv.stdLog,
+		ModifyResponse: modifyAffinity,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if local != nil && r.Header.Get(hopHeader) != "" {
 			local.ServeHTTP(w, r)
 			return
 		}
-		clientIP, _ := r.Context().Value(ctxClientIP).(string)
-		u := pool.pick(clientIP)
+		aff, r := rt.affinityState(r)
+		var u *upstream
+		if id, ok := aff.pinned(); ok {
+			u = pool.pinned(id)
+		}
+		if u == nil {
+			clientIP, _ := r.Context().Value(ctxClientIP).(string)
+			u = pool.pick(clientIP)
+		}
 		if u == nil {
 			errorPage(w, rt.site.Routing.ErrorPages, http.StatusBadGateway, "No upstream server is configured.")
 			return
+		}
+		if aff != nil {
+			aff.chosen, aff.member, aff.slot = true, u.affID, noSlot
+			aff.multi = len(pool.list) > 1
 		}
 		u.active.Add(1)
 		defer u.active.Add(-1)
