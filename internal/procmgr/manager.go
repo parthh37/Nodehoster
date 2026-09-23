@@ -84,6 +84,7 @@ func New(opts Options) (*Manager, error) {
 		logs: map[string]*LogSink{},
 		stop: make(chan struct{}),
 	}
+	m.warnEphemeralOverlap(s.PortRangeStart, s.PortRangeEnd)
 	m.wg.Add(1)
 	go m.monitor()
 	return m, nil
@@ -103,7 +104,20 @@ func (m *Manager) Logs(siteID string) *LogSink {
 	return l
 }
 
-func (m *Manager) SetPortRange(start, end int) { m.ports.setRange(start, end) }
+func (m *Manager) SetPortRange(start, end int) {
+	m.ports.setRange(start, end)
+	m.warnEphemeralOverlap(start, end)
+}
+
+// warnEphemeralOverlap logs when instance ports can collide with the local
+// ports of outgoing connections. Instances still start (spawn moves one to
+// another port when its port is taken), but a range outside the OS's
+// ephemeral range avoids the collisions altogether.
+func (m *Manager) warnEphemeralOverlap(start, end int) {
+	if msg := ephemeralOverlap(start, end); msg != "" {
+		m.opts.Log.Warn(msg + "; outgoing connections can take ports meant for instances. Move the port range in Settings below the ephemeral range, or narrow the ephemeral range.")
+	}
+}
 
 func (m *Manager) app(id string) *App {
 	m.mu.Lock()
