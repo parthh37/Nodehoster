@@ -1,0 +1,183 @@
+//go:build windows
+
+// Package service integrates with the Windows Service Control Manager.
+package service
+
+import (
+	"fmt"
+	"time"
+
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
+)
+
+const (
+	Name        = "NodeHoster"
+	DisplayName = "NodeHoster Application Server"
+	Description = "Hosts Node.js applications behind an HTTP/HTTPS reverse proxy with automatic certificates."
+)
+
+// IsService reports whether the process was started by the SCM.
+func IsService() bool {
+	ok, err := svc.IsWindowsService()
+	return err == nil && ok
+}
+
+type handler struct {
+	run func(stop <-chan struct{}) error
+}
+
+func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
+	status <- svc.Status{State: svc.StartPending}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- h.run(stop) }()
+	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				return true, 1
+			}
+			return false, 0
+		case c := <-req:
+			switch c.Cmd {
+			case svc.Interrogate:
+				status <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				// Stopping drains connections and shuts down every
+				// application, which can take a while; keep the SCM informed.
+				status <- svc.Status{State: svc.StopPending, WaitHint: 60000}
+				close(stop)
+				select {
+				case <-done:
+				case <-time.After(55 * time.Second):
+				}
+				return false, 0
+			}
+		}
+	}
+}
+
+// Run runs fn as the service's body until the SCM asks it to stop.
+func Run(fn func(stop <-chan struct{}) error) error {
+	return svc.Run(Name, &handler{run: fn})
+}
+
+// Install registers the service to start automatically (delayed) as
+// LocalSystem, restarting on failure.
+func Install(exe string, args ...string) error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connect to service manager (run as administrator): %w", err)
+	}
+	defer m.Disconnect()
+	if s, err := m.OpenService(Name); err == nil {
+		s.Close()
+		return fmt.Errorf("service %s is already installed", Name)
+	}
+	s, err := m.CreateService(Name, exe, mgr.Config{
+		DisplayName:      DisplayName,
+		Description:      Description,
+		StartType:        mgr.StartAutomatic,
+		DelayedAutoStart: true,
+		ServiceStartName: "LocalSystem",
+	}, args...)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 15 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
+	}, 86400)
+	s.SetRecoveryActionsOnNonCrashFailures(true)
+	return nil
+}
+
+func Uninstall() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return fmt.Errorf("service %s is not installed", Name)
+	}
+	defer s.Close()
+	s.Control(svc.Stop)
+	waitState(s, svc.Stopped, 60*time.Second)
+	return s.Delete()
+}
+
+func Start() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if err := s.Start(); err != nil {
+		return err
+	}
+	return waitState(s, svc.Running, 60*time.Second)
+}
+
+func Stop() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if _, err := s.Control(svc.Stop); err != nil {
+		return err
+	}
+	return waitState(s, svc.Stopped, 90*time.Second)
+}
+
+func Status() (string, error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return "", err
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return "not installed", nil
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil {
+		return "", err
+	}
+	return map[svc.State]string{
+		svc.Stopped: "stopped", svc.StartPending: "starting", svc.StopPending: "stopping",
+		svc.Running: "running", svc.Paused: "paused",
+	}[st.State], nil
+}
+
+func waitState(s *mgr.Service, want svc.State, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st, err := s.Query()
+		if err != nil {
+			return err
+		}
+		if st.State == want {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for the service")
+}

@@ -1,0 +1,165 @@
+name: Build
+
+# Builds, tests and packages NodeHoster on the self-hosted Windows runner
+# (PARTH-AIO). Every run produces a portable zip and a setup.exe as
+# artifacts; pushing a tag vX.Y.Z also publishes them as a GitHub release.
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Windows because the Windows-specific code (job objects, named pipes,
+    # the service wrapper) is exercised by the integration tests for real.
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    defaults:
+      run:
+        # Windows PowerShell 5.1 is part of Windows; PowerShell 7 may not be
+        # installed on a self-hosted machine.
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Version
+        id: ver
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if ($env:REF_TYPE -eq "tag") { $v = $env:REF_NAME.TrimStart("v") }
+          else { $v = "0.0.0-dev.$env:RUN_NUMBER" }
+          if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*$') { throw "unexpected version '$v'" }
+          # AppendAllText writes no byte-order mark, which GITHUB_OUTPUT cannot parse.
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$v`n")
+          Write-Host "Version $v"
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Vet
+        run: |
+          go vet ./...
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Test
+        run: |
+          go test -count=1 -timeout 10m ./...
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Build nodehoster.exe
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          $pkg = "github.com/parthh37/nodehoster/internal/config"
+          $ld = "-s -w -X $pkg.Version=${{ steps.ver.outputs.version }} -X $pkg.Commit=${{ github.sha }}"
+          go build -trimpath -ldflags $ld -o dist/nodehoster.exe ./cmd/nodehoster
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item README.md dist/
+          ./dist/nodehoster.exe version
+
+      - name: Smoke test
+        run: |
+          $ErrorActionPreference = "Stop"
+          $data = Join-Path $env:RUNNER_TEMP "nodehoster-smoke"
+          Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory $data | Out-Null
+          [IO.File]::WriteAllText((Join-Path $data "nodehoster.json"), '{"admin":{"listen":"127.0.0.1:18484","tls":"none"}}')
+          $p = Start-Process -FilePath "dist\nodehoster.exe" -ArgumentList "--data", "`"$data`"", "run" -PassThru -NoNewWindow
+          try {
+            $up = $false
+            for ($i = 0; $i -lt 30 -and -not $up; $i++) {
+              Start-Sleep -Seconds 1
+              try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18484/api/auth/me | Out-Null }
+              catch { if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 401) { $up = $true } }
+            }
+            if (-not $up) { throw "the admin API did not come up" }
+            $page = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18484/
+            if ($page.Content -notmatch 'id="root"') { throw "the web console is not embedded in the binary" }
+            $pw = (Get-Content (Join-Path $data "initial-admin-password.txt") | Select-String "Password: (.+)").Matches[0].Groups[1].Value
+            $body = @{ username = "admin"; password = $pw } | ConvertTo-Json
+            $login = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType "application/json" -Body $body -SessionVariable s http://127.0.0.1:18484/api/auth/login
+            if ($login.StatusCode -ne 200) { throw "login failed" }
+            Write-Host "Smoke test passed"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Get-Content (Join-Path $data "logs\nodehoster.log") -Tail 20 -ErrorAction SilentlyContinue
+          }
+
+      - name: Build installer
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            # Pinned by checksum and installed into the runner's tool cache,
+            # not system-wide.
+            $dir = Join-Path $env:RUNNER_TOOL_CACHE "InnoSetup\6.7.3"
+            $iscc = Join-Path $dir "ISCC.exe"
+            if (-not (Test-Path $iscc)) {
+              $exe = Join-Path $env:RUNNER_TEMP "innosetup-6.7.3.exe"
+              Invoke-WebRequest -UseBasicParsing "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe" -OutFile $exe
+              $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+              if ($hash -ne "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732") { throw "Inno Setup checksum mismatch: $hash" }
+              $proc = Start-Process $exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/NOICONS", "/DIR=`"$dir`"" -Wait -PassThru
+              if ($proc.ExitCode) { throw "Inno Setup installation failed with $($proc.ExitCode)" }
+            }
+          }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DSourceDir=$pwd\dist" "installer\nodehoster.iss"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Package portable zip
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          Compress-Archive -Path dist\nodehoster.exe, dist\README.md -DestinationPath "dist\NodeHoster-$v-windows-x64.zip" -Force
+          Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NodeHoster-${{ steps.ver.outputs.version }}
+          path: |
+            dist/*-setup.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*-setup.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

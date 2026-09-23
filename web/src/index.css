@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  body {
+    @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 text-sm;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent-500/60 ring-offset-1 ring-offset-white dark:ring-offset-zinc-900;
+  }
+  ::selection {
+    @apply bg-accent-500/25;
+  }
+  fieldset:disabled {
+    @apply opacity-100;
+  }
+}
+
+@layer components {
+  .nh-input {
+    @apply block w-full rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-sm text-zinc-900 shadow-sm
+      placeholder:text-zinc-400 transition-colors
+      hover:border-zinc-400
+      focus:border-accent-600 focus:outline-none focus:ring-2 focus:ring-accent-500/25
+      disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500 disabled:hover:border-zinc-300
+      dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500
+      dark:hover:border-zinc-600 dark:focus:border-accent-500
+      dark:disabled:bg-zinc-800/60 dark:disabled:text-zinc-500 dark:disabled:hover:border-zinc-700;
+  }
+  .nh-input-error {
+    @apply border-red-500 hover:border-red-500 focus:border-red-500 focus:ring-red-500/25 dark:border-red-500/80;
+  }
+  .nh-card {
+    @apply rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900;
+  }
+  .nh-link {
+    @apply text-accent-700 hover:text-accent-800 hover:underline dark:text-accent-400 dark:hover:text-accent-300;
+  }
+  .nh-kbd {
+    @apply rounded border border-zinc-300 bg-zinc-100 px-1 font-mono text-2xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

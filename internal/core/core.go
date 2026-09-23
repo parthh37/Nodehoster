@@ -1,0 +1,781 @@
+// Package core wires the subsystems together and owns the lifecycle of
+// sites: every configuration change goes through here so that the store,
+// the process manager, the proxy and the certificate manager stay in step.
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/parthh37/nodehoster/internal/auth"
+	"github.com/parthh37/nodehoster/internal/certs"
+	"github.com/parthh37/nodehoster/internal/config"
+	"github.com/parthh37/nodehoster/internal/deploy"
+	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/nodeversions"
+	"github.com/parthh37/nodehoster/internal/procmgr"
+	"github.com/parthh37/nodehoster/internal/proxy"
+	"github.com/parthh37/nodehoster/internal/secrets"
+	"github.com/parthh37/nodehoster/internal/store"
+	"golang.org/x/crypto/bcrypt"
+)
+
+const settingsKey = "settings"
+
+type Core struct {
+	Paths     config.Paths
+	Boot      config.Bootstrap
+	Log       *slog.Logger
+	Store     *store.Store
+	Box       *secrets.Box
+	Bus       *events.Bus
+	Auth      *auth.Service
+	Procs     *procmgr.Manager
+	Proxy     *proxy.Server
+	Certs     *certs.Manager
+	Nodes     *nodeversions.Manager
+	Deploy    *deploy.Deployer
+	StartedAt time.Time
+	IsService bool
+
+	settingsMu sync.RWMutex
+	settings   model.Settings
+
+	// sitesMu serializes configuration changes; reads use the cache.
+	sitesMu sync.Mutex
+	cacheMu sync.RWMutex
+	sites   map[string]*model.Site
+	running map[string]bool // desired state of non-node sites
+
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+// Open initializes every subsystem but does not start serving.
+func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, error) {
+	if err := paths.Ensure(); err != nil {
+		return nil, err
+	}
+	st, err := store.Open(paths.DB)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	box, err := secrets.Open(filepath.Join(paths.Data, "master.key"))
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	c := &Core{
+		Paths: paths, Boot: boot, Log: log, Store: st, Box: box, StartedAt: time.Now(),
+		sites: map[string]*model.Site{}, running: map[string]bool{},
+	}
+	ctx := context.Background()
+	c.settings = model.DefaultSettings()
+	if err := st.GetDoc(ctx, settingsKey, &c.settings); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+
+	c.Bus = events.New(st, log, c.Settings, c.siteName)
+	c.Auth = auth.New(st, box)
+	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
+	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
+	if err := c.Certs.Load(ctx); err != nil {
+		return nil, fmt.Errorf("load certificates: %w", err)
+	}
+	c.Procs, err = procmgr.New(procmgr.Options{
+		Log: log, Bus: c.Bus,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: filepath.Join(paths.Data, "run"),
+		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
+		IsLocationTarget: c.isLocationTarget,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.Proxy = proxy.New(proxy.Deps{
+		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs,
+	})
+	c.Deploy = deploy.New(deploy.Options{
+		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
+		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease,
+	})
+
+	sites, err := st.ListSites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range sites {
+		s.ApplyDefaults()
+		c.sites[s.ID] = s
+		c.Procs.Apply(s)
+	}
+	return c, nil
+}
+
+// Start opens listeners, starts auto-start sites and background jobs.
+func (c *Core) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	c.cacheMu.RLock()
+	var auto []*model.Site
+	for _, s := range c.sites {
+		if s.AutoStart {
+			auto = append(auto, s)
+		}
+	}
+	c.cacheMu.RUnlock()
+	for _, s := range auto {
+		if s.Type == model.SiteNode {
+			if err := c.Procs.Start(s.ID); err != nil {
+				c.Bus.Error(events.SiteFailed, s.ID, "%s could not start: %v", s.Name, err)
+			}
+		} else {
+			c.setRunning(s.ID, true)
+		}
+	}
+	c.reload()
+	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
+
+	c.wg.Add(3)
+	go func() { defer c.wg.Done(); c.Certs.Run(ctx) }()
+	go func() { defer c.wg.Done(); c.metricsLoop(ctx) }()
+	go func() { defer c.wg.Done(); c.housekeeping(ctx) }()
+}
+
+// Shutdown stops listeners, then processes, then closes the database.
+func (c *Core) Shutdown() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c.Proxy.Shutdown(ctx)
+	c.Procs.Shutdown()
+	c.wg.Wait()
+	c.Store.Close()
+}
+
+// ---- settings
+
+func (c *Core) Settings() model.Settings {
+	c.settingsMu.RLock()
+	defer c.settingsMu.RUnlock()
+	return c.settings
+}
+
+// UpdateSettings merges masked secrets, validates and applies settings.
+func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Settings, error) {
+	cur := c.Settings()
+	if in.ACME.EABHMAC == secrets.Mask {
+		in.ACME.EABHMAC = cur.ACME.EABHMAC
+	} else if sealed, err := c.Box.Seal(in.ACME.EABHMAC); err == nil {
+		in.ACME.EABHMAC = sealed
+	}
+	for i := range in.DNSProviders {
+		p := &in.DNSProviders[i]
+		if p.ID == "" {
+			p.ID = uuid.NewString()
+		}
+		var old *model.DNSProvider
+		for j := range cur.DNSProviders {
+			if cur.DNSProviders[j].ID == p.ID {
+				old = &cur.DNSProviders[j]
+			}
+		}
+		for k, v := range p.Credentials {
+			if v == secrets.Mask && old != nil {
+				p.Credentials[k] = old.Credentials[k]
+			} else if sealed, err := c.Box.Seal(v); err == nil {
+				p.Credentials[k] = sealed
+			}
+		}
+	}
+	for i := range in.Webhooks {
+		if in.Webhooks[i].ID == "" {
+			in.Webhooks[i].ID = uuid.NewString()
+		}
+		if !strings.HasPrefix(in.Webhooks[i].URL, "https://") && !strings.HasPrefix(in.Webhooks[i].URL, "http://") {
+			return cur, &model.ValidationError{Field: fmt.Sprintf("webhooks[%d].url", i), Message: "must be an http(s) URL"}
+		}
+	}
+	if in.PortRangeStart < 1024 || in.PortRangeEnd > 65535 || in.PortRangeEnd-in.PortRangeStart < 16 {
+		return cur, &model.ValidationError{Field: "portRangeStart", Message: "use a range of at least 16 ports between 1024 and 65535"}
+	}
+	if in.ACME.Email != "" && !strings.Contains(in.ACME.Email, "@") {
+		return cur, &model.ValidationError{Field: "acme.email", Message: "not an email address"}
+	}
+	if in.TLS.MinVersion != "1.2" && in.TLS.MinVersion != "1.3" {
+		in.TLS.MinVersion = "1.2"
+	}
+	if in.LogMaxSizeMB <= 0 {
+		in.LogMaxSizeMB = 20
+	}
+	if in.LogMaxFiles <= 0 {
+		in.LogMaxFiles = 10
+	}
+	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
+		return cur, err
+	}
+	c.settingsMu.Lock()
+	c.settings = in
+	c.settingsMu.Unlock()
+	c.Procs.SetPortRange(in.PortRangeStart, in.PortRangeEnd)
+	c.reload()
+	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
+		go c.Certs.RetryPending(context.Background())
+	}
+	return in, nil
+}
+
+// MaskedSettings is Settings with secrets replaced for the API.
+func (c *Core) MaskedSettings() model.Settings {
+	s := c.Settings()
+	if s.ACME.EABHMAC != "" {
+		s.ACME.EABHMAC = secrets.Mask
+	}
+	provs := make([]model.DNSProvider, len(s.DNSProviders))
+	for i, p := range s.DNSProviders {
+		creds := map[string]string{}
+		for k, v := range p.Credentials {
+			if v != "" {
+				creds[k] = secrets.Mask
+			} else {
+				creds[k] = ""
+			}
+		}
+		p.Credentials = creds
+		provs[i] = p
+	}
+	s.DNSProviders = provs
+	if s.DNSProviders == nil {
+		s.DNSProviders = []model.DNSProvider{}
+	}
+	if s.Webhooks == nil {
+		s.Webhooks = []model.WebhookTarget{}
+	}
+	return s
+}
+
+// ---- sites
+
+func (c *Core) siteName(id string) string {
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	if s, ok := c.sites[id]; ok {
+		return s.Name
+	}
+	return id
+}
+
+func (c *Core) isLocationTarget(id string) bool {
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	for _, s := range c.sites {
+		for _, l := range s.Routing.Locations {
+			if l.Kind == "site" && l.SiteID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Sites returns the cached sites ordered by name.
+func (c *Core) Sites() []*model.Site {
+	c.cacheMu.RLock()
+	out := make([]*model.Site, 0, len(c.sites))
+	for _, s := range c.sites {
+		out = append(out, s)
+	}
+	c.cacheMu.RUnlock()
+	slices.SortFunc(out, func(a, b *model.Site) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) })
+	return out
+}
+
+func (c *Core) Site(id string) (*model.Site, error) {
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	s, ok := c.sites[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return s, nil
+}
+
+func (c *Core) setRunning(id string, v bool) {
+	c.cacheMu.Lock()
+	c.running[id] = v
+	c.cacheMu.Unlock()
+}
+
+// IsRunning is the site's desired running state.
+func (c *Core) IsRunning(s *model.Site) bool {
+	if s.Type == model.SiteNode {
+		return c.Procs.Running(s.ID)
+	}
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	return c.running[s.ID]
+}
+
+// reload pushes the current configuration to the proxy and requests
+// automatic certificates for running https bindings.
+func (c *Core) reload() {
+	sites := c.Sites()
+	// A stopped node site still gets its bindings routed, so visitors see a
+	// "not running" page instead of the default page.
+	c.Proxy.Reload(sites, func(s *model.Site) bool {
+		return s.Type == model.SiteNode || c.IsRunning(s)
+	})
+	var hosts []string
+	for _, s := range sites {
+		if !c.IsRunning(s) {
+			continue
+		}
+		for _, b := range s.Bindings {
+			if b.Protocol == "https" && b.CertMode == model.CertModeAuto && b.Host != "" && !slices.Contains(hosts, b.Host) {
+				hosts = append(hosts, b.Host)
+			}
+		}
+	}
+	if len(hosts) > 0 {
+		go c.Certs.EnsureManaged(context.Background(), hosts)
+	}
+}
+
+func clone(s *model.Site) *model.Site {
+	b, _ := json.Marshal(s)
+	var out model.Site
+	json.Unmarshal(b, &out)
+	return &out
+}
+
+// prepare validates an incoming site and seals its secrets, merging masked
+// values from the existing version.
+func (c *Core) prepare(in *model.Site, existing *model.Site) error {
+	in.Name = strings.TrimSpace(in.Name)
+	for i := range in.Bindings {
+		if in.Bindings[i].ID == "" {
+			in.Bindings[i].ID = uuid.NewString()
+		}
+	}
+	in.ApplyDefaults()
+	if err := in.Validate(); err != nil {
+		return err
+	}
+	var others []*model.Site
+	for _, s := range c.Sites() {
+		others = append(others, s)
+	}
+	if err := model.ValidateBindings(in, others); err != nil {
+		return err
+	}
+	for _, b := range in.Bindings {
+		if b.Protocol == "https" && b.CertMode == model.CertModeManual {
+			if c.Certs.Get(b.CertificateID) == nil {
+				if _, err := c.Store.GetCertificate(context.Background(), b.CertificateID); err != nil {
+					return &model.ValidationError{Field: "bindings", Message: "the selected certificate does not exist"}
+				}
+			}
+		}
+	}
+
+	seal := func(v, old string) string {
+		if v == secrets.Mask {
+			return old
+		}
+		s, _ := c.Box.Seal(v)
+		return s
+	}
+	var ex model.Site
+	if existing != nil {
+		ex = *existing
+	}
+	if in.Node != nil {
+		var oldNode model.NodeConfig
+		if ex.Node != nil {
+			oldNode = *ex.Node
+		}
+		for i := range in.Node.Env {
+			e := &in.Node.Env[i]
+			if !e.Secret {
+				if e.Value == secrets.Mask {
+					e.Value = ""
+				}
+				continue
+			}
+			old := ""
+			for _, o := range oldNode.Env {
+				if o.Name == e.Name && o.Secret {
+					old = o.Value
+				}
+			}
+			e.Value = seal(e.Value, old)
+		}
+		in.Node.RunAs.Password = seal(in.Node.RunAs.Password, oldNode.RunAs.Password)
+	}
+	in.Deploy.Git.Token = seal(in.Deploy.Git.Token, ex.Deploy.Git.Token)
+	in.Deploy.WebhookSecret = seal(in.Deploy.WebhookSecret, ex.Deploy.WebhookSecret)
+
+	// Basic auth: hash new passwords, keep existing hashes otherwise.
+	for i := range in.Routing.BasicAuth.Users {
+		u := &in.Routing.BasicAuth.Users[i]
+		if u.Password != "" {
+			h, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return err
+			}
+			u.PasswordHash, u.Password = string(h), ""
+			continue
+		}
+		for _, o := range ex.Routing.BasicAuth.Users {
+			if o.Username == u.Username {
+				u.PasswordHash = o.PasswordHash
+			}
+		}
+		if u.PasswordHash == "" {
+			return &model.ValidationError{Field: fmt.Sprintf("routing.basicAuth.users[%d].password", i), Message: "set a password"}
+		}
+	}
+	return nil
+}
+
+// CreateSite validates, stores and applies a new site.
+func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, error) {
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
+	in.ID = uuid.NewString()
+	in.ActiveRelease = ""
+	if err := c.prepare(in, nil); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	in.CreatedAt, in.UpdatedAt = now, now
+	if err := c.Store.PutSite(ctx, in); err != nil {
+		return nil, err
+	}
+	c.cacheMu.Lock()
+	c.sites[in.ID] = in
+	c.cacheMu.Unlock()
+	c.Procs.Apply(in)
+	if in.AutoStart {
+		c.startSite(in)
+	}
+	c.reload()
+	return in, nil
+}
+
+// UpdateSite replaces a site's configuration and applies it live.
+func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
+	existing, err := c.Site(id)
+	if err != nil {
+		return nil, err
+	}
+	in.ID = id
+	in.CreatedAt = existing.CreatedAt
+	in.ActiveRelease = existing.ActiveRelease
+	if in.Type != existing.Type {
+		return nil, &model.ValidationError{Field: "type", Message: "the site type cannot be changed; create a new site"}
+	}
+	if err := c.prepare(in, existing); err != nil {
+		return nil, err
+	}
+	in.UpdatedAt = time.Now()
+	if err := c.Store.PutSite(ctx, in); err != nil {
+		return nil, err
+	}
+	c.cacheMu.Lock()
+	c.sites[id] = in
+	c.cacheMu.Unlock()
+	c.Procs.Apply(in)
+	c.reload()
+	return in, nil
+}
+
+// activateRelease is called by the deployer to switch a site to a release.
+func (c *Core) activateRelease(ctx context.Context, id, release string) error {
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
+	existing, err := c.Site(id)
+	if err != nil {
+		return err
+	}
+	s := clone(existing)
+	s.ActiveRelease = release
+	s.UpdatedAt = time.Now()
+	if err := c.Store.PutSite(ctx, s); err != nil {
+		return err
+	}
+	c.cacheMu.Lock()
+	c.sites[id] = s
+	c.cacheMu.Unlock()
+	c.Procs.Apply(s) // a running node site recycles onto the new release
+	if s.Type == model.SiteNode && !c.Procs.Running(id) && s.AutoStart {
+		c.Procs.Start(id)
+	}
+	c.reload()
+	return nil
+}
+
+// DeleteSite stops and removes a site, optionally with its files.
+func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) error {
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
+	if _, err := c.Site(id); err != nil {
+		return err
+	}
+	for _, s := range c.Sites() {
+		for _, l := range s.Routing.Locations {
+			if l.Kind == "site" && l.SiteID == id {
+				return fmt.Errorf("site %q mounts this site at %s; remove that location first", s.Name, l.Path)
+			}
+		}
+	}
+	c.Procs.Remove(id)
+	c.Procs.ForgetLogs(id)
+	if err := c.Store.DeleteSite(ctx, id); err != nil {
+		return err
+	}
+	c.cacheMu.Lock()
+	delete(c.sites, id)
+	delete(c.running, id)
+	c.cacheMu.Unlock()
+	c.reload()
+	c.Proxy.ForgetSite(id)
+	if deleteFiles {
+		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
+		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))
+	}
+	return nil
+}
+
+func (c *Core) startSite(s *model.Site) error {
+	if s.Type == model.SiteNode {
+		return c.Procs.Start(s.ID)
+	}
+	c.setRunning(s.ID, true)
+	c.Bus.Info(events.SiteStarted, s.ID, "%s started", s.Name)
+	return nil
+}
+
+func (c *Core) StartSite(id string) error {
+	s, err := c.Site(id)
+	if err != nil {
+		return err
+	}
+	if err := c.startSite(s); err != nil {
+		return err
+	}
+	c.reload()
+	return nil
+}
+
+func (c *Core) StopSite(id string) error {
+	s, err := c.Site(id)
+	if err != nil {
+		return err
+	}
+	if s.Type == model.SiteNode {
+		if err := c.Procs.Stop(id); err != nil {
+			return err
+		}
+	} else {
+		c.setRunning(id, false)
+		c.Bus.Info(events.SiteStopped, id, "%s stopped", s.Name)
+	}
+	c.reload()
+	return nil
+}
+
+func (c *Core) RestartSite(id string) error {
+	s, err := c.Site(id)
+	if err != nil {
+		return err
+	}
+	if s.Type == model.SiteNode {
+		err = c.Procs.Restart(id)
+	} else {
+		c.setRunning(id, true)
+	}
+	c.reload()
+	return err
+}
+
+func (c *Core) RecycleSite(id string) error {
+	s, err := c.Site(id)
+	if err != nil {
+		return err
+	}
+	if s.Type != model.SiteNode {
+		return c.RestartSite(id)
+	}
+	err = c.Procs.Recycle(id, "requested")
+	c.reload()
+	return err
+}
+
+// Status is the live state of a site.
+func (c *Core) Status(s *model.Site) model.SiteStatus {
+	var st model.SiteStatus
+	if s.Type == model.SiteNode {
+		st, _ = c.Procs.Status(s.ID)
+	} else {
+		st = model.SiteStatus{SiteID: s.ID, State: model.StateStopped, Instances: []model.InstanceStatus{}}
+		if c.IsRunning(s) {
+			st.State = model.StateRunning
+		}
+		st.Upstreams = c.Proxy.UpstreamStatus(s.ID)
+		if s.Type == model.SiteProxy && st.State == model.StateRunning {
+			healthy := 0
+			for _, u := range st.Upstreams {
+				if u.Healthy {
+					healthy++
+				}
+			}
+			if healthy < len(st.Upstreams) {
+				st.State = model.StateDegraded
+			}
+		}
+	}
+	if st.Instances == nil {
+		st.Instances = []model.InstanceStatus{}
+	}
+	st.SiteID = s.ID
+	st.Traffic = c.Proxy.Traffic(s.ID)
+	return st
+}
+
+// Masked returns a copy of a site with secrets hidden, for the API.
+func Masked(s *model.Site) *model.Site {
+	m := clone(s)
+	mask := func(v string) string {
+		if v == "" {
+			return ""
+		}
+		return secrets.Mask
+	}
+	if m.Node != nil {
+		for i := range m.Node.Env {
+			if m.Node.Env[i].Secret {
+				m.Node.Env[i].Value = mask(m.Node.Env[i].Value)
+			}
+		}
+		m.Node.RunAs.Password = mask(m.Node.RunAs.Password)
+	}
+	m.Deploy.Git.Token = mask(m.Deploy.Git.Token)
+	m.Deploy.WebhookSecret = mask(m.Deploy.WebhookSecret)
+	for i := range m.Routing.BasicAuth.Users {
+		m.Routing.BasicAuth.Users[i].PasswordHash = ""
+		m.Routing.BasicAuth.Users[i].Password = ""
+	}
+	if m.Bindings == nil {
+		m.Bindings = []model.Binding{}
+	}
+	return m
+}
+
+// CertificateUsage lists the bindings that use each certificate.
+type CertUse struct {
+	SiteID   string `json:"siteId"`
+	SiteName string `json:"siteName"`
+	Binding  string `json:"binding"`
+}
+
+func (c *Core) CertificateUsage(cert *model.Certificate) []CertUse {
+	out := []CertUse{}
+	for _, s := range c.Sites() {
+		for _, b := range s.Bindings {
+			if b.Protocol != "https" {
+				continue
+			}
+			used := b.CertMode == model.CertModeManual && b.CertificateID == cert.ID
+			if cert.Managed && b.CertMode == model.CertModeAuto && len(cert.Domains) == 1 && cert.Domains[0] == b.Host {
+				used = true
+			}
+			if used {
+				out = append(out, CertUse{SiteID: s.ID, SiteName: s.Name, Binding: b.String()})
+			}
+		}
+	}
+	return out
+}
+
+// NodeVersionInUse reports which sites pin a Node.js version.
+func (c *Core) NodeVersionInUse(v string) []string {
+	var names []string
+	for _, s := range c.Sites() {
+		if s.Type == model.SiteNode && s.Node.NodeVersion == v {
+			names = append(names, s.Name)
+		}
+	}
+	if c.Settings().DefaultNodeVersion == v {
+		names = append(names, "(server default)")
+	}
+	return names
+}
+
+// ---- background jobs
+
+// metricsLoop stores one metrics point per site (and the server) a minute.
+func (c *Core) metricsLoop(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			ts := now.Truncate(time.Minute)
+			var tot model.MetricPoint
+			var latSum float64
+			for _, s := range c.Sites() {
+				req, errs, lat := c.Proxy.TakeMinute(s.ID)
+				cpu, mem := c.Procs.Usage(s.ID)
+				p := model.MetricPoint{Time: ts, Requests: req, Errors: errs, AvgLatency: lat, CPUPercent: cpu, MemoryBytes: mem}
+				c.Store.AddMetrics(ctx, s.ID, p)
+				tot.Requests += req
+				tot.Errors += errs
+				latSum += lat * float64(req)
+			}
+			if tot.Requests > 0 {
+				tot.AvgLatency = latSum / float64(tot.Requests)
+			}
+			tot.Time = ts
+			tot.CPUPercent, tot.MemoryBytes = hostUsage()
+			c.Store.AddMetrics(ctx, "", tot)
+		}
+	}
+}
+
+// housekeeping prunes old history daily.
+func (c *Core) housekeeping(ctx context.Context) {
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for {
+		days := c.Settings().LogRetentionDays
+		if days <= 0 {
+			days = 30
+		}
+		if err := c.Store.Prune(ctx, time.Duration(days)*24*time.Hour); err != nil {
+			c.Log.Warn("prune history", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
