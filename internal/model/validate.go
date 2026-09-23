@@ -434,6 +434,10 @@ func DefaultSettings() Settings {
 			ReadHeaderTimeoutS: 30,
 			IdleTimeoutS:       120,
 		},
+		// Instance ports should lie outside the OS's ephemeral range, which
+		// outgoing connections take local ports from. This default does on
+		// Windows (49152-65535) but not on Linux (usually 32768-60999), where
+		// the process manager warns about the overlap.
 		PortRangeStart:     41000,
 		PortRangeEnd:       48999,
 		LogMaxSizeMB:       20,

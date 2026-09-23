@@ -615,8 +615,26 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// spawn starts one process and waits until it accepts connections.
+// portRetries is how many times spawn moves an instance to another port when
+// its port was taken before the application could listen on it.
+const portRetries = 2
+
+// spawn starts one process and waits until it accepts connections. A start
+// that failed only because the port was lost is retried on a fresh port, so
+// the race between the allocator's check and the application's listen does
+// not reach restart backoff or rapid-fail protection.
 func (a *App) spawn(index int) (*Instance, error) {
+	for attempt := 0; ; attempt++ {
+		inst, err := a.spawnOnce(index)
+		var lost *portLostError
+		if attempt == portRetries || !errors.As(err, &lost) {
+			return inst, err
+		}
+		a.logs.System("instance %d: port %d was taken by another process before the application could listen on it; retrying on another port", index, lost.port)
+	}
+}
+
+func (a *App) spawnOnce(index int) (*Instance, error) {
 	site := a.config()
 	n := site.Node
 	dir := a.workDir(site)
@@ -694,8 +712,9 @@ func (a *App) spawn(index int) (*Instance, error) {
 	}
 	cmd.Env = env.list()
 
-	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index}
-	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index}
+	portStr := strconv.Itoa(port)
+	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr}
+	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr}
 	cmd.Stdout, cmd.Stderr = outW, errW
 	cmd.WaitDelay = 5 * time.Second // do not hang on grandchildren holding the pipes
 
@@ -744,7 +763,15 @@ func (a *App) spawn(index int) (*Instance, error) {
 	a.logs.System("instance %d started: pid %d, port %d, node %s", index, inst.pid, port, rt.Version)
 
 	if err := a.waitReady(inst, site); err != nil {
+		// Decide before retire releases the port: once it is back in the
+		// pool another instance may bind it and look like the culprit. A
+		// worker never binds its port, so only its own output counts.
+		lost := n.PortMode != "fixed" && inst.isExited() &&
+			(outW.addrInUse.Load() || errW.addrInUse.Load() || (!a.isWorker(site) && !portFree(port)))
 		a.retire(inst)
+		if lost {
+			return nil, &portLostError{port: port, err: err}
+		}
 		return nil, err
 	}
 	inst.setState("ready")
@@ -758,7 +785,7 @@ func (a *App) spawn(index int) (*Instance, error) {
 func (a *App) waitReady(inst *Instance, site *model.Site) error {
 	timeout := time.Duration(site.Node.StartupTimeoutSec) * time.Second
 	deadline := time.Now().Add(timeout)
-	worker := len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID)
+	worker := a.isWorker(site)
 	for time.Now().Before(deadline) {
 		select {
 		case <-inst.exited:
@@ -778,6 +805,12 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 		}
 	}
 	return fmt.Errorf("did not start listening on port %d within %s; the application must listen on process.env.PORT", inst.port, timeout)
+}
+
+// isWorker reports whether a site runs in the background without serving
+// HTTP, so its instances need not listen on their port.
+func (a *App) isWorker(site *model.Site) bool {
+	return len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID)
 }
 
 // ---- environment

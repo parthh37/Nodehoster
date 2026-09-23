@@ -220,12 +220,15 @@ func (i *Instance) sample() {
 	i.mu.Unlock()
 }
 
-// lineWriter turns a child's output stream into log lines.
+// lineWriter turns a child's output stream into log lines. It also watches
+// for Node's report that the instance's port was already in use.
 type lineWriter struct {
-	sink     *LogSink
-	stream   string
-	instance int
-	buf      bytes.Buffer
+	sink      *LogSink
+	stream    string
+	instance  int
+	port      string
+	addrInUse atomic.Bool
+	buf       bytes.Buffer
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
@@ -253,5 +256,8 @@ func (w *lineWriter) flush() {
 }
 
 func (w *lineWriter) emit(s string) {
+	if w.port != "" && mentionsAddrInUse(s, w.port) {
+		w.addrInUse.Store(true)
+	}
 	w.sink.Write(model.LogLine{Time: time.Now(), Stream: w.stream, Instance: w.instance, Text: s})
 }
