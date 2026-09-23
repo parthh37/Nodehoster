@@ -86,6 +86,8 @@ type NodeConfig struct {
 	RestartPolicy      string   `json:"restartPolicy"`      // "always" | "on-failure" | "never"
 	MaxRestarts        int      `json:"maxRestarts"`        // within RestartWindowSec, 0 = unlimited
 	RestartWindowSec   int      `json:"restartWindowSec"`   // rapid-fail window (IIS rapid-fail protection)
+	RapidFailAction    string   `json:"rapidFailAction"`    // "recover" (retry after a pause) | "stop" (wait for an operator)
+	RecoverAfterSec    int      `json:"recoverAfterSec"`    // first pause before "recover" retries; doubles per trip, capped at an hour
 	StartupTimeoutSec  int      `json:"startupTimeoutSec"`  // time to start listening
 	ShutdownTimeoutSec int      `json:"shutdownTimeoutSec"` // graceful stop before kill
 	AgentEnabled       bool     `json:"agentEnabled"`       // inject the NodeHoster agent (graceful shutdown + metrics)

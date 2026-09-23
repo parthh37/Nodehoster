@@ -71,11 +71,18 @@ func (s *Site) ApplyDefaults() {
 		if n.RestartPolicy == "" {
 			n.RestartPolicy = "always"
 		}
-		if n.MaxRestarts <= 0 {
-			n.MaxRestarts = 10
+		// MaxRestarts 0 means unlimited, so only a negative value is corrected.
+		if n.MaxRestarts < 0 {
+			n.MaxRestarts = 0
 		}
 		if n.RestartWindowSec <= 0 {
 			n.RestartWindowSec = 300
+		}
+		if n.RapidFailAction == "" {
+			n.RapidFailAction = "recover"
+		}
+		if n.RecoverAfterSec <= 0 {
+			n.RecoverAfterSec = 300
 		}
 		if n.StartupTimeoutSec <= 0 {
 			n.StartupTimeoutSec = 60
@@ -222,6 +229,14 @@ func (s *Site) Validate() error {
 		case "always", "on-failure", "never":
 		default:
 			return verr("node.restartPolicy", "must be always, on-failure or never")
+		}
+		switch n.RapidFailAction {
+		case "recover", "stop":
+		default:
+			return verr("node.rapidFailAction", "must be recover or stop")
+		}
+		if n.RecoverAfterSec < 10 || n.RecoverAfterSec > 86400 {
+			return verr("node.recoverAfterSec", "must be between 10 and 86400 seconds")
 		}
 		for i, e := range n.Env {
 			if !envNameRe.MatchString(e.Name) {

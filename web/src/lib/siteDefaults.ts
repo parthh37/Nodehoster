@@ -63,12 +63,16 @@ export function defaultNode(): NodeConfig {
     restartPolicy: 'always',
     maxRestarts: 10,
     restartWindowSec: 300,
+    rapidFailAction: 'recover',
+    recoverAfterSec: 300,
     startupTimeoutSec: 60,
     shutdownTimeoutSec: 15,
     agentEnabled: true,
     watchFiles: false,
     watchIgnore: ['node_modules', '.git', 'logs'],
-    healthCheck: defaultHealthCheck(30),
+    // On for new sites: it is the only way to catch a process that is still
+    // running but no longer answering. Anything below 500 counts as healthy.
+    healthCheck: { ...defaultHealthCheck(30), enabled: true },
     recycle: {},
     limits: {},
     runAs: { enabled: false },

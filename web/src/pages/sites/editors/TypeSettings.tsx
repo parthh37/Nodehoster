@@ -136,7 +136,7 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
         />
       </FormSection>
 
-      <FormSection title="Restarts" description="Rapid-fail protection stops restarting a site that keeps crashing, like an IIS application pool.">
+      <FormSection title="Restarts" description="Crashed instances restart with a growing delay. Rapid-fail protection pauses a site that keeps crashing, like an IIS application pool.">
         <Field label="Restart policy" path="node.restartPolicy">
           <Select
             className="w-64"
@@ -156,6 +156,21 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
           <Field label="Within (seconds)" path="node.restartWindowSec">
             <NumberInput min={1} value={n.restartWindowSec} onChange={(v) => set({ restartWindowSec: v })} suffix="sec" />
           </Field>
+          <Field label="When rapid-fail protection trips" path="node.rapidFailAction">
+            <Select
+              value={n.rapidFailAction}
+              onChange={(v) => set({ rapidFailAction: v })}
+              options={[
+                { value: 'recover', label: 'Restart automatically after a pause' },
+                { value: 'stop', label: 'Stop until started manually' },
+              ]}
+            />
+          </Field>
+          {n.rapidFailAction !== 'stop' && (
+            <Field label="Pause before restarting" path="node.recoverAfterSec" hint="Doubles each time it trips again, up to an hour.">
+              <NumberInput min={10} max={86400} value={n.recoverAfterSec} onChange={(v) => set({ recoverAfterSec: v })} suffix="sec" />
+            </Field>
+          )}
           <Field label="Startup timeout" path="node.startupTimeoutSec" hint="Time allowed to start listening.">
             <NumberInput min={1} value={n.startupTimeoutSec} onChange={(v) => set({ startupTimeoutSec: v })} suffix="sec" />
           </Field>

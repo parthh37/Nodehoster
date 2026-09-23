@@ -36,7 +36,12 @@ type App struct {
 	failMsg    string
 	crashTimes []time.Time
 	schedFired map[string]string // "HH:MM" -> date it last fired
-	watcher    *fileWatcher
+
+	// Automatic recovery from rapid-fail protection.
+	recoverTimer *time.Timer
+	recoveries   int       // automatic restarts since the site last ran stably
+	lastRecovery time.Time // when the last automatic restart happened
+	watcher      *fileWatcher
 
 	backends atomic.Pointer[[]*Backend]
 }
@@ -103,6 +108,7 @@ func (a *App) start() error {
 		a.mu.Unlock()
 		return fmt.Errorf("application folder %q does not exist", dir)
 	}
+	a.cancelRecoveryLocked()
 	a.running, a.failed, a.failMsg, a.crashTimes = true, false, "", nil
 	n := site.Node.Instances
 	a.slots = nil
@@ -128,6 +134,7 @@ func (a *App) stop() {
 	a.slots = nil
 	wasRunning := a.running
 	a.running = false
+	a.cancelRecoveryLocked()
 	a.mu.Unlock()
 	a.stopWatcher()
 	stopSlots(slots)
@@ -502,21 +509,102 @@ func restartDelay(failures int, lastUptime time.Duration) time.Duration {
 
 func (a *App) tripRapidFail() {
 	a.mu.Lock()
-	msg, name := a.failMsg, a.site.Name
+	name := a.site.Name
 	// Detach the instances now, under the lock, so a Start or Restart issued
 	// while they are still stopping gets a fresh set of slots instead of
 	// having its new processes wiped from view (and orphaned) afterwards.
 	slots := a.slots
 	a.slots = nil
 	a.running = false
+	next := "the site is stopped until it is started again"
+	if d, ok := a.scheduleRecoveryLocked(); ok {
+		next = fmt.Sprintf("restarting automatically in %s", d)
+	}
+	a.failMsg += "; " + next
+	msg := a.failMsg
 	a.mu.Unlock()
-	a.logs.System("%s; the site is stopped until it is started again", msg)
+	a.logs.System("%s", msg)
 	a.m.opts.Bus.Error(events.SiteFailed, a.id, "%s stopped: %s", name, msg)
 	a.stopWatcher()
 	a.publish()
 	// Asynchronous because the caller is one of these slots: it parks in
 	// idle() and receives its stop command like the rest.
 	go stopSlots(slots)
+}
+
+// scheduleRecoveryLocked arms the timer that starts a site again after
+// rapid-fail protection stopped it, unless the site is configured to wait for
+// an operator. a.mu must be held.
+func (a *App) scheduleRecoveryLocked() (time.Duration, bool) {
+	a.cancelRecoveryLocked()
+	n := a.site.Node
+	if n.RapidFailAction == "stop" {
+		return 0, false
+	}
+	// A site that ran for an hour since its last automatic restart was
+	// stable; its next failure starts from the shortest pause again.
+	if time.Since(a.lastRecovery) > time.Hour {
+		a.recoveries = 0
+	}
+	d := recoveryDelay(time.Duration(n.RecoverAfterSec)*time.Second, a.recoveries)
+	a.recoverTimer = time.AfterFunc(d, a.autoRecover)
+	return d, true
+}
+
+func (a *App) cancelRecoveryLocked() {
+	if a.recoverTimer != nil {
+		a.recoverTimer.Stop()
+		a.recoverTimer = nil
+	}
+}
+
+// autoRecover starts a failed site again. It does nothing when the site was
+// removed, started or stopped by an operator, or the server is shutting down
+// since the timer was armed.
+func (a *App) autoRecover() {
+	select {
+	case <-a.m.stop:
+		return
+	default:
+	}
+	if a.m.app(a.id) != a {
+		return
+	}
+	a.mu.Lock()
+	if a.recoverTimer == nil || !a.failed || a.running {
+		a.mu.Unlock()
+		return
+	}
+	a.recoverTimer = nil
+	a.recoveries++
+	a.lastRecovery = time.Now()
+	attempt, name := a.recoveries, a.site.Name
+	a.mu.Unlock()
+
+	a.logs.System("automatic restart after rapid-fail protection (attempt %d)", attempt)
+	if err := a.start(); err != nil {
+		a.mu.Lock()
+		a.failMsg = fmt.Sprintf("automatic restart failed: %v", err)
+		if d, ok := a.scheduleRecoveryLocked(); ok {
+			a.failMsg += fmt.Sprintf("; retrying in %s", d)
+		}
+		msg := a.failMsg
+		a.mu.Unlock()
+		a.logs.System("%s", msg)
+		a.m.opts.Bus.Error(events.SiteFailed, a.id, "%s: %s", name, msg)
+		return
+	}
+	a.m.opts.Bus.Info(events.SiteStarted, a.id, "%s restarted automatically after rapid-fail protection (attempt %d)", name, attempt)
+}
+
+// recoveryDelay is how long a site stopped by rapid-fail protection waits
+// before it is started again: base for the first trip, doubling for every
+// further trip without a stable hour in between, capped at an hour so a
+// site whose dependency (database, disk, network) comes back is never down
+// for long.
+func recoveryDelay(base time.Duration, previous int) time.Duration {
+	d := base << min(previous, 10)
+	return min(d, time.Hour)
 }
 
 // ---- spawning

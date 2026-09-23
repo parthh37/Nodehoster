@@ -169,6 +169,8 @@ func processChanged(a, b *model.Site) bool {
 	x.RestartPolicy, y.RestartPolicy = "", ""
 	x.MaxRestarts, y.MaxRestarts = 0, 0
 	x.RestartWindowSec, y.RestartWindowSec = 0, 0
+	x.RapidFailAction, y.RapidFailAction = "", ""
+	x.RecoverAfterSec, y.RecoverAfterSec = 0, 0
 	j1, _ := json.Marshal(x)
 	j2, _ := json.Marshal(y)
 	return string(j1) != string(j2)

@@ -18,18 +18,37 @@ func TestDefaults(t *testing.T) {
 	if s.Bindings[0].Port != 80 || s.Node.Instances != 1 || s.Node.PortMode != "auto" {
 		t.Fatalf("defaults not applied: %+v", s.Node)
 	}
+	if s.Node.RapidFailAction != "recover" || s.Node.RecoverAfterSec != 300 {
+		t.Fatalf("rapid-fail recovery defaults not applied: %q, %d", s.Node.RapidFailAction, s.Node.RecoverAfterSec)
+	}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// TestMaxRestartsUnlimited: 0 is documented (and offered in the console) as
+// "unlimited", so defaults must not replace it.
+func TestMaxRestartsUnlimited(t *testing.T) {
+	s := nodeSite()
+	if s.Node.MaxRestarts != 0 {
+		t.Fatalf("MaxRestarts 0 became %d", s.Node.MaxRestarts)
+	}
+	s.Node.MaxRestarts = -5
+	s.ApplyDefaults()
+	if s.Node.MaxRestarts != 0 {
+		t.Fatalf("negative MaxRestarts became %d, want 0", s.Node.MaxRestarts)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	cases := map[string]func(*Site){
-		"name":             func(s *Site) { s.Name = "" },
-		"bindings[0].host": func(s *Site) { s.Bindings[0].Host = "bad host" },
-		"bindings[0].port": func(s *Site) { s.Bindings[0].Port = 70000 },
-		"node.script":      func(s *Site) { s.Node.Script = "" },
-		"node.instances":   func(s *Site) { s.Node.PortMode = "fixed"; s.Node.FixedPort = 3000; s.Node.Instances = 2 },
+		"name":                 func(s *Site) { s.Name = "" },
+		"bindings[0].host":     func(s *Site) { s.Bindings[0].Host = "bad host" },
+		"bindings[0].port":     func(s *Site) { s.Bindings[0].Port = 70000 },
+		"node.script":          func(s *Site) { s.Node.Script = "" },
+		"node.instances":       func(s *Site) { s.Node.PortMode = "fixed"; s.Node.FixedPort = 3000; s.Node.Instances = 2 },
+		"node.rapidFailAction": func(s *Site) { s.Node.RapidFailAction = "explode" },
+		"node.recoverAfterSec": func(s *Site) { s.Node.RecoverAfterSec = 5 },
 		"routing.rewrites[0].match": func(s *Site) {
 			s.Routing.Rewrites = []RewriteRule{{Match: "(", Action: "rewrite"}}
 		},

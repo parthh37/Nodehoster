@@ -52,6 +52,7 @@ export interface RunAsConfig {
 
 export type PortMode = 'auto' | 'fixed';
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
+export type RapidFailAction = 'recover' | 'stop';
 
 export interface NodeConfig {
   appRoot: string;
@@ -67,6 +68,8 @@ export interface NodeConfig {
   restartPolicy: RestartPolicy | string;
   maxRestarts: number;
   restartWindowSec: number;
+  rapidFailAction: RapidFailAction | string;
+  recoverAfterSec: number;
   startupTimeoutSec: number;
   shutdownTimeoutSec: number;
   agentEnabled: boolean;
