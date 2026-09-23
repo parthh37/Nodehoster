@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// dist is web/'s build output (npm run build). In a fresh clone it holds
+// only the committed .gitkeep, which lets go:embed compile before the
+// console is built; the handler then explains how to build it.
+//
 //go:embed all:dist
 var dist embed.FS
 
@@ -20,8 +24,10 @@ The REST API is available under <code>/api</code>.</p></body>`
 
 // Handler serves static assets with long caching for hashed files and falls
 // back to index.html for client-side routes.
-func Handler() http.Handler {
-	sub, _ := fs.Sub(dist, "dist")
+func Handler() http.Handler { return handler(dist) }
+
+func handler(fsys fs.FS) http.Handler {
+	sub, _ := fs.Sub(fsys, "dist")
 	files := http.FileServer(http.FS(sub))
 	_, err := fs.Stat(sub, "index.html")
 	built := err == nil
@@ -33,7 +39,8 @@ func Handler() http.Handler {
 		}
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if p != "" && p != "index.html" {
-			if st, err := fs.Stat(sub, p); err == nil && !st.IsDir() {
+			// Dot files (the .gitkeep placeholder) are not the console's.
+			if st, err := fs.Stat(sub, p); err == nil && !st.IsDir() && !strings.HasPrefix(path.Base(p), ".") {
 				if strings.HasPrefix(p, "assets/") {
 					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				}

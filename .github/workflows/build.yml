@@ -70,11 +70,9 @@ jobs:
         with:
           node-version: 22
 
-      # The web console is embedded with go:embed, which needs the folder to
-      # exist; the tests do not need the console itself, so this job does not
-      # wait for a web build.
-      - name: Placeholder for the embedded console
-        run: mkdir -p internal/webui/dist && touch internal/webui/dist/.gitkeep
+      # The web console is embedded with go:embed; the committed
+      # internal/webui/dist/.gitkeep lets it compile without a web build,
+      # which the tests do not need.
 
       - name: Vet
         run: go vet ./...

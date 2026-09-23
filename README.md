@@ -271,7 +271,8 @@ go test ./...
 go run ./cmd/nodehoster --data ./.devdata run
 ```
 
-The UI dev server (`cd web && npm run dev`) proxies API calls to
+The Go code builds without the web build too (the console is then a page
+saying how to build it). The UI dev server (`cd web && npm run dev`) proxies API calls to
 `https://localhost:8484`. NodeHoster Manager is Windows-only
 (`GOOS=windows go build ./cmd/nodehoster-manager` cross-compiles it); its
 manifest and icon are committed `.syso` files, regenerated with
