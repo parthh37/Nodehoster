@@ -115,7 +115,7 @@ func serviceCmd(args []string, dataDir string) error {
 		if err := service.Install(exe, svcArgs...); err != nil {
 			return err
 		}
-		fmt.Println("Service installed. Start it with: nodehoster service start")
+		fmt.Println("Service registered. Start it with: nodehoster service start")
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
 			return err

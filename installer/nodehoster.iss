@@ -7,6 +7,12 @@
 ; bindings added later need no new rules). Upgrades stop the service first
 ; and start it again afterwards. Data in %ProgramData%\NodeHoster is kept on
 ; uninstall unless the user chooses to remove it.
+;
+; Unattended install (for scripts and remote management):
+;   NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall"
+; Exit code 0 means installed and the service is running; 1 means installed
+; but the service did not start (other codes are Inno Setup's own). Setup
+; writes a log to %TEMP%\Setup Log *.txt.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -36,6 +42,7 @@ ChangesEnvironment=yes
 UninstallDisplayIcon={app}\nodehoster.exe
 MinVersion=10.0.17763
 CloseApplications=no
+SetupLogging=yes
 
 [Tasks]
 Name: "addtopath"; Description: "Add nodehoster to the system PATH"; Flags: checkedonce
@@ -49,10 +56,12 @@ Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadm
 Name: "{autoprograms}\NodeHoster Console"; Filename: "https://localhost:8484/"
 
 [Run]
-Filename: "{app}\nodehoster.exe"; Parameters: "service install"; StatusMsg: "Registering the NodeHoster service..."; Flags: runhidden waituntilterminated; Check: not ServiceExists
+; Always run: on upgrades it re-applies the start type and the automatic
+; restart-on-failure settings, keeping the service's data folder.
+Filename: "{app}\nodehoster.exe"; Parameters: "service install"; StatusMsg: "Registering the NodeHoster service..."; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""NodeHoster"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""NodeHoster"" dir=in action=allow program=""{app}\nodehoster.exe"" enable=yes profile=any"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated; Tasks: firewall
-Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated
+Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated; AfterInstall: VerifyServiceRunning
 Filename: "https://localhost:8484/"; Description: "Open the NodeHoster console"; Flags: postinstall shellexec nowait skipifsilent unchecked
 
 [UninstallRun]
@@ -68,6 +77,45 @@ var
   ResultCode: Integer;
 begin
   Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query NodeHoster', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+var
+  ServiceStartFailed: Boolean;
+
+function ServiceRunning: Boolean;
+var
+  ResultCode: Integer;
+begin
+  // find exits with 0 only when the state line says RUNNING.
+  Result := Exec(ExpandConstant('{cmd}'), '/C sc.exe query NodeHoster | find "RUNNING"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// A service that installs but does not run is a failed installation: say so
+// (and fail silent installs with an exit code) instead of finishing quietly.
+procedure VerifyServiceRunning;
+var
+  I: Integer;
+begin
+  for I := 1 to 10 do
+  begin
+    if ServiceRunning then
+    begin
+      Log('NodeHoster service is running.');
+      exit;
+    end;
+    Sleep(1000);
+  end;
+  ServiceStartFailed := True;
+  Log('NodeHoster service did not start.');
+end;
+
+// Exit code for unattended installs: 1 = installed, but the service is not running.
+function GetCustomSetupExitCode: Integer;
+begin
+  if ServiceStartFailed then
+    Result := 1
+  else
+    Result := 0;
 end;
 
 function NeedsAddPath(Dir: string): Boolean;
@@ -111,6 +159,13 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   PwFile: string;
 begin
+  if (CurStep = ssDone) and ServiceStartFailed then
+  begin
+    SuppressibleMsgBox('NodeHoster was installed, but the NodeHoster service did not start.' + #13#10#13#10 +
+      'See ' + ExpandConstant('{commonappdata}\NodeHoster\logs\nodehoster.log') + ' and the Windows Event Viewer (System log), ' +
+      'fix the problem, then run: nodehoster service start', mbError, MB_OK, IDOK);
+    exit;
+  end;
   if (CurStep = ssDone) and not WizardSilent then
   begin
     PwFile := ExpandConstant('{commonappdata}\NodeHoster\initial-admin-password.txt');

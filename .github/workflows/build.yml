@@ -1,10 +1,30 @@
 name: Build
 
-# Builds, tests and packages NodeHoster on the self-hosted Windows runner
-# (PARTH-AIO). Every run produces a portable zip and a setup.exe as
-# artifacts; pushing a tag vX.Y.Z also publishes them as a GitHub release.
+# CI for NodeHoster.
 #
-#   git tag v1.0.0 && git push origin v1.0.0
+#   go-test (Windows + Linux) ─┐
+#                              ├─> package
+#   web-test                   ┘
+#
+# Everything runs on GitHub-hosted runners (the repository is public, and a
+# self-hosted runner would let pull requests from forks run code on it). The
+# test jobs run in parallel. Every build is packaged and smoke-tested; only a
+# tag vX.Y.Z publishes, to S3 — nothing is stored on GitHub except a release
+# entry with notes and download links:
+#
+#   s3://$S3_BUCKET/$S3_PREFIX/releases/<X.Y.Z>/  (immutable)
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# The S3 credentials are only exposed to the publish step, which runs only
+# for tags (pushing one needs write access). Workflows triggered by pull
+# requests from forks never receive secrets.
+#
+# Configuration (Settings -> Secrets and variables -> Actions):
+#   secrets   S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+#   variables S3_ENDPOINT (host, no scheme), S3_BUCKET, S3_PREFIX (optional,
+#             default "nodehoster"), S3_PUBLIC_URL (optional base URL for
+#             download links, default https://<endpoint>/<bucket>)
 
 on:
   push:
@@ -14,85 +34,106 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    # Windows because the Windows-specific code (job objects, named pipes,
-    # the service wrapper) is exercised by the integration tests for real.
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 45
+  go-test:
+    name: Go tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows runs the integration tests of the Windows-specific code
+        # (job objects, named pipes, the service wrapper); Linux adds the
+        # race detector and the Unix code paths.
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
-        # Windows PowerShell 5.1 is part of Windows; PowerShell 7 may not be
-        # installed on a self-hosted machine.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/s3publish/go.sum
+      # The process manager tests start real Node.js apps.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The web console is embedded with go:embed, which needs the folder to
+      # exist; the tests do not need the console itself, so this job does not
+      # wait for a web build.
+      - name: Placeholder for the embedded console
+        run: mkdir -p internal/webui/dist && touch internal/webui/dist/.gitkeep
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        # -shuffle catches tests that only pass in a particular order.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then race=-race; fi
+          go test $race -count=1 -shuffle=on -timeout 15m ./...
+
+      - name: Test release tooling
+        working-directory: tools/s3publish
+        run: go vet ./... && go test -count=1 ./...
+
+  web-test:
+    name: Web console tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+
+  package:
+    name: ${{ github.ref_type == 'tag' && 'Release' || 'Package' }}
+    needs: [go-test, web-test]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # the GitHub release (notes only) for tags
+    defaults:
+      run:
         shell: powershell
     steps:
       - uses: actions/checkout@v7
-
-      # Toolchains are installed here rather than with actions/setup-go and
-      # actions/setup-node: setup-go runs `go version` through the shell with
-      # an unquoted path, which breaks when the runner lives in a folder with
-      # spaces ("D:\Action runner Node Hoster"). Downloads are verified
-      # against the publishers' SHA-256 checksums and kept in the tool cache.
-      - name: Install Go and Node.js
-        env:
-          NODE_MAJOR: "22"
-        run: |
-          $ErrorActionPreference = "Stop"
-          $ProgressPreference = "SilentlyContinue"
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $cache = $env:RUNNER_TOOL_CACHE
-
-          function Get-Verified([string]$url, [string]$sha, [string]$out) {
-            Invoke-WebRequest -UseBasicParsing $url -OutFile $out
-            $got = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
-            if ($got -ne $sha.ToLower()) { throw "checksum mismatch for $url" }
-          }
-
-          # Go: version from go.mod, checksum from go.dev.
-          $goVersion = (Select-String -Path go.mod -Pattern '^go (\S+)').Matches[0].Groups[1].Value
-          $goRoot = Join-Path $cache "go-$goVersion"
-          if (-not (Test-Path (Join-Path $goRoot "bin\go.exe"))) {
-            $file = "go$goVersion.windows-amd64.zip"
-            $rel = (Invoke-RestMethod "https://go.dev/dl/?mode=json&include=all") | Where-Object { $_.version -eq "go$goVersion" }
-            $sha = ($rel.files | Where-Object { $_.filename -eq $file }).sha256
-            if (-not $sha) { throw "go$goVersion is not published for windows-amd64" }
-            $zip = Join-Path $env:RUNNER_TEMP $file
-            Get-Verified "https://go.dev/dl/$file" $sha $zip
-            $tmp = "$goRoot.partial"
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-            Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-            Move-Item (Join-Path $tmp "go") $goRoot
-            Remove-Item -Recurse -Force $tmp, $zip
-          }
-
-          # Node.js: latest release of the major line, checksum from SHASUMS256.
-          $nodeVersion = ((Invoke-RestMethod "https://nodejs.org/dist/index.json") | Where-Object { $_.version -like "v$($env:NODE_MAJOR).*" } | Select-Object -First 1).version
-          $nodeRoot = Join-Path $cache "node-$nodeVersion"
-          if (-not (Test-Path (Join-Path $nodeRoot "node.exe"))) {
-            $file = "node-$nodeVersion-win-x64.zip"
-            $sums = (Invoke-WebRequest -UseBasicParsing "https://nodejs.org/dist/$nodeVersion/SHASUMS256.txt").Content
-            $sha = ($sums -split "`n" | Where-Object { $_ -match "  $([regex]::Escape($file))$" }) -replace '\s.*$', ''
-            $zip = Join-Path $env:RUNNER_TEMP $file
-            Get-Verified "https://nodejs.org/dist/$nodeVersion/$file" $sha $zip
-            $tmp = "$nodeRoot.partial"
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-            Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-            Move-Item (Join-Path $tmp "node-$nodeVersion-win-x64") $nodeRoot
-            Remove-Item -Recurse -Force $tmp, $zip
-          }
-
-          # The machine persists between runs, so caches live in the work folder.
-          $work = Split-Path $env:GITHUB_WORKSPACE -Parent
-          [IO.File]::AppendAllText($env:GITHUB_PATH, "$goRoot\bin`n$nodeRoot`n")
-          [IO.File]::AppendAllText($env:GITHUB_ENV, "GOROOT=$goRoot`nGOPATH=$work\.go`nGOCACHE=$work\.go-build`nGOTOOLCHAIN=local`nnpm_config_cache=$work\.npm`n")
-          & "$goRoot\bin\go.exe" version
-          & "$nodeRoot\node.exe" --version
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/s3publish/go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Version
         id: ver
@@ -114,16 +155,6 @@ jobs:
           npm ci --no-audit --no-fund
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-
-      - name: Vet
-        run: |
-          go vet ./...
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-
-      - name: Test
-        run: |
-          go test -count=1 -timeout 10m ./...
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build nodehoster.exe
@@ -191,24 +222,61 @@ jobs:
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           Compress-Archive -Path dist\nodehoster.exe, dist\README.md -DestinationPath "dist\NodeHoster-$v-windows-x64.zip" -Force
-          Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | Where-Object { (Split-Path $_.Path -Leaf) -ne "nodehoster.exe" } | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: NodeHoster-${{ steps.ver.outputs.version }}
-          path: |
-            dist/*-setup.exe
-            dist/*.zip
-            dist/SHA256SUMS.txt
-          if-no-files-found: error
+      - name: Publish to S3
+        id: s3
+        if: github.ref_type == 'tag'
+        env:
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_PREFIX: ${{ vars.S3_PREFIX }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not ($env:S3_ACCESS_KEY_ID -and $env:S3_SECRET_ACCESS_KEY -and $env:S3_ENDPOINT -and $env:S3_BUCKET)) {
+            throw "S3 is not configured: set the S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY secrets and the S3_ENDPOINT and S3_BUCKET variables"
+          }
+          $root = if ($env:S3_PREFIX) { $env:S3_PREFIX.Trim("/") } else { "nodehoster" }
+          $prefix = "$root/releases/$env:VERSION/"
 
-      - name: Publish release
+          $tool = Join-Path $env:RUNNER_TEMP "s3publish.exe"
+          Push-Location tools\s3publish
+          go build -trimpath -o $tool .
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code) { exit $code }
+
+          $publishArgs = @("-endpoint", $env:S3_ENDPOINT, "-bucket", $env:S3_BUCKET, "-prefix", $prefix, "-immutable",
+                           "-version", $env:VERSION, "-commit", "${{ github.sha }}", "-latest", "$root/releases/latest.json")
+          $files = @(Get-ChildItem dist\*-setup.exe, dist\*.zip, dist\SHA256SUMS.txt | ForEach-Object { $_.FullName })
+          & $tool @publishArgs @files
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "prefix=$prefix`n")
+
+      - name: Release notes
+        if: github.ref_type == 'tag'
+        env:
+          PREFIX: ${{ steps.s3.outputs.prefix }}
+          BASE: ${{ vars.S3_PUBLIC_URL || format('https://{0}/{1}', vars.S3_ENDPOINT, vars.S3_BUCKET) }}
+        run: |
+          $base = $env:BASE.TrimEnd("/")
+          $lines = @("## Downloads", "", "| File | SHA-256 |", "|---|---|")
+          foreach ($l in Get-Content dist\SHA256SUMS.txt) {
+            $sha, $name = $l -split "\s+", 2
+            $lines += "| [$name]($base/$env:PREFIX$name) | ``$sha`` |"
+          }
+          $lines += "", "Files are hosted on S3, not attached to this release."
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP "notes.md"), ($lines -join "`n"))
+
+      # A release entry with notes and links only: no assets, so it uses no
+      # GitHub storage.
+      - name: GitHub release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            dist/*-setup.exe
-            dist/*.zip
-            dist/SHA256SUMS.txt
+          body_path: ${{ runner.temp }}/notes.md
           generate_release_notes: true

@@ -19,10 +19,11 @@ reverse proxy and automatic HTTPS with Let's Encrypt — one self-contained
 - Multiple instances per site, load-balanced (least connections)
 - `PORT` assigned automatically from a configurable range (or a fixed port)
 - Restart policy (always / on-failure / never) with exponential backoff
-- **Rapid-fail protection**: too many crashes in a window stops the site
+- **Rapid-fail protection**: too many crashes in a window pauses the site, then restarts it automatically (5 min, doubling up to 1 h per repeat); or stops it until started manually
 - **Zero-downtime recycle**: new instance → ready → traffic moves → old one drains → stops
 - Recycling on memory limit, periodic interval, schedule (HH:MM), request count, file changes
-- Health checks (IIS "ping"): unhealthy instances are replaced
+- Health checks (IIS "ping", on by default for new sites): instances that time out or answer 5xx are replaced
+- The service itself restarts on failure (Windows service recovery), and auto-start sites come back with it
 - **Windows Job Objects**: every process tree is killed with its site — no orphaned `node.exe`, even if NodeHoster crashes; optional hard CPU % and memory caps
 - **Run as user** (application pool identity) via `LogonUser`
 - Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish
@@ -61,9 +62,20 @@ reverse proxy and automatic HTTPS with Let's Encrypt — one self-contained
 
 ## Install
 
-Download `NodeHoster-<version>-setup.exe` from the releases and run it. The
-installer registers the **NodeHoster** service (automatic, delayed start,
-restart on failure), opens the firewall for the program and starts it.
+Download `NodeHoster-<version>-setup.exe` (release files are hosted on S3;
+the GitHub release page links to them) and run it. The installer registers
+the **NodeHoster** service (automatic, delayed start, restart on failure),
+opens the firewall for the program, starts it and checks that it is running.
+Upgrades install over the top; sites and data are kept.
+
+Unattended install:
+
+```
+NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall"
+```
+
+Exit code `0` means installed and running, `1` installed but the service did
+not start (see `C:\ProgramData\NodeHoster\logs\nodehoster.log`).
 
 Open **https://localhost:8484** (the console uses a self-signed certificate
 until you pick one in Settings → Admin console). Sign in as `admin` with the
@@ -121,6 +133,7 @@ Requirements: Go 1.26+, Node.js 22+.
 ```
 cd web && npm ci && npm run build && cd ..
 go test ./...
+(cd web && npm test)
 go run ./cmd/nodehoster --data ./.devdata run
 ```
 
@@ -128,10 +141,15 @@ The UI dev server (`cd web && npm run dev`) proxies API calls to
 `https://localhost:8484`. The server builds and runs on macOS and Linux too
 (no job objects or DPAPI there), which is convenient for development.
 
-CI builds on the self-hosted Windows runner (`.github/workflows/build.yml`):
-vet, tests (including a Windows integration test of the process manager), a
-smoke test of the built binary, the installer and a portable zip. Tags
-`vX.Y.Z` publish a GitHub release.
+CI runs on GitHub-hosted runners (`.github/workflows/build.yml`). Go tests on
+Windows (including integration tests of job objects, the agent pipe and the
+process manager) and Linux (with the race detector) and the web console
+tests run in parallel; a packaging job then builds the binary, smoke-tests it
+and builds the installer and a portable zip. Tags `vX.Y.Z` upload the release
+to `s3://<bucket>/nodehoster/releases/<version>/` (never overwritten) and
+create a GitHub release that links to it; nothing is stored on GitHub. The
+upload tool is `tools/s3publish`; its configuration is described at the top
+of the workflow.
 
 ## Architecture
 
