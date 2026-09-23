@@ -107,7 +107,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.Procs, err = procmgr.New(procmgr.Options{
 		Log: log, Bus: c.Bus,
-		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: filepath.Join(paths.Data, "run"),
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
 		IsLocationTarget: c.isLocationTarget,
 	})
