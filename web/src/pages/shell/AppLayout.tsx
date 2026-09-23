@@ -10,6 +10,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu as MenuIcon,
   Monitor,
   Moon,
@@ -46,6 +47,7 @@ const nav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/certificates', label: 'Certificates', icon: BadgeCheck },
   { to: '/node', label: 'Node.js', icon: Hexagon },
+  { to: '/mail', label: 'Mail', icon: Mail },
   { to: '/events', label: 'Events', icon: Activity },
 ];
 

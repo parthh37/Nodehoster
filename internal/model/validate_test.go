@@ -21,6 +21,9 @@ func TestDefaults(t *testing.T) {
 	if s.Node.RapidFailAction != "recover" || s.Node.RecoverAfterSec != 300 {
 		t.Fatalf("rapid-fail recovery defaults not applied: %q, %d", s.Node.RapidFailAction, s.Node.RecoverAfterSec)
 	}
+	if lb := s.Node.LoadBalancer; lb.Enabled || lb.LocalWeight != 1 || lb.Strategy != "round_robin" || lb.HealthCheck.IntervalSec != 15 {
+		t.Fatalf("load balancer defaults not applied: %+v", lb)
+	}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +54,15 @@ func TestValidation(t *testing.T) {
 		"node.recoverAfterSec": func(s *Site) { s.Node.RecoverAfterSec = 5 },
 		"routing.rewrites[0].match": func(s *Site) {
 			s.Routing.Rewrites = []RewriteRule{{Match: "(", Action: "rewrite"}}
+		},
+		"node.loadBalancer.servers": func(s *Site) { s.Node.LoadBalancer.Enabled = true },
+		"node.loadBalancer.servers[0].url": func(s *Site) {
+			s.Node.LoadBalancer = LoadBalancerConfig{Enabled: true, Strategy: "round_robin", Servers: []Upstream{{URL: "10.0.0.2"}}}
+		},
+		"node.loadBalancer.strategy": func(s *Site) {
+			s.Node.LoadBalancer.Enabled = true
+			s.Node.LoadBalancer.Servers = []Upstream{{URL: "http://10.0.0.2"}}
+			s.Node.LoadBalancer.Strategy = "fastest"
 		},
 		"bindings[0].certMode": func(s *Site) {
 			s.Bindings[0] = Binding{Protocol: "https", Port: 443, Host: "*.example.com", CertMode: CertModeAuto}

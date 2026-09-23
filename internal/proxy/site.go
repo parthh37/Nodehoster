@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
+	"github.com/parthh37/nodehoster/internal/rewrite"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -31,13 +31,8 @@ type ctxKey int
 const (
 	ctxBackend ctxKey = iota
 	ctxClientIP
+	ctxRewriteProxy // *rewrite.Result of a rewrite to an absolute URL
 )
-
-type rewriteRule struct {
-	model.RewriteRule
-	re   *regexp.Regexp
-	host *regexp.Regexp
-}
 
 type location struct {
 	model.Location
@@ -54,7 +49,8 @@ type siteRuntime struct {
 
 	allow, deny []*net.IPNet
 	maintAllow  []*net.IPNet
-	rewrites    []rewriteRule
+	rewrites    *rewrite.Engine
+	types       *mimeTypes
 	locations   []location
 	limiter     *ipLimiter
 	basicUsers  map[string]string // username -> bcrypt hash
@@ -62,6 +58,8 @@ type siteRuntime struct {
 	httpsPort   int               // for HTTPS redirects, 0 = no https binding
 
 	core      http.Handler // type-specific handler (node/proxy/static/redirect)
+	dispatch  http.Handler // after the request pipeline: locations or core, compressed and rewritten
+	toURL     http.Handler // rewrite rules that proxy to an absolute URL
 	transport *http.Transport
 	pool      *upstreamPool
 	rr        atomic.Uint64
@@ -86,22 +84,14 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			rt.maintAllow = append(rt.maintAllow, n)
 		}
 	}
-	for _, rw := range r.Rewrites {
-		if !rw.Enabled {
-			continue
-		}
-		cr := rewriteRule{RewriteRule: rw}
-		var err error
-		if cr.re, err = regexp.Compile(rw.Match); err != nil {
-			continue
-		}
-		if rw.Host != "" {
-			if cr.host, err = regexp.Compile("(?i)" + rw.Host); err != nil {
-				continue
-			}
-		}
-		rt.rewrites = append(rt.rewrites, cr)
+	if eng, err := rewrite.Compile(r, s.physicalRoot(site)); err != nil {
+		// Validated when saved, so only a configuration from an older
+		// version could get here; serve it without its rewrite rules.
+		s.deps.Log.Warn("rewrite rules not applied", "site", site.Name, "err", err)
+	} else if !eng.Empty() {
+		rt.rewrites = eng
 	}
+	rt.types = newMimeTypes(s.deps.Settings().Mime, r)
 	if r.RateLimit.Enabled {
 		rt.limiter = newIPLimiter(r.RateLimit.RequestsPerSecond, r.RateLimit.Burst)
 	}
@@ -119,8 +109,12 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 	}
 
 	timeout := time.Duration(r.TimeoutSec) * time.Second
-	insecure := site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify
+	insecure := (site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify) ||
+		(site.Type == model.SiteNode && site.Node.LoadBalancer.Enabled && site.Node.LoadBalancer.InsecureSkipVerify)
 	rt.transport = newTransport(insecure, timeout)
+	if rt.rewrites != nil {
+		rt.toURL = rt.rewriteProxy()
+	}
 
 	for _, l := range r.Locations {
 		loc := location{Location: l}
@@ -130,38 +124,61 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 				loc.handler = rt.urlProxy(u)
 			}
 		case "static":
-			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages}
+			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages, types: rt.types}
 		}
 		rt.locations = append(rt.locations, loc)
 	}
 	// Longest prefix wins.
 	sort.SliceStable(rt.locations, func(i, j int) bool { return len(rt.locations[i].Path) > len(rt.locations[j].Path) })
 
+	var prevPool *upstreamPool
+	if prev != nil {
+		prevPool = prev.pool
+	}
 	switch site.Type {
 	case model.SiteNode:
 		rt.core = rt.nodeHandler()
-	case model.SiteProxy:
-		var prevPool *upstreamPool
-		if prev != nil {
-			prevPool = prev.pool
+		if lb := site.Node.LoadBalancer; lb.Enabled {
+			id := site.ID
+			cfg := poolConfig{
+				upstreams: lb.Servers, strategy: lb.Strategy, hc: lb.HealthCheck, insecure: lb.InsecureSkipVerify,
+				localWeight: lb.LocalWeight,
+				localReady:  func() bool { return len(s.deps.Procs.Backends(id)) > 0 },
+				localCount:  func() int { return len(s.deps.Procs.Backends(id)) },
+			}
+			rt.pool = newUpstreamPool(site, cfg, s.deps.Bus, prevPool)
+			rt.core = rt.upstreamHandler(rt.core)
 		}
-		rt.pool = newUpstreamPool(site, s.deps.Bus, prevPool)
-		rt.core = rt.upstreamHandler()
+	case model.SiteProxy:
+		rt.pool = newUpstreamPool(site, proxyPoolConfig(site), s.deps.Bus, prevPool)
+		rt.core = rt.upstreamHandler(nil)
 	case model.SiteStatic:
 		root := site.ResolveRoot(s.deps.SitesDir, site.Static.Root)
 		rt.core = &staticHandler{
 			root: root, index: site.Static.IndexFiles, spa: site.Static.SPAFallback,
 			browse: site.Static.DirectoryBrowsing, cache: site.Static.CacheControl, errPages: r.ErrorPages,
+			types: rt.types,
 		}
 	case model.SiteRedirect:
 		rt.core = rt.redirectHandler()
 	}
+	// The dispatch chain: outbound rules see the uncompressed response,
+	// and compression applies to whatever they produce.
+	rt.dispatch = http.HandlerFunc(rt.route)
+	if rt.rewrites.HasOutbound() {
+		inner := rt.dispatch
+		rt.dispatch = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ow, finish := rt.rewrites.ResponseWriter(w, req, rt.env(req))
+			inner.ServeHTTP(ow, req)
+			finish()
+		})
+	}
 	if r.Compression {
 		gz, err := gzhttp.NewWrapper(gzhttp.ExceptContentTypes([]string{"text/event-stream"}))
 		if err == nil {
-			inner := rt.core
+			inner := rt.dispatch
 			wrapped := gz(inner)
-			rt.core = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			rt.dispatch = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				if req.Header.Get("Upgrade") != "" {
 					inner.ServeHTTP(w, req) // never wrap WebSocket upgrades
 					return
@@ -282,57 +299,50 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// URL rewrite rules, in order.
-	for _, rule := range rt.rewrites {
-		if rule.host != nil && !rule.host.MatchString(hostOnly(r.Host)) {
-			continue
-		}
-		m := rule.re.FindStringSubmatchIndex(r.URL.Path)
-		if m == nil {
-			continue
-		}
-		target := string(rule.re.ExpandString(nil, rule.Target, r.URL.Path, m))
-		switch rule.Action {
+	if rt.rewrites != nil {
+		switch res := rt.rewrites.Inbound(r, rt.env(r)); res.Action {
 		case "redirect":
-			code := rule.StatusCode
-			if code == 0 {
-				code = http.StatusMovedPermanently
-			}
-			if !strings.Contains(target, "?") && r.URL.RawQuery != "" && !strings.Contains(target, "://") {
-				target += "?" + r.URL.RawQuery
-			}
-			http.Redirect(w, r, target, code)
+			http.Redirect(w, r, res.Location, res.Status)
 			return
 		case "block":
-			code := rule.StatusCode
-			if code == 0 {
-				code = http.StatusForbidden
-			}
-			errorPage(w, ro.ErrorPages, code, "This request was blocked.")
+			errorPage(w, ro.ErrorPages, res.Status, "This request was blocked.")
 			return
 		case "respond":
-			code := rule.StatusCode
-			if code == 0 {
-				code = http.StatusOK
-			}
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(code)
-			io.WriteString(w, rule.Body)
+			w.Header().Set("Content-Type", res.ContentType)
+			w.WriteHeader(res.Status)
+			io.WriteString(w, res.Body)
 			return
-		case "rewrite":
-			if i := strings.IndexByte(target, '?'); i >= 0 {
-				r.URL.Path, r.URL.RawQuery = target[:i], target[i+1:]
-			} else {
-				r.URL.Path = target
-			}
-			r.URL.RawPath = ""
-		}
-		if rule.Stop {
-			break
+		case "proxy":
+			r = r.WithContext(context.WithValue(r.Context(), ctxRewriteProxy, &res))
 		}
 	}
 
 	applyHeaderRules(r.Header, ro.RequestHeaders)
+	rt.dispatch.ServeHTTP(w, r)
+}
 
+// env describes a request for the rewrite engine.
+func (rt *siteRuntime) env(r *http.Request) rewrite.Env {
+	e := rewrite.Env{TLS: r.TLS != nil}
+	e.ClientIP, _ = r.Context().Value(ctxClientIP).(string)
+	if a, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr); ok {
+		e.Port = strconv.Itoa(a.Port)
+	}
+	return e
+}
+
+// route sends a request that passed the pipeline to its handler: the URL
+// a rewrite rule proxies to, a location, or the site itself.
+func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
+	ro := rt.site.Routing
+	if rt.rewrites.RewritesBodies() {
+		// A compressed response could not be rewritten.
+		r.Header.Del("Accept-Encoding")
+	}
+	if _, ok := r.Context().Value(ctxRewriteProxy).(*rewrite.Result); ok {
+		rt.toURL.ServeHTTP(w, r)
+		return
+	}
 	for _, loc := range rt.locations {
 		if r.URL.Path != loc.Path && !strings.HasPrefix(r.URL.Path, strings.TrimSuffix(loc.Path, "/")+"/") {
 			continue
@@ -501,10 +511,18 @@ func (rt *siteRuntime) nodeHandler() http.Handler {
 	})
 }
 
-// upstreamHandler proxies to the configured upstream URLs.
-func (rt *siteRuntime) upstreamHandler() http.Handler {
+// hopHeader marks a request forwarded by a load-balanced node site. The
+// server receiving it answers from its own instances, so two servers that
+// list each other can never pass a request back and forth.
+const hopHeader = "X-NodeHoster-Hop"
+
+// upstreamHandler proxies to the pool's upstream URLs. For a load-balanced
+// node site, local answers requests the pool assigns to this server.
+func (rt *siteRuntime) upstreamHandler(local http.Handler) http.Handler {
 	pool := rt.pool
-	preserve := rt.site.Proxy.PreserveHost
+	// Other NodeHoster servers find the site by its host binding, so a
+	// load-balanced node site always forwards the client's Host.
+	preserve := local != nil || rt.site.Proxy.PreserveHost
 	type upKey struct{}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -513,6 +531,9 @@ func (rt *siteRuntime) upstreamHandler() http.Handler {
 			if preserve {
 				pr.Out.Host = pr.In.Host
 			}
+			if local != nil {
+				pr.Out.Header.Set(hopHeader, "1")
+			}
 			rt.forwardHeaders(pr)
 		},
 		Transport:     rt.transport,
@@ -520,12 +541,20 @@ func (rt *siteRuntime) upstreamHandler() http.Handler {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if u, ok := r.Context().Value(upKey{}).(*upstream); ok && !errors.Is(err, context.Canceled) {
 				pool.passiveFailure(u, err)
+				if local != nil && canRetryLocally(r, err) {
+					local.ServeHTTP(w, r)
+					return
+				}
 			}
 			rt.errorHandler(w, r, err)
 		},
 		ErrorLog: rt.srv.stdLog,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if local != nil && r.Header.Get(hopHeader) != "" {
+			local.ServeHTTP(w, r)
+			return
+		}
 		clientIP, _ := r.Context().Value(ctxClientIP).(string)
 		u := pool.pick(clientIP)
 		if u == nil {
@@ -534,8 +563,35 @@ func (rt *siteRuntime) upstreamHandler() http.Handler {
 		}
 		u.active.Add(1)
 		defer u.active.Add(-1)
+		if u.local {
+			local.ServeHTTP(w, r)
+			return
+		}
 		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upKey{}, u)))
 	})
+}
+
+// rewriteProxy forwards requests a rewrite rule sent to an absolute URL,
+// like IIS URL Rewrite with Application Request Routing.
+func (rt *siteRuntime) rewriteProxy() http.Handler {
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			res := pr.In.Context().Value(ctxRewriteProxy).(*rewrite.Result)
+			u := res.ProxyURL
+			pr.Out.URL.Scheme, pr.Out.URL.Host = u.Scheme, u.Host
+			pr.Out.URL.Path, pr.Out.URL.RawPath, pr.Out.URL.RawQuery = u.Path, u.RawPath, u.RawQuery
+			if res.PreserveHost {
+				pr.Out.Host = pr.In.Host
+			} else {
+				pr.Out.Host = "" // the target's own host name
+			}
+			rt.forwardHeaders(pr)
+		},
+		Transport:     rt.transport,
+		FlushInterval: -1,
+		ErrorHandler:  rt.errorHandler,
+		ErrorLog:      rt.srv.stdLog,
+	}
 }
 
 // urlProxy is a location that forwards to a fixed URL.

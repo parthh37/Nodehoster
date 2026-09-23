@@ -59,6 +59,7 @@ type SiteStatus struct {
 
 type UpstreamStatus struct {
 	URL         string `json:"url"`
+	Local       bool   `json:"local,omitempty"` // this server's own instances in a load-balanced node site
 	Healthy     bool   `json:"healthy"`
 	ActiveConns int64  `json:"activeConns"`
 	LastError   string `json:"lastError,omitempty"`

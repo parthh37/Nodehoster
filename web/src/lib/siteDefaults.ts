@@ -4,6 +4,7 @@
 import type {
   Binding,
   HealthCheck,
+  LoadBalancerConfig,
   NodeConfig,
   ProxyConfig,
   RedirectConfig,
@@ -76,6 +77,18 @@ export function defaultNode(): NodeConfig {
     recycle: {},
     limits: {},
     runAs: { enabled: false },
+    loadBalancer: defaultLoadBalancer(),
+  };
+}
+
+export function defaultLoadBalancer(): LoadBalancerConfig {
+  return {
+    enabled: false,
+    localWeight: 1,
+    servers: [],
+    strategy: 'round_robin',
+    healthCheck: { ...defaultHealthCheck(15), enabled: true },
+    insecureSkipVerify: false,
   };
 }
 
@@ -114,7 +127,11 @@ export function defaultRouting(): RoutingConfig {
     requestHeaders: [],
     responseHeaders: [],
     rewrites: [],
+    outboundRules: [],
+    rewriteMaps: [],
     locations: [],
+    mimeTypes: [],
+    unknownMimeTypes: '',
     ip: { allow: [], deny: [] },
     basicAuth: { enabled: false, realm: 'Restricted', users: [], excludePaths: [] },
     rateLimit: { enabled: false, requestsPerSecond: 10, burst: 21 },
@@ -188,6 +205,12 @@ export function normalizeSite(input: Site): Site {
       recycle: { ...n.recycle },
       limits: { ...n.limits },
       runAs: { ...d.runAs, ...n.runAs },
+      loadBalancer: {
+        ...d.loadBalancer,
+        ...n.loadBalancer,
+        servers: n.loadBalancer?.servers ?? [],
+        healthCheck: { ...d.loadBalancer.healthCheck, ...n.loadBalancer?.healthCheck },
+      },
       env: n.env ?? [],
     };
   }

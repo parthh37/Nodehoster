@@ -90,18 +90,15 @@ func (s *Site) ApplyDefaults() {
 		if n.ShutdownTimeoutSec <= 0 {
 			n.ShutdownTimeoutSec = 15
 		}
-		if n.HealthCheck.Path == "" {
-			n.HealthCheck.Path = "/"
+		n.HealthCheck.applyDefaults(30)
+		lb := &n.LoadBalancer
+		if lb.LocalWeight <= 0 {
+			lb.LocalWeight = 1
 		}
-		if n.HealthCheck.IntervalSec <= 0 {
-			n.HealthCheck.IntervalSec = 30
+		if lb.Strategy == "" {
+			lb.Strategy = "round_robin"
 		}
-		if n.HealthCheck.TimeoutSec <= 0 {
-			n.HealthCheck.TimeoutSec = 5
-		}
-		if n.HealthCheck.UnhealthyThreshold <= 0 {
-			n.HealthCheck.UnhealthyThreshold = 3
-		}
+		lb.HealthCheck.applyDefaults(15)
 		if len(n.WatchIgnore) == 0 {
 			n.WatchIgnore = []string{"node_modules", ".git", "logs"}
 		}
@@ -112,19 +109,7 @@ func (s *Site) ApplyDefaults() {
 		if s.Proxy.LoadBalancing == "" {
 			s.Proxy.LoadBalancing = "round_robin"
 		}
-		hc := &s.Proxy.HealthCheck
-		if hc.Path == "" {
-			hc.Path = "/"
-		}
-		if hc.IntervalSec <= 0 {
-			hc.IntervalSec = 15
-		}
-		if hc.TimeoutSec <= 0 {
-			hc.TimeoutSec = 5
-		}
-		if hc.UnhealthyThreshold <= 0 {
-			hc.UnhealthyThreshold = 3
-		}
+		s.Proxy.HealthCheck.applyDefaults(15)
 	case SiteStatic:
 		if s.Static == nil {
 			s.Static = &StaticConfig{}
@@ -154,6 +139,21 @@ func (s *Site) ApplyDefaults() {
 	}
 	if s.Deploy.InstallCommand == "" && s.Type == SiteNode {
 		s.Deploy.InstallCommand = "npm ci --omit=dev"
+	}
+}
+
+func (hc *HealthCheck) applyDefaults(intervalSec int) {
+	if hc.Path == "" {
+		hc.Path = "/"
+	}
+	if hc.IntervalSec <= 0 {
+		hc.IntervalSec = intervalSec
+	}
+	if hc.TimeoutSec <= 0 {
+		hc.TimeoutSec = 5
+	}
+	if hc.UnhealthyThreshold <= 0 {
+		hc.UnhealthyThreshold = 3
 	}
 }
 
@@ -254,6 +254,22 @@ func (s *Site) Validate() error {
 		if n.RunAs.Enabled && n.RunAs.Username == "" {
 			return verr("node.runAs.username", "required when running as another user")
 		}
+		if lb := n.LoadBalancer; lb.Enabled {
+			if len(lb.Servers) == 0 {
+				return verr("node.loadBalancer.servers", "add at least one server")
+			}
+			for i, u := range lb.Servers {
+				if err := validURL(u.URL); err != nil {
+					return verr(fmt.Sprintf("node.loadBalancer.servers[%d].url", i), "%v", err)
+				}
+			}
+			if lb.LocalWeight > 1000 {
+				return verr("node.loadBalancer.localWeight", "must be between 1 and 1000")
+			}
+			if !validStrategy(lb.Strategy) {
+				return verr("node.loadBalancer.strategy", "unknown strategy %q", lb.Strategy)
+			}
+		}
 	case SiteProxy:
 		if len(s.Proxy.Upstreams) == 0 {
 			return verr("proxy.upstreams", "add at least one upstream")
@@ -263,9 +279,7 @@ func (s *Site) Validate() error {
 				return verr(fmt.Sprintf("proxy.upstreams[%d].url", i), "%v", err)
 			}
 		}
-		switch s.Proxy.LoadBalancing {
-		case "round_robin", "least_conn", "ip_hash", "random":
-		default:
+		if !validStrategy(s.Proxy.LoadBalancing) {
 			return verr("proxy.loadBalancing", "unknown strategy %q", s.Proxy.LoadBalancing)
 		}
 	case SiteStatic:
@@ -283,21 +297,16 @@ func (s *Site) Validate() error {
 		}
 	}
 	r := s.Routing
-	for i, rw := range r.Rewrites {
-		f := fmt.Sprintf("routing.rewrites[%d]", i)
-		if _, err := regexp.Compile(rw.Match); err != nil {
-			return verr(f+".match", "invalid regular expression: %v", err)
-		}
-		if rw.Host != "" {
-			if _, err := regexp.Compile(rw.Host); err != nil {
-				return verr(f+".host", "invalid regular expression: %v", err)
-			}
-		}
-		switch rw.Action {
-		case "rewrite", "redirect", "block", "respond":
-		default:
-			return verr(f+".action", "must be rewrite, redirect, block or respond")
-		}
+	if err := r.ValidateRewrites(); err != nil {
+		return err
+	}
+	if err := validateMimeMaps("routing.mimeTypes", r.MimeTypes); err != nil {
+		return err
+	}
+	switch r.UnknownMimeTypes {
+	case "", UnknownMimeServe, UnknownMimeDeny:
+	default:
+		return verr("routing.unknownMimeTypes", "must be serve or deny")
 	}
 	for i, l := range r.Locations {
 		f := fmt.Sprintf("routing.locations[%d]", i)
@@ -338,6 +347,14 @@ func (s *Site) Validate() error {
 		return verr("routing.basicAuth.users", "add at least one user")
 	}
 	return nil
+}
+
+func validStrategy(s string) bool {
+	switch s {
+	case "round_robin", "least_conn", "ip_hash", "random":
+		return true
+	}
+	return false
 }
 
 func validURL(raw string) error {
@@ -440,5 +457,13 @@ func DefaultSettings() Settings {
 		LogMaxFiles:        10,
 		LogRetentionDays:   30,
 		CertExpiryWarnDays: 14,
+		Mime:               MimeSettings{Types: []MimeMap{}, UnknownTypes: UnknownMimeServe},
+		Mail:               defaultMail(),
 	}
+}
+
+func defaultMail() MailSettings {
+	var m MailSettings
+	m.ApplyDefaults()
+	return m
 }

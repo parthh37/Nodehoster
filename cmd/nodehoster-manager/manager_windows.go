@@ -52,6 +52,7 @@ type manager struct {
 	node     nodePage
 	users    usersPage
 	activity activityPage
+	mail     mailPage
 }
 
 // page is what the middle and right panes show for a node of the tree.
@@ -95,6 +96,7 @@ func runManager(openSite string) {
 		{navNode, m.node.init(m), m.node.content(m), m.node.actionsPane(m)},
 		{navUsers, m.users.init(m), m.users.content(m), m.users.actionsPane(m)},
 		{navActivity, m.activity.init(m), m.activity.content(m), m.activity.actionsPane(m)},
+		{navMail, m.mail.init(m), m.mail.content(m), m.mail.actionsPane(m)},
 	}
 	m.pages = map[navKind]*page{}
 	var contents, actions []Widget
@@ -383,13 +385,16 @@ func (m *manager) do(what string, fn func(ctx context.Context) error) {
 	}()
 }
 
-func (m *manager) errorBox(what string, err error) {
+func (m *manager) errorBox(what string, err error) { m.errorBoxFor(m.mw, what, err) }
+
+// errorBoxFor is errorBox owned by a dialog that is still open.
+func (m *manager) errorBoxFor(owner walk.Form, what string, err error) {
 	msg := err.Error()
 	var apiErr *localapi.Error
 	if errors.As(err, &apiErr) && apiErr.Field != "" {
 		msg = fmt.Sprintf("%s (%s)", apiErr.Message, apiErr.Field)
 	}
-	walk.MsgBox(m.mw, what, msg, walk.MsgBoxIconError)
+	walk.MsgBox(owner, what, msg, walk.MsgBoxIconError)
 }
 
 func (m *manager) confirm(title, msg string) bool {
@@ -451,6 +456,7 @@ const (
 	navNode
 	navUsers
 	navActivity
+	navMail
 )
 
 type navItem struct {
@@ -492,6 +498,7 @@ func newNavModel(icon *walk.Icon) *navModel {
 	root.children = []*navItem{
 		m.sites,
 		{kind: navCerts, text: "Certificates", parent: root},
+		{kind: navMail, text: "SMTP E-mail", parent: root},
 		{kind: navNode, text: "Node.js versions", parent: root},
 		{kind: navUsers, text: "Web console users", parent: root},
 		{kind: navActivity, text: "Events and audit log", parent: root},

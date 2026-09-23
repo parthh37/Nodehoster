@@ -94,6 +94,16 @@ type Settings struct {
 	LogMaxFiles        int             `json:"logMaxFiles"`
 	LogRetentionDays   int             `json:"logRetentionDays"`
 	CertExpiryWarnDays int             `json:"certExpiryWarnDays"`
+	Mime               MimeSettings    `json:"mime"`
+	Mail               MailSettings    `json:"mail"`
+}
+
+// MimeSettings are the server-wide MIME types (IIS "MIME Types" at the
+// server level), added to or overriding the built-in table. Sites can add
+// their own on top.
+type MimeSettings struct {
+	Types        []MimeMap `json:"types"`
+	UnknownTypes string    `json:"unknownTypes"` // serve | deny
 }
 
 type Role string

@@ -87,6 +87,10 @@ func (c *Core) Restore(ctx context.Context, data []byte) error {
 	if b.Sites == nil && b.Settings.PortRangeStart == 0 {
 		return fmt.Errorf("not a NodeHoster backup")
 	}
+	b.Settings.Mail.ApplyDefaults() // a backup from before the SMTP server existed
+	if b.Settings.Mime.UnknownTypes == "" {
+		b.Settings.Mime.UnknownTypes = model.UnknownMimeServe
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, b.Settings); err != nil {
 		return err
 	}
@@ -114,5 +118,6 @@ func (c *Core) Restore(ctx context.Context, data []byte) error {
 		}
 	}
 	c.reload()
+	c.Mail.Apply(c.Settings().Mail)
 	return nil
 }

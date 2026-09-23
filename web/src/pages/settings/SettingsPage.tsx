@@ -12,22 +12,25 @@ import { ErrorBox, FormErrorBanner, FormErrors } from '@/components/Field';
 import { SaveBar } from '@/components/SaveBar';
 import { useToast } from '@/components/Toast';
 import { clone, jsonEqual } from '@/lib/obj';
+import { normalizeSettings } from '@/lib/settingsDefaults';
 import { AcmeTab, DnsTab, NotificationsTab, ProcessTab, TlsTab } from './SettingsTabs';
 import { AdminConsoleTab, BackupTab } from './AdminTabs';
+import { MimeTab } from './MimeTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'process' | 'admin' | 'backup';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'process' | 'admin' | 'backup';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
   { key: 'dns', label: 'DNS providers' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'tls', label: 'TLS & proxy' },
+  { key: 'mime', label: 'MIME types' },
   { key: 'process', label: 'Process & logs' },
   { key: 'admin', label: 'Admin console' },
   { key: 'backup', label: 'Backup & restore' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'process'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'process'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -35,6 +38,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('dnsProviders')) return 'dns';
   if (field.startsWith('webhooks')) return 'notifications';
   if (field.startsWith('tls') || field.startsWith('proxy')) return 'tls';
+  if (field.startsWith('mime')) return 'mime';
   return 'process';
 }
 
@@ -45,9 +49,7 @@ export interface SettingsTabProps {
   update: SettingsUpdater;
 }
 
-function normalize(s: Settings): Settings {
-  return { ...s, dnsProviders: s.dnsProviders ?? [], webhooks: s.webhooks ?? [], proxy: { ...s.proxy, trustedProxies: s.proxy.trustedProxies ?? [] } };
-}
+const normalize = normalizeSettings;
 
 export function SettingsPage() {
   const { tab: tabParam } = useParams();
@@ -115,6 +117,7 @@ export function SettingsPage() {
         {props && tab === 'dns' && <DnsTab {...props} />}
         {props && tab === 'notifications' && <NotificationsTab {...props} />}
         {props && tab === 'tls' && <TlsTab {...props} />}
+        {props && tab === 'mime' && <MimeTab {...props} />}
         {props && tab === 'process' && <ProcessTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}

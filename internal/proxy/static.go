@@ -9,8 +9,9 @@ import (
 )
 
 // staticHandler serves files like an IIS static site: default documents,
-// optional directory browsing, optional SPA fallback, and dotfiles (.env,
-// .git) never served, the way IIS hides web.config.
+// optional directory browsing, optional SPA fallback, MIME types from
+// NodeHoster's own table, and dotfiles (.env, .git) never served, the way
+// IIS hides web.config.
 type staticHandler struct {
 	root     string
 	index    []string
@@ -18,6 +19,7 @@ type staticHandler struct {
 	browse   bool
 	cache    string
 	errPages map[string]string
+	types    *mimeTypes
 }
 
 func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +59,7 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				f := filepath.Join(h.root, idx)
 				if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
 					w.Header().Set("Cache-Control", "no-cache")
-					http.ServeFile(w, r, f)
+					h.serveFile(w, r, f)
 					return
 				}
 			}
@@ -93,21 +95,29 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	return full, clean, true
 }
 
+// setCache applies the site's Cache-Control unless the response already
+// has one (the SPA fallback page is always revalidated).
 func (h *staticHandler) setCache(w http.ResponseWriter) {
-	if h.cache != "" {
+	if h.cache != "" && w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", h.cache)
 	}
 }
 
 func (h *staticHandler) serveFile(w http.ResponseWriter, r *http.Request, f string) {
-	h.setCache(w)
-	if strings.HasSuffix(f, ".html") || strings.HasSuffix(f, ".htm") {
-		if h.cache == "" {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
+	ct, ok := h.types.lookup(f)
+	if !ok {
+		// IIS answers 404.3: the file exists but no MIME map allows it.
+		errorPage(w, h.errPages, http.StatusNotFound, "The requested file was not found.")
+		return
 	}
-	// ServeContent via ServeFile handles ranges, If-Modified-Since and
-	// content types. It would redirect index.html to "./", so open directly.
+	w.Header().Set("Content-Type", ct)
+	h.setCache(w)
+	if h.cache == "" && strings.HasPrefix(ct, "text/html") {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	// ServeContent handles ranges and If-Modified-Since, and keeps the
+	// Content-Type set above. ServeFile would redirect index.html to "./",
+	// so open directly.
 	file, err := os.Open(f)
 	if err != nil {
 		errorPage(w, h.errPages, http.StatusNotFound, "The requested file was not found.")

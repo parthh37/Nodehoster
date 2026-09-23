@@ -35,10 +35,13 @@ const (
 	UpstreamDown    = "upstream.down"
 	UpstreamUp      = "upstream.up"
 	ServerStarted   = "server.started"
+	MailFailed      = "mail.failed" // a message could not be delivered
+	MailError       = "mail.error"  // the SMTP server cannot listen
 )
 
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
-	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted}
+	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
+	MailFailed, MailError}
 
 type Bus struct {
 	store    *store.Store
