@@ -503,23 +503,20 @@ func restartDelay(failures int, lastUptime time.Duration) time.Duration {
 func (a *App) tripRapidFail() {
 	a.mu.Lock()
 	msg, name := a.failMsg, a.site.Name
+	// Detach the instances now, under the lock, so a Start or Restart issued
+	// while they are still stopping gets a fresh set of slots instead of
+	// having its new processes wiped from view (and orphaned) afterwards.
+	slots := a.slots
+	a.slots = nil
+	a.running = false
 	a.mu.Unlock()
 	a.logs.System("%s; the site is stopped until it is started again", msg)
 	a.m.opts.Bus.Error(events.SiteFailed, a.id, "%s stopped: %s", name, msg)
-	go func() {
-		a.mu.Lock()
-		slots := a.slots
-		a.mu.Unlock()
-		// Stop the other instances; the failing slot parks in idle() and
-		// stops like the rest.
-		stopSlots(slots)
-		a.mu.Lock()
-		a.slots = nil
-		a.running = false
-		a.mu.Unlock()
-		a.stopWatcher()
-		a.publish()
-	}()
+	a.stopWatcher()
+	a.publish()
+	// Asynchronous because the caller is one of these slots: it parks in
+	// idle() and receives its stop command like the rest.
+	go stopSlots(slots)
 }
 
 // ---- spawning

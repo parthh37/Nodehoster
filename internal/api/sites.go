@@ -497,7 +497,14 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "cannot read body")
 		return
 	}
-	secret := a.c.Box.MustUnseal(s.Deploy.WebhookSecret)
+	// Fail closed: a secret that cannot be decrypted (for example after a
+	// restore onto another machine) must not degrade into an empty HMAC key.
+	secret, err := a.c.Box.Unseal(s.Deploy.WebhookSecret)
+	if err != nil || secret == "" {
+		a.log.Warn("webhook secret unreadable; re-enter it in the site's deployment settings", "site", s.Name)
+		writeErr(w, http.StatusServiceUnavailable, "webhook secret is not usable")
+		return
+	}
 	if !verifyWebhook(r, body, secret) {
 		a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "webhook.rejected", Target: s.Name})
 		writeErr(w, http.StatusUnauthorized, "invalid signature")

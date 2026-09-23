@@ -194,8 +194,12 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 			}
 		}
 		for k, v := range p.Credentials {
-			if v == secrets.Mask && old != nil {
-				p.Credentials[k] = old.Credentials[k]
+			if v == secrets.Mask {
+				if old != nil {
+					p.Credentials[k] = old.Credentials[k]
+				} else {
+					p.Credentials[k] = "" // never store the mask itself
+				}
 			} else if sealed, err := c.Box.Seal(v); err == nil {
 				p.Credentials[k] = sealed
 			}

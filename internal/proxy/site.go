@@ -579,6 +579,12 @@ type responseWriter struct {
 }
 
 func (w *responseWriter) WriteHeader(code int) {
+	if code < 200 && code != http.StatusSwitchingProtocols {
+		// Informational responses (100 Continue, 103 Early Hints) precede
+		// the real one and must not be mistaken for it.
+		w.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if w.status == 0 {
 		w.status = code
 		if w.server != "" && w.Header().Get("Server") == "" {

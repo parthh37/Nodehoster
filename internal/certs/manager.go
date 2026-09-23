@@ -142,25 +142,28 @@ func (m *Manager) ForHost(host string) *tls.Certificate {
 // obtained) for each host.
 func (m *Manager) EnsureManaged(ctx context.Context, hosts []string) {
 	for _, h := range hosts {
-		m.mu.RLock()
-		_, ok := m.managed[h]
-		m.mu.RUnlock()
-		if ok {
-			continue
-		}
 		now := time.Now()
 		c := &model.Certificate{
 			ID: uuid.NewString(), Name: h, Source: model.CertACME, Domains: []string{h},
 			ACME:      &model.ACMEOptions{Challenge: "http-01", KeyType: m.settings().ACME.KeyType},
 			AutoRenew: true, Managed: true, Status: "pending", CreatedAt: now, UpdatedAt: now,
 		}
-		if err := m.store.PutCertificate(ctx, c); err != nil {
-			m.log.Error("create managed certificate", "host", h, "err", err)
+		// Reserve the host under the write lock so two reloads in quick
+		// succession cannot both create a certificate (and an ACME order).
+		m.mu.Lock()
+		if _, ok := m.managed[h]; ok {
+			m.mu.Unlock()
 			continue
 		}
-		m.mu.Lock()
 		m.managed[h] = c.ID
 		m.mu.Unlock()
+		if err := m.store.PutCertificate(ctx, c); err != nil {
+			m.log.Error("create managed certificate", "host", h, "err", err)
+			m.mu.Lock()
+			delete(m.managed, h)
+			m.mu.Unlock()
+			continue
+		}
 		m.log.Info("requesting automatic certificate", "host", h)
 		go m.issue(c.ID)
 	}
@@ -250,6 +253,17 @@ func (m *Manager) issue(id string) {
 	c.LastAttempt = &now
 	err = m.obtain(c)
 	c.UpdatedAt = time.Now()
+	// An order takes a while; the record may have been renamed, had
+	// auto-renew switched off, or been deleted meanwhile.
+	fresh, ferr := m.store.GetCertificate(ctx, id)
+	if ferr != nil {
+		m.mu.Lock()
+		delete(m.cache, id)
+		m.mu.Unlock()
+		os.RemoveAll(filepath.Join(m.dir, id))
+		return
+	}
+	c.Name, c.AutoRenew = fresh.Name, fresh.AutoRenew
 	if err != nil {
 		m.mu.Lock()
 		m.failures[id]++

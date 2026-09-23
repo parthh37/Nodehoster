@@ -179,3 +179,57 @@ func TestEnvCaseFolding(t *testing.T) {
 		t.Fatalf("PATH not prepended: %s", list)
 	}
 }
+
+// TestRestartAfterRapidFail: a site stopped by rapid-fail protection must be
+// startable again, and the new instances must be tracked (not orphaned).
+func TestRestartAfterRapidFail(t *testing.T) {
+	nodeExe, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	dir := t.TempDir()
+	app := filepath.Join(dir, "app")
+	os.MkdirAll(app, 0o755)
+	os.WriteFile(filepath.Join(app, "bad.js"), []byte("process.exit(1)"), 0o644)
+	os.WriteFile(filepath.Join(app, "server.js"), []byte(testApp), 0o644)
+
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	settings := func() model.Settings { return model.DefaultSettings() }
+	m, err := New(Options{
+		Log: log, Bus: events.New(st, log, settings, func(string) string { return "t" }),
+		SitesDir: filepath.Join(dir, "sites"), LogsDir: filepath.Join(dir, "logs"), RunDir: filepath.Join(dir, "run"),
+		Settings: settings, Unseal: func(s string) string { return s }, IsLocationTarget: func(string) bool { return false },
+		ResolveNode: func(string) (NodeRuntime, error) { return NodeRuntime{Version: "test", Exe: nodeExe}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown()
+
+	site := &model.Site{ID: "s1", Name: "t", Type: model.SiteNode, Bindings: []model.Binding{{Protocol: "http", Port: 80}},
+		Node: &model.NodeConfig{AppRoot: app, Script: "bad.js", MaxRestarts: 1, RestartWindowSec: 60}}
+	site.ApplyDefaults()
+	m.Apply(site)
+	m.Start("s1")
+	waitFor(t, "rapid-fail", func() bool { s, _ := m.Status("s1"); return s.State == model.StateFailed })
+
+	fixed := *site
+	node := *site.Node
+	node.Script = "server.js"
+	fixed.Node = &node
+	m.Apply(&fixed)
+	if err := m.Restart("s1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "running after restart", func() bool { s, _ := m.Status("s1"); return s.State == model.StateRunning })
+	time.Sleep(time.Second) // the rapid-fail cleanup must not wipe the new instances
+	if s, _ := m.Status("s1"); s.State != model.StateRunning || len(m.Backends("s1")) != 1 {
+		t.Fatalf("state %s, %d backends after restart", s.State, len(m.Backends("s1")))
+	}
+	m.Stop("s1")
+}

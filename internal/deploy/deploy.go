@@ -248,6 +248,12 @@ func redact(repo string) string {
 func (d *Deployer) run(site *model.Site, dep *model.Deployment, l *depLog, fetch func() error) {
 	ctx := context.Background()
 	defer d.finish(site.ID, dep.ID)
+	// The release active before this deployment keeps serving while the
+	// rolling recycle drains it, so pruning must not remove it.
+	previous := ""
+	if cur, err := d.opts.Store.GetSite(ctx, site.ID); err == nil {
+		previous = cur.ActiveRelease
+	}
 	err := d.steps(ctx, site, dep, l, fetch)
 	now := time.Now()
 	dep.FinishedAt = &now
@@ -265,7 +271,7 @@ func (d *Deployer) run(site *model.Site, dep *model.Deployment, l *depLog, fetch
 	}
 	d.opts.Store.PutDeployment(ctx, dep)
 	if err == nil {
-		d.prune(ctx, site)
+		d.prune(ctx, site, previous)
 	}
 }
 
@@ -431,8 +437,9 @@ func (d *Deployer) Activate(ctx context.Context, site *model.Site, depID string)
 	return dep, nil
 }
 
-// prune deletes releases beyond KeepReleases, never the active one.
-func (d *Deployer) prune(ctx context.Context, site *model.Site) {
+// prune deletes releases beyond KeepReleases, never the active one or the
+// one that was active before the latest deployment.
+func (d *Deployer) prune(ctx context.Context, site *model.Site, previous string) {
 	current, err := d.opts.Store.GetSite(ctx, site.ID)
 	if err != nil {
 		return
@@ -448,7 +455,7 @@ func (d *Deployer) prune(ctx context.Context, site *model.Site) {
 		if dep.ReleaseDir == "" {
 			continue
 		}
-		if dep.ID == current.ActiveRelease || kept < keep {
+		if dep.ID == current.ActiveRelease || dep.ID == previous || kept < keep {
 			kept++
 			continue
 		}
@@ -459,7 +466,7 @@ func (d *Deployer) prune(ctx context.Context, site *model.Site) {
 	// Keep the history bounded too.
 	if len(list) > 100 {
 		for _, dep := range list[100:] {
-			if dep.ID != current.ActiveRelease {
+			if dep.ID != current.ActiveRelease && dep.ID != previous {
 				d.opts.Store.DeleteDeployment(ctx, dep.ID)
 				os.Remove(d.logPath(site.ID, dep.ID))
 			}

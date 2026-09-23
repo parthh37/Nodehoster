@@ -26,14 +26,11 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, h.errPages, http.StatusMethodNotAllowed, "This resource only supports GET and HEAD.")
 		return
 	}
-	p := path.Clean("/" + r.URL.Path)
-	for _, seg := range strings.Split(p, "/") {
-		if strings.HasPrefix(seg, ".") && seg != "." && seg != ".well-known" {
-			errorPage(w, h.errPages, http.StatusNotFound, "The requested file was not found.")
-			return
-		}
+	full, p, ok := h.resolve(r.URL.Path)
+	if !ok {
+		errorPage(w, h.errPages, http.StatusNotFound, "The requested file was not found.")
+		return
 	}
-	full := filepath.Join(h.root, filepath.FromSlash(p))
 	st, err := os.Stat(full)
 	if err == nil && st.IsDir() {
 		if !strings.HasSuffix(r.URL.Path, "/") {
@@ -69,6 +66,31 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serveFile(w, r, full)
+}
+
+// resolve maps a URL path to a file under the root. It refuses anything
+// that could step outside the root or reveal hidden files: a decoded "%5C"
+// is a path separator on Windows and ":" can name another drive or an NTFS
+// alternate data stream, so neither may appear in a request path.
+func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
+	if strings.ContainsAny(urlPath, "\\:\x00") {
+		return "", "", false
+	}
+	clean = path.Clean("/" + urlPath)
+	for _, seg := range strings.Split(clean, "/") {
+		if strings.HasPrefix(seg, ".") && seg != ".well-known" {
+			return "", "", false
+		}
+	}
+	root, err := filepath.Abs(h.root)
+	if err != nil {
+		return "", "", false
+	}
+	full = filepath.Join(root, filepath.FromSlash(clean))
+	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
+		return "", "", false
+	}
+	return full, clean, true
 }
 
 func (h *staticHandler) setCache(w http.ResponseWriter) {

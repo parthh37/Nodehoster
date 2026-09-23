@@ -71,28 +71,28 @@ func (s *Site) ApplyDefaults() {
 		if n.RestartPolicy == "" {
 			n.RestartPolicy = "always"
 		}
-		if n.MaxRestarts == 0 {
+		if n.MaxRestarts <= 0 {
 			n.MaxRestarts = 10
 		}
-		if n.RestartWindowSec == 0 {
+		if n.RestartWindowSec <= 0 {
 			n.RestartWindowSec = 300
 		}
-		if n.StartupTimeoutSec == 0 {
+		if n.StartupTimeoutSec <= 0 {
 			n.StartupTimeoutSec = 60
 		}
-		if n.ShutdownTimeoutSec == 0 {
+		if n.ShutdownTimeoutSec <= 0 {
 			n.ShutdownTimeoutSec = 15
 		}
 		if n.HealthCheck.Path == "" {
 			n.HealthCheck.Path = "/"
 		}
-		if n.HealthCheck.IntervalSec == 0 {
+		if n.HealthCheck.IntervalSec <= 0 {
 			n.HealthCheck.IntervalSec = 30
 		}
-		if n.HealthCheck.TimeoutSec == 0 {
+		if n.HealthCheck.TimeoutSec <= 0 {
 			n.HealthCheck.TimeoutSec = 5
 		}
-		if n.HealthCheck.UnhealthyThreshold == 0 {
+		if n.HealthCheck.UnhealthyThreshold <= 0 {
 			n.HealthCheck.UnhealthyThreshold = 3
 		}
 		if len(n.WatchIgnore) == 0 {
@@ -109,13 +109,13 @@ func (s *Site) ApplyDefaults() {
 		if hc.Path == "" {
 			hc.Path = "/"
 		}
-		if hc.IntervalSec == 0 {
+		if hc.IntervalSec <= 0 {
 			hc.IntervalSec = 15
 		}
-		if hc.TimeoutSec == 0 {
+		if hc.TimeoutSec <= 0 {
 			hc.TimeoutSec = 5
 		}
-		if hc.UnhealthyThreshold == 0 {
+		if hc.UnhealthyThreshold <= 0 {
 			hc.UnhealthyThreshold = 3
 		}
 	case SiteStatic:
@@ -129,20 +129,20 @@ func (s *Site) ApplyDefaults() {
 		if s.Redirect == nil {
 			s.Redirect = &RedirectConfig{}
 		}
-		if s.Redirect.StatusCode == 0 {
+		if s.Redirect.StatusCode <= 0 {
 			s.Redirect.StatusCode = 301
 		}
 	}
-	if s.Routing.HSTS.Enabled && s.Routing.HSTS.MaxAgeSec == 0 {
+	if s.Routing.HSTS.Enabled && s.Routing.HSTS.MaxAgeSec <= 0 {
 		s.Routing.HSTS.MaxAgeSec = 31536000
 	}
 	if s.Routing.BasicAuth.Realm == "" {
 		s.Routing.BasicAuth.Realm = "Restricted"
 	}
-	if s.Routing.RateLimit.Enabled && s.Routing.RateLimit.Burst == 0 {
+	if s.Routing.RateLimit.Enabled && s.Routing.RateLimit.Burst <= 0 {
 		s.Routing.RateLimit.Burst = int(s.Routing.RateLimit.RequestsPerSecond*2) + 1
 	}
-	if s.Deploy.KeepReleases == 0 {
+	if s.Deploy.KeepReleases <= 0 {
 		s.Deploy.KeepReleases = 5
 	}
 	if s.Deploy.InstallCommand == "" && s.Type == SiteNode {

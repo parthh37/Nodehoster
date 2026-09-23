@@ -32,7 +32,7 @@ jobs:
         # installed on a self-hosted machine.
         shell: powershell
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Toolchains are installed here rather than with actions/setup-go and
       # actions/setup-node: setup-go runs `go version` through the shell with
@@ -194,7 +194,7 @@ jobs:
           Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: NodeHoster-${{ steps.ver.outputs.version }}
           path: |
@@ -205,7 +205,7 @@ jobs:
 
       - name: Publish release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*-setup.exe

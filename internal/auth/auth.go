@@ -35,7 +35,18 @@ var (
 	ErrTOTPInvalid  = errors.New("invalid two-factor code")
 	ErrLocked       = errors.New("too many failed attempts; try again in a few minutes")
 	ErrDisabled     = errors.New("this account is disabled")
+	ErrTOTPBroken   = errors.New("the two-factor secret cannot be read on this server; reset the account with `nodehoster reset-password`")
 )
+
+// totpValid checks a code against a sealed secret, failing closed when the
+// secret cannot be decrypted: an empty key would make codes predictable.
+func (s *Service) totpValid(sealed, code string) (bool, error) {
+	secret, err := s.box.Unseal(sealed)
+	if err != nil || secret == "" {
+		return false, ErrTOTPBroken
+	}
+	return totp.Validate(strings.ReplaceAll(code, " ", ""), secret), nil
+}
 
 type Service struct {
 	store *store.Store
@@ -158,7 +169,11 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 		if code == "" {
 			return nil, "", ErrTOTPRequired
 		}
-		if !totp.Validate(strings.ReplaceAll(code, " ", ""), s.box.MustUnseal(u.TOTPSecret)) {
+		ok, err := s.totpValid(u.TOTPSecret, code)
+		if err != nil {
+			return nil, "", err
+		}
+		if !ok {
 			s.fail(key)
 			return nil, "", ErrTOTPInvalid
 		}
@@ -227,6 +242,11 @@ func (s *Service) ChangePassword(ctx context.Context, u *store.UserRecord, curre
 // ---- TOTP
 
 func (s *Service) TOTPSetup(ctx context.Context, u *store.UserRecord) (secret, url string, err error) {
+	// Starting over would replace (and so switch off) an active second
+	// factor without proving possession of it.
+	if u.TOTPEnabled {
+		return "", "", errors.New("two-factor authentication is already on; turn it off with a current code first")
+	}
 	key, err := totp.Generate(totp.GenerateOpts{Issuer: "NodeHoster", AccountName: u.Username})
 	if err != nil {
 		return "", "", err
@@ -246,7 +266,9 @@ func (s *Service) TOTPEnable(ctx context.Context, u *store.UserRecord, code stri
 	if u.TOTPSecret == "" {
 		return errors.New("start two-factor setup first")
 	}
-	if !totp.Validate(strings.ReplaceAll(code, " ", ""), s.box.MustUnseal(u.TOTPSecret)) {
+	if ok, err := s.totpValid(u.TOTPSecret, code); err != nil {
+		return err
+	} else if !ok {
 		return ErrTOTPInvalid
 	}
 	u.TOTPEnabled = true
@@ -257,7 +279,9 @@ func (s *Service) TOTPDisable(ctx context.Context, u *store.UserRecord, code str
 	if !u.TOTPEnabled {
 		return nil
 	}
-	if !totp.Validate(strings.ReplaceAll(code, " ", ""), s.box.MustUnseal(u.TOTPSecret)) {
+	if ok, err := s.totpValid(u.TOTPSecret, code); err != nil {
+		return err
+	} else if !ok {
 		return ErrTOTPInvalid
 	}
 	u.TOTPEnabled, u.TOTPSecret = false, ""

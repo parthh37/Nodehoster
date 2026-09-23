@@ -51,12 +51,13 @@ type routeTable struct {
 }
 
 type listener struct {
-	key   string // proto|addr
-	proto string
-	addr  string
-	port  int
-	srv   *http.Server
-	err   error
+	key     string // proto|addr
+	proto   string
+	addr    string
+	port    int
+	ln      net.Listener
+	srv     *http.Server
+	closing atomic.Bool
 }
 
 type Server struct {
@@ -64,6 +65,10 @@ type Server struct {
 	stdLog *log.Logger
 
 	table atomic.Pointer[routeTable]
+
+	// reloadMu serializes Reload: two concurrent reloads would otherwise
+	// both release the same previous runtimes.
+	reloadMu sync.Mutex
 
 	mu        sync.Mutex
 	listeners map[string]*listener
@@ -86,7 +91,26 @@ func New(deps Deps) *Server {
 	}
 	s.table.Store(&routeTable{byPort: map[int][]*route{}, sites: map[string]*siteRuntime{}})
 	deps.Certs.HTTP.HasPort80 = s.hasHTTPPort80
+	go s.retryFailedListeners()
 	return s
+}
+
+// retryFailedListeners keeps trying ports that could not be bound, for
+// example while another program (or the temporary ACME challenge listener)
+// held them, so a site comes up without needing another reload.
+func (s *Server) retryFailedListeners() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		s.mu.Lock()
+		failed := len(s.failed) > 0
+		s.mu.Unlock()
+		if failed {
+			s.reloadMu.Lock()
+			s.reconcileListeners(s.table.Load())
+			s.reloadMu.Unlock()
+		}
+	}
 }
 
 func (s *Server) statsFor(id string) *siteStats {
@@ -115,6 +139,8 @@ func (s *Server) runtime(id string) *siteRuntime {
 // new ports are opened, unused ones closed, and existing connections keep
 // working throughout.
 func (s *Server) Reload(sites []*model.Site, running func(*model.Site) bool) {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	st := s.deps.Settings()
 	var trusted []*net.IPNet
 	for _, c := range st.Proxy.TrustedProxies {
@@ -245,6 +271,11 @@ func (s *Server) reconcileListeners(t *routeTable) {
 	for key, l := range s.listeners {
 		if _, ok := want[key]; !ok {
 			delete(s.listeners, key)
+			// Close the socket now so the port can be bound again right
+			// away (for example by the same port switching protocol);
+			// in-flight requests drain in the background.
+			l.closing.Store(true)
+			l.ln.Close()
 			go func(l *listener) {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
@@ -253,6 +284,7 @@ func (s *Server) reconcileListeners(t *routeTable) {
 			s.deps.Log.Info("listener closed", "proto", l.proto, "addr", l.addr)
 		}
 	}
+	prevFailed := s.failed
 	s.failed = map[string]error{}
 	for key, w := range want {
 		if _, ok := s.listeners[key]; ok {
@@ -261,8 +293,13 @@ func (s *Server) reconcileListeners(t *routeTable) {
 		l, err := s.listen(w)
 		if err != nil {
 			s.failed[w.addr] = err
-			s.deps.Bus.Error("server.listen", "", "cannot listen on %s (%s): %v", w.addr, w.proto, err)
+			if prevFailed[w.addr] == nil { // report once, not on every retry
+				s.deps.Bus.Error("server.listen", "", "cannot listen on %s (%s): %v", w.addr, w.proto, err)
+			}
 			continue
+		}
+		if prevFailed[w.addr] != nil {
+			s.deps.Bus.Info("server.listen", "", "now listening on %s (%s)", w.addr, w.proto)
 		}
 		s.listeners[key] = l
 	}
@@ -281,24 +318,20 @@ func (s *Server) listen(w wantListener) (*listener, error) {
 		MaxHeaderBytes:    1 << 20,
 		ErrorLog:          s.stdLog,
 	}
-	l := &listener{key: w.proto + "|" + w.addr, proto: w.proto, addr: w.addr, port: w.port, srv: srv}
+	l := &listener{key: w.proto + "|" + w.addr, proto: w.proto, addr: w.addr, port: w.port, ln: ln, srv: srv}
+	serve := func() error { return srv.Serve(ln) }
 	if w.proto == "https" {
+		// HTTP/2 stays wired up; whether it is offered is decided per
+		// handshake by the ALPN list in tlsConfigFor, so the setting can be
+		// changed without reopening listeners.
 		srv.TLSConfig = &tls.Config{GetConfigForClient: s.tlsConfigFor}
-		if !st.TLS.HTTP2 {
-			srv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
-		}
-		go func() {
-			if err := srv.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.deps.Log.Error("listener stopped", "addr", w.addr, "err", err)
-			}
-		}()
-	} else {
-		go func() {
-			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.deps.Log.Error("listener stopped", "addr", w.addr, "err", err)
-			}
-		}()
+		serve = func() error { return srv.ServeTLS(ln, "", "") }
 	}
+	go func() {
+		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) && !l.closing.Load() {
+			s.deps.Log.Error("listener stopped", "addr", w.addr, "err", err)
+		}
+	}()
 	s.deps.Log.Info("listening", "proto", w.proto, "addr", w.addr)
 	return l, nil
 }

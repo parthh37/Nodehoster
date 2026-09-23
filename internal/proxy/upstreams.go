@@ -55,6 +55,7 @@ type upstreamPool struct {
 	rr       atomic.Uint64
 	bus      *events.Bus
 	stop     chan struct{}
+	once     sync.Once
 }
 
 func newUpstreamPool(site *model.Site, bus *events.Bus, prev *upstreamPool) *upstreamPool {
@@ -83,7 +84,7 @@ func newUpstreamPool(site *model.Site, bus *events.Bus, prev *upstreamPool) *ups
 	return p
 }
 
-func (p *upstreamPool) close() { close(p.stop) }
+func (p *upstreamPool) close() { p.once.Do(func() { close(p.stop) }) }
 
 // available returns healthy upstreams, or all of them if none are healthy:
 // trying a possibly-down upstream beats refusing every request.
