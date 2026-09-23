@@ -19,11 +19,14 @@ import (
 // applies: like IIS Manager, the desktop manager runs elevated.
 //
 // The status pipe also admits interactive users (sessions at the console
-// or over Remote Desktop, not services or network logons); read and write
-// are both needed to send a request.
+// or over Remote Desktop, not services or network logons) with
+// 0x12018b = FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES:
+// enough to send a request. Not GENERIC_WRITE, which includes
+// FILE_APPEND_DATA, on a pipe the right to create more server instances of
+// it: any user could then answer other users' status icons.
 const (
 	adminSDDL  = "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
-	statusSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+	statusSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12018b;;;IU)"
 )
 
 // listen creates the endpoint's pipe. go-winio opens the first instance

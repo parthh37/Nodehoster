@@ -68,7 +68,9 @@ Filename: "{app}\nodehoster.exe"; Parameters: "service install"; StatusMsg: "Reg
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""NodeHoster"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""NodeHoster"" dir=in action=allow program=""{app}\nodehoster.exe"" enable=yes profile=any"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated; AfterInstall: VerifyServiceRunning
-; The status icon runs unelevated, as the user who started setup.
+; The status icon runs unelevated, as the user who started setup. Upgrades
+; close every user's icon (the program file must be replaced); other users
+; get theirs back at their next sign-in.
 Filename: "{app}\nodehoster-manager.exe"; Parameters: "--tray"; Flags: nowait runasoriginaluser skipifsilent; Tasks: statusicon
 Filename: "{app}\nodehoster-manager.exe"; Description: "Open NodeHoster Manager"; Flags: postinstall nowait skipifsilent unchecked
 Filename: "https://localhost:8484/"; Description: "Open the NodeHoster web console"; Flags: postinstall shellexec nowait skipifsilent unchecked

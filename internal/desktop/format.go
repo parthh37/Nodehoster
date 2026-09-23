@@ -126,7 +126,8 @@ func SiteUsage(st model.SiteStatus) (cpu float64, mem uint64) {
 // machine can open: "https://0.0.0.0:8484" becomes "https://localhost:8484/".
 func ConsoleURL(listenURL string) string {
 	scheme, hostport, ok := strings.Cut(listenURL, "://")
-	if !ok {
+	if !ok || (scheme != "http" && scheme != "https") {
+		// It is opened with the shell: never anything but a web page.
 		return ""
 	}
 	host, port, err := net.SplitHostPort(hostport)

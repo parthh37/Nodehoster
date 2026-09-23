@@ -18,7 +18,9 @@ import (
 )
 
 // runDialog shows a modal dialog with OK and Cancel. onOK validates and
-// applies the input; returning false keeps the dialog open.
+// applies the input; returning false keeps the dialog open. Read the
+// widgets in onOK: the dialog and its widgets are disposed when Run
+// returns, and their getters then return zero values.
 func runDialog(owner walk.Form, title string, size Size, children []Widget, onOK func(dlg *walk.Dialog) bool) bool {
 	return runDialogAs(nil, owner, title, size, children, onOK)
 }
@@ -66,26 +68,33 @@ func invalid(owner walk.Form, msg string) bool {
 
 func inputDialog(owner walk.Form, title, prompt, initial string, password bool) (string, bool) {
 	var le *walk.LineEdit
+	var value string
 	ok := runDialog(owner, title, Size{Width: 380}, []Widget{
 		Label{Text: prompt},
 		LineEdit{AssignTo: &le, Text: initial, PasswordMode: password},
-	}, nil)
-	if !ok {
-		return "", false
-	}
-	return le.Text(), true
+	}, func(*walk.Dialog) bool {
+		value = le.Text()
+		return true
+	})
+	return value, ok
 }
 
 func choiceDialog(owner walk.Form, title, prompt string, options []string, current int) (string, bool) {
 	var cb *walk.ComboBox
+	choice := -1
 	ok := runDialog(owner, title, Size{Width: 320}, []Widget{
 		Label{Text: prompt},
 		ComboBox{AssignTo: &cb, Model: options, CurrentIndex: current},
-	}, nil)
-	if !ok || cb.CurrentIndex() < 0 {
+	}, func(dlg *walk.Dialog) bool {
+		if choice = cb.CurrentIndex(); choice < 0 {
+			return invalid(dlg, "Pick one of the options.")
+		}
+		return true
+	})
+	if !ok {
 		return "", false
 	}
-	return options[cb.CurrentIndex()], true
+	return options[choice], true
 }
 
 // showSecretDialog shows a generated secret once, with a copy button.
@@ -380,11 +389,18 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 		if n == "" || strings.ContainsAny(n, "= \t") {
 			return invalid(dlg, "Enter a variable name without spaces or '='.")
 		}
+		v := value.Text()
+		if stored && v == "" && n != e.Name {
+			// The server finds a stored secret by its name.
+			return invalid(dlg, "Enter the value again: a secret's stored value cannot move to a new name.")
+		}
+		if stored && v == "" && !secret.Checked() {
+			return invalid(dlg, "Enter the value: a secret's stored value is never shown, so it cannot become a plain variable as it is.")
+		}
 		e.Name, e.Secret = n, secret.Checked()
-		switch v := value.Text(); {
-		case stored && v == "" && e.Secret:
+		if stored && v == "" {
 			e.Value = secrets.Mask // keep the stored secret
-		default:
+		} else {
 			e.Value = v
 		}
 		return true
@@ -516,6 +532,7 @@ func addSiteDialog(m *manager) {
 	}
 
 	var created *localapi.Site
+	var startNow bool
 	ok := runDialog(m.mw, "Add site", Size{Width: 560}, []Widget{
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Site name:"}, LineEdit{AssignTo: &name},
@@ -582,14 +599,14 @@ func addSiteDialog(m *manager) {
 			m.errorBox("Add site", err)
 			return false
 		}
-		created = &out
+		created, startNow = &out, start.Checked()
 		return true
 	})
 	if !ok || created == nil {
 		return
 	}
 	id := created.ID
-	if start.Checked() {
+	if startNow {
 		m.siteAction(id, "start")
 	}
 	// Show the new site once a refresh has put it in the tree.

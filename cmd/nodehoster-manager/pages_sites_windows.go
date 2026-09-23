@@ -601,17 +601,42 @@ func yesNo(b bool) string {
 // ---- following a site's log
 
 // logFollower shows a site's recent output and then streams new lines.
-// Lines arrive on a network goroutine and are appended in batches, so a
-// chatty application cannot flood the UI thread.
+// Lines arrive on network goroutines and are appended in batches, so a
+// chatty application cannot flood the UI thread. Each follow has its own
+// buffer: goroutines of a previous site, still winding down, write only to
+// theirs, which nobody reads any more.
 type logFollower struct {
 	m      *manager
 	site   string
 	view   *walk.TextEdit
 	cancel context.CancelFunc
 	lines  []string
+}
 
+type logBuffer struct {
 	mu      sync.Mutex
 	pending []string
+}
+
+func (b *logBuffer) push(l model.LogLine) {
+	prefix := l.Time.Local().Format("15:04:05")
+	if l.Instance >= 0 {
+		prefix += fmt.Sprintf(" #%d", l.Instance)
+	}
+	if l.Stream == "stderr" || l.Stream == "system" {
+		prefix += " " + l.Stream
+	}
+	b.mu.Lock()
+	b.pending = append(b.pending, prefix+"  "+strings.TrimRight(l.Text, "\r\n"))
+	b.mu.Unlock()
+}
+
+func (b *logBuffer) take() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	batch := b.pending
+	b.pending = nil
+	return batch
 }
 
 const maxLogLines = 3000
@@ -625,6 +650,7 @@ func (f *logFollower) follow(site string, view *walk.TextEdit, state *walk.Label
 	f.clear()
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
+	buf := &logBuffer{}
 	state.SetText("Loading…")
 	setState := func(s string) {
 		f.m.mw.Synchronize(func() {
@@ -639,7 +665,7 @@ func (f *logFollower) follow(site string, view *walk.TextEdit, state *walk.Label
 		var recent []model.LogLine
 		if err := f.m.cl.Get(ctx, base+"?lines=500", &recent); err == nil {
 			for _, l := range recent {
-				f.push(l)
+				buf.push(l)
 			}
 		}
 		for ctx.Err() == nil {
@@ -647,7 +673,7 @@ func (f *logFollower) follow(site string, view *walk.TextEdit, state *walk.Label
 			f.m.cl.Stream(ctx, base+"/stream", func(event string, data []byte) {
 				var l model.LogLine
 				if event == "log" && json.Unmarshal(data, &l) == nil {
-					f.push(l)
+					buf.push(l)
 				}
 			})
 			if ctx.Err() == nil {
@@ -667,11 +693,7 @@ func (f *logFollower) follow(site string, view *walk.TextEdit, state *walk.Label
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				f.mu.Lock()
-				batch := f.pending
-				f.pending = nil
-				f.mu.Unlock()
-				if len(batch) > 0 {
+				if batch := buf.take(); len(batch) > 0 {
 					f.m.mw.Synchronize(func() {
 						if ctx.Err() == nil {
 							f.appendLines(batch)
@@ -681,19 +703,6 @@ func (f *logFollower) follow(site string, view *walk.TextEdit, state *walk.Label
 			}
 		}
 	}()
-}
-
-func (f *logFollower) push(l model.LogLine) {
-	prefix := l.Time.Local().Format("15:04:05")
-	if l.Instance >= 0 {
-		prefix += fmt.Sprintf(" #%d", l.Instance)
-	}
-	if l.Stream == "stderr" || l.Stream == "system" {
-		prefix += " " + l.Stream
-	}
-	f.mu.Lock()
-	f.pending = append(f.pending, prefix+"  "+strings.TrimRight(l.Text, "\r\n"))
-	f.mu.Unlock()
 }
 
 func (f *logFollower) appendLines(batch []string) {

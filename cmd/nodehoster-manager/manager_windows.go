@@ -43,6 +43,7 @@ type manager struct {
 	connErr error
 
 	pendingSite string // shown as soon as a refresh lists it
+	rebuilding  bool   // the tree is being rebuilt: ignore its selection changes
 
 	server   serverPage
 	sitesPg  sitesPage
@@ -277,6 +278,9 @@ func (m *manager) setActivity(s string) { m.sbActivity.SetText(s) }
 // ---- navigation
 
 func (m *manager) navigate() {
+	if m.rebuilding {
+		return
+	}
 	item, _ := m.tree.CurrentItem().(*navItem)
 	if item == nil {
 		return
@@ -336,22 +340,27 @@ func (m *manager) syncTree() {
 		}
 		return
 	}
-	current := m.site
+	// Resetting the node deletes its items, and the tree control moves the
+	// selection through the neighbors of a deleted selected item, raising
+	// a change for each; none of those is the user's choice.
+	onSite := m.cur == m.pages[navSite]
+	m.rebuilding = true
 	n.children = n.children[:0]
 	for _, s := range m.sites {
 		n.children = append(n.children, &navItem{kind: navSite, text: s.Name, siteID: s.ID, parent: n, image: m.dots[desktop.SiteLevel(s.Status.State)]})
 	}
 	m.nav.PublishItemsReset(n)
 	m.tree.SetExpanded(n, true)
-	if m.cur == m.pages[navSite] {
-		// The site shown was removed or renamed: follow it, or fall back
-		// to the list.
-		if m.site = ""; current != "" {
-			m.showSite(current)
-		}
-		if m.site == "" {
+	m.rebuilding = false
+	if onSite {
+		// Follow the site shown (by ID, so through a rename); if it was
+		// removed, fall back to the list.
+		if !m.showSite(m.site) {
 			m.tree.SetCurrentItem(n)
 		}
+		// Selecting the item the control already landed on raises no
+		// change, so sync the page explicitly.
+		m.navigate()
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -197,6 +198,31 @@ func Status() (string, error) {
 		svc.Stopped: "stopped", svc.StartPending: "starting", svc.StopPending: "stopping",
 		svc.Running: "running", svc.Paused: "paused", svc.ContinuePending: "starting", svc.PausePending: "stopping",
 	}[svc.State(st.CurrentState)], nil
+}
+
+// ProcessID returns the process ID of the running service, or 0 when it
+// is not running. Like Status, it needs only the right to query status.
+func ProcessID() (uint32, error) {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseServiceHandle(m)
+	name, _ := windows.UTF16PtrFromString(Name)
+	h, err := windows.OpenService(m, name, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseServiceHandle(h)
+	var st windows.SERVICE_STATUS_PROCESS
+	var needed uint32
+	if err := windows.QueryServiceStatusEx(h, windows.SC_STATUS_PROCESS_INFO, (*byte)(unsafe.Pointer(&st)), uint32(unsafe.Sizeof(st)), &needed); err != nil {
+		return 0, err
+	}
+	if st.CurrentState != windows.SERVICE_RUNNING {
+		return 0, nil
+	}
+	return st.ProcessId, nil
 }
 
 func waitState(s *mgr.Service, want svc.State, timeout time.Duration) error {

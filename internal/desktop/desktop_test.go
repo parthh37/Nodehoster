@@ -98,6 +98,8 @@ func TestConsoleURL(t *testing.T) {
 		"https://[::]:8484":      "https://localhost:8484/",
 		"https://web01:443":      "https://web01:443/",
 		"":                       "",
+		"file://c:/x:1":          "",
+		"ms-settings://x:1":      "",
 	} {
 		if got := ConsoleURL(in); got != want {
 			t.Errorf("ConsoleURL(%q) = %q, want %q", in, got, want)
