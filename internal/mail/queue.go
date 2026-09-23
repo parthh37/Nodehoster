@@ -153,6 +153,9 @@ func (q *queue) finish(m model.MailMessage) (failed bool, err error) {
 		return false, nil // deleted while it was being sent
 	}
 	e.busy = false
+	// The worker keeps reading its copy after this returns (to report
+	// failures), so the queue must not share its slices.
+	m = clone(m)
 	pending, bad := 0, 0
 	for _, r := range m.Recipients {
 		switch r.State {
