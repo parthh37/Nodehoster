@@ -30,6 +30,8 @@ func TestWorkerDefaultsAndValidation(t *testing.T) {
 		"routing.basicAuth":        func(s *Site) { s.Routing.BasicAuth.Enabled = true },
 		"routing.maintenance":      func(s *Site) { s.Routing.Maintenance.Enabled = true },
 		"routing.httpsRedirect":    func(s *Site) { s.Routing.HTTPSRedirect = true },
+		"routing.affinity":         func(s *Site) { s.Routing.Affinity.Enabled = true },
+		"routing.cache":            func(s *Site) { s.Routing.Cache.Enabled = true },
 		"node.script":              func(s *Site) { s.Node.Script = "" },
 		"node.restartPolicy":       func(s *Site) { s.Node.RestartPolicy = "sometimes" },
 	}

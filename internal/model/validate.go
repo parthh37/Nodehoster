@@ -460,6 +460,8 @@ func (s *Site) validateWorker() error {
 		{r.RateLimit.Enabled, "routing.rateLimit"},
 		{r.Maintenance.Enabled, "routing.maintenance"},
 		{len(r.ErrorPages) > 0, "routing.errorPages"},
+		{r.Affinity.Enabled, "routing.affinity"},
+		{r.Cache.Enabled, "routing.cache"},
 	} {
 		if c.set {
 			return verr(c.field, "a background worker does not serve HTTP; remove this routing setting")
