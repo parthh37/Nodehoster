@@ -110,7 +110,12 @@ export function RoutingGeneral(props: SiteEditorProps) {
           )}
         </FormSection>
         <FormSection title="Proxying" description="Applies to responses from the application or upstreams.">
-          <Switch checked={r.compression} onChange={(v) => set({ compression: v })} label="Compression" description="gzip / brotli for text responses." />
+          <Switch
+            checked={r.compression}
+            onChange={(v) => set({ compression: v })}
+            label="Compression"
+            description="Brotli or gzip, as the client prefers, for text responses over 1 KB. Static files with a .br or .gz copy next to them are sent pre-compressed."
+          />
           <Switch checked={r.webSockets} onChange={(v) => set({ webSockets: v })} label="WebSockets" description="Allow connection upgrades (Socket.IO, GraphQL subscriptions…)." />
           <Switch checked={r.accessLog} onChange={(v) => set({ accessLog: v })} label="Access log" description="Record every request in the site's access log." />
           <Grid>

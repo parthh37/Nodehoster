@@ -134,6 +134,16 @@ func (s *Site) ApplyDefaults() {
 	if strings.TrimSpace(s.Routing.Affinity.CookieName) == "" {
 		s.Routing.Affinity.CookieName = DefaultAffinityCookie
 	}
+	cache := &s.Routing.Cache
+	if cache.MaxMemoryMB <= 0 {
+		cache.MaxMemoryMB = 64
+	}
+	if cache.MaxObjectKB <= 0 {
+		cache.MaxObjectKB = 1024
+	}
+	if cache.VaryByQuery == "" {
+		cache.VaryByQuery = "all"
+	}
 	if s.Routing.RateLimit.Enabled && s.Routing.RateLimit.Burst <= 0 {
 		s.Routing.RateLimit.Burst = int(s.Routing.RateLimit.RequestsPerSecond*2) + 1
 	}
@@ -349,6 +359,9 @@ func (s *Site) Validate() error {
 	if r.BasicAuth.Enabled && len(r.BasicAuth.Users) == 0 {
 		return verr("routing.basicAuth.users", "add at least one user")
 	}
+	if err := r.Cache.validate(); err != nil {
+		return err
+	}
 	if !cookieNameRe.MatchString(r.Affinity.CookieName) {
 		return verr("routing.affinity.cookieName", "use 1-64 letters, digits or !#$%%&'*+-.^_`|~")
 	}
@@ -358,7 +371,45 @@ func (s *Site) Validate() error {
 	return nil
 }
 
-// cookieNameRe is an RFC 6265 cookie name (an RFC 7230 token).
+func (c CacheConfig) validate() error {
+	if c.MaxMemoryMB < 1 || c.MaxMemoryMB > 16384 {
+		return verr("routing.cache.maxMemoryMB", "must be between 1 and 16384 MB")
+	}
+	if c.MaxObjectKB < 1 || c.MaxObjectKB > c.MaxMemoryMB*1024 {
+		return verr("routing.cache.maxObjectKB", "must be between 1 KB and the cache size")
+	}
+	if c.DefaultTTLSec < 0 || c.DefaultTTLSec > 31536000 {
+		return verr("routing.cache.defaultTtlSec", "must be between 0 and 31536000 seconds (a year)")
+	}
+	switch c.VaryByQuery {
+	case "all", "none":
+	case "listed":
+		if len(c.QueryParams) == 0 {
+			return verr("routing.cache.queryParams", "list the query string parameters that select a different response")
+		}
+	default:
+		return verr("routing.cache.varyByQuery", "must be all, none or listed")
+	}
+	for i, p := range c.QueryParams {
+		if strings.TrimSpace(p) == "" {
+			return verr(fmt.Sprintf("routing.cache.queryParams[%d]", i), "enter a parameter name")
+		}
+	}
+	for i, h := range c.VaryHeaders {
+		if !cookieNameRe.MatchString(h) {
+			return verr(fmt.Sprintf("routing.cache.varyHeaders[%d]", i), "%q is not a header name", h)
+		}
+	}
+	for i, p := range c.BypassPaths {
+		if !strings.HasPrefix(p, "/") {
+			return verr(fmt.Sprintf("routing.cache.bypassPaths[%d]", i), "must start with /")
+		}
+	}
+	return nil
+}
+
+// cookieNameRe is an RFC 6265 cookie name (an RFC 7230 token), which is
+// also what a header name is.
 var cookieNameRe = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 
 // Browsers cap cookie lifetimes at 400 days.

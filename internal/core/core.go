@@ -172,10 +172,11 @@ func (c *Core) Start() {
 	c.Mail.Start()
 	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
 
-	c.wg.Add(3)
+	c.wg.Add(4)
 	go func() { defer c.wg.Done(); c.Certs.Run(ctx) }()
 	go func() { defer c.wg.Done(); c.metricsLoop(ctx) }()
 	go func() { defer c.wg.Done(); c.housekeeping(ctx) }()
+	go func() { defer c.wg.Done(); c.invalidateCaches(ctx) }()
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -784,6 +785,7 @@ func (c *Core) RestartSite(id string) error {
 	} else {
 		c.setRunning(id, true)
 	}
+	c.Proxy.PurgeCache(id, "")
 	c.reload()
 	return err
 }
@@ -797,6 +799,7 @@ func (c *Core) RecycleSite(id string) error {
 		return c.RestartSite(id)
 	}
 	err = c.Procs.Recycle(id, "requested")
+	c.Proxy.PurgeCache(id, "")
 	c.reload()
 	return err
 }
@@ -830,6 +833,7 @@ func (c *Core) Status(s *model.Site) model.SiteStatus {
 	}
 	st.SiteID = s.ID
 	st.Traffic = c.Proxy.Traffic(s.ID)
+	st.Cache = c.Proxy.CacheStats(s.ID)
 	return st
 }
 

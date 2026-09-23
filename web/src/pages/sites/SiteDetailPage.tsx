@@ -31,6 +31,7 @@ import { EnvEditor } from './editors/EnvEditor';
 import { AccessCard, ErrorPagesCard, HeadersCard, LocationsCard, MaintenanceCard, RoutingGeneral } from './editors/RoutingEditor';
 import { OutboundRulesCard, RewriteMapsCard, RewritesCard } from './editors/RewriteEditor';
 import { MimeTypesCard } from './editors/MimeEditor';
+import { CacheCard } from './editors/CacheEditor';
 import { NodeAdvanced, NodeEssentials, NodeLoadBalancer, ProxyAdvanced, ProxyEssentials, RedirectEssentials, StaticEssentials } from './editors/TypeSettings';
 import { useSiteDraft } from './useSiteDraft';
 import type { SiteEditorProps } from './editors/types';
@@ -187,6 +188,7 @@ export function SiteDetailPage() {
                 <RewriteMapsCard {...editorProps} />
                 <LocationsCard {...editorProps} />
                 <HeadersCard {...editorProps} />
+                <CacheCard {...editorProps} />
                 <AccessCard {...editorProps} />
                 <ErrorPagesCard {...editorProps} />
                 <MimeTypesCard {...editorProps} />

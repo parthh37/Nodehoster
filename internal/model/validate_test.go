@@ -27,6 +27,9 @@ func TestDefaults(t *testing.T) {
 	if a := s.Routing.Affinity; a.Enabled || a.CookieName != DefaultAffinityCookie {
 		t.Fatalf("affinity defaults not applied: %+v", a)
 	}
+	if c := s.Routing.Cache; c.Enabled || c.MaxMemoryMB != 64 || c.MaxObjectKB != 1024 || c.VaryByQuery != "all" {
+		t.Fatalf("cache defaults not applied: %+v", c)
+	}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +75,13 @@ func TestValidation(t *testing.T) {
 		},
 		"routing.affinity.cookieName":  func(s *Site) { s.Routing.Affinity.CookieName = "my cookie;" },
 		"routing.affinity.lifetimeSec": func(s *Site) { s.Routing.Affinity.LifetimeSec = -1 },
+		"routing.cache.maxMemoryMB":    func(s *Site) { s.Routing.Cache.MaxMemoryMB = 20000 },
+		"routing.cache.maxObjectKB":    func(s *Site) { s.Routing.Cache.MaxMemoryMB, s.Routing.Cache.MaxObjectKB = 1, 2048 },
+		"routing.cache.defaultTtlSec":  func(s *Site) { s.Routing.Cache.DefaultTTLSec = -1 },
+		"routing.cache.varyByQuery":    func(s *Site) { s.Routing.Cache.VaryByQuery = "some" },
+		"routing.cache.queryParams":    func(s *Site) { s.Routing.Cache.VaryByQuery = "listed" },
+		"routing.cache.varyHeaders[0]": func(s *Site) { s.Routing.Cache.VaryHeaders = []string{"X Bad"} },
+		"routing.cache.bypassPaths[0]": func(s *Site) { s.Routing.Cache.BypassPaths = []string{"api"} },
 	}
 	for field, mutate := range cases {
 		s := nodeSite()

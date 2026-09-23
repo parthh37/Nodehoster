@@ -135,6 +135,7 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/deploy/zip", a.deployZip)
 		r.Post("/sites/{id}/deploy/git", a.deployGit)
 		r.Post("/sites/{id}/deployments/{dep}/activate", a.activateDeployment)
+		r.Post("/sites/{id}/cache/purge", a.siteCachePurge)
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant

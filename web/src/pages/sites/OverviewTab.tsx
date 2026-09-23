@@ -13,6 +13,7 @@ import { Segmented } from '@/components/Tabs';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, formatCompact, formatMs, formatNumber, formatPercent, formatUptime, relativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { CachePanel } from './CachePanel';
 
 const RANGES = [
   { value: '15', label: '15m' },
@@ -47,6 +48,7 @@ export function OverviewTab({ site, status }: { site: SiteView; status: SiteStat
       {site.type === 'node' && <InstancesCard site={site} status={status} now={now} />}
       {site.type === 'proxy' && <UpstreamsCard status={status} />}
       {site.type === 'node' && site.node?.loadBalancer?.enabled && <UpstreamsCard status={status} title="Servers" />}
+      {site.routing?.cache?.enabled && (site.type === 'node' || site.type === 'proxy') && <CachePanel site={site} status={status} />}
 
       <MetricsCard site={site} />
     </div>

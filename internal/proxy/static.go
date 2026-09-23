@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,10 @@ type staticHandler struct {
 	cache    string
 	errPages map[string]string
 	types    *mimeTypes
+	// precompressed serves file.br / file.gz next to a file to clients
+	// that accept them, like IIS static compression's cache (when the
+	// site compresses responses).
+	precompressed bool
 }
 
 func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +134,49 @@ func (h *staticHandler) serveFile(w http.ResponseWriter, r *http.Request, f stri
 		errorPage(w, h.errPages, http.StatusInternalServerError, "The file could not be read.")
 		return
 	}
+	if h.precompressed {
+		if pf, pst := h.compressedVariant(w, r, f, st); pf != nil {
+			defer pf.Close()
+			// ServeContent leaves Content-Length out when Content-Encoding
+			// is set, expecting on-the-fly compression; these bytes are final.
+			w.Header().Set("Content-Length", strconv.FormatInt(pst.Size(), 10))
+			http.ServeContent(w, r, st.Name(), st.ModTime(), pf)
+			return
+		}
+	}
 	http.ServeContent(w, r, st.Name(), st.ModTime(), file)
+}
+
+// compressedVariant opens file.br or file.gz when the client accepts that
+// encoding and the variant is not older than the file (a stale variant
+// would serve an old version). Whenever a variant exists the response
+// varies by Accept-Encoding, whichever representation this client gets.
+func (h *staticHandler) compressedVariant(w http.ResponseWriter, r *http.Request, f string, orig os.FileInfo) (*os.File, os.FileInfo) {
+	exts := map[string]string{"br": ".br", "gzip": ".gz"}
+	found := false
+	for _, ext := range exts {
+		if st, err := os.Stat(f + ext); err == nil && !st.IsDir() {
+			found = true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	addVary(w.Header(), "Accept-Encoding")
+	for _, enc := range acceptedEncodings(r.Header.Get("Accept-Encoding")) {
+		pf, err := os.Open(f + exts[enc])
+		if err != nil {
+			continue
+		}
+		st, err := pf.Stat()
+		if err != nil || st.IsDir() || st.ModTime().Before(orig.ModTime()) {
+			pf.Close()
+			continue
+		}
+		w.Header().Set("Content-Encoding", enc)
+		return pf, st
+	}
+	return nil, nil
 }
 
 func queryOf(r *http.Request) string {

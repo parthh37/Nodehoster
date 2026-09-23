@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/gzhttp"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/rewrite"
@@ -65,6 +64,7 @@ type siteRuntime struct {
 	rr        atomic.Uint64
 	access    *lumberjack.Logger
 	affinity  *affinityRuntime // nil = no session affinity
+	cache     *responseCache   // nil = no response cache
 }
 
 func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
@@ -128,7 +128,7 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 				loc.handler = rt.urlProxy(u)
 			}
 		case "static":
-			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages, types: rt.types}
+			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages, types: rt.types, precompressed: r.Compression}
 		}
 		rt.locations = append(rt.locations, loc)
 	}
@@ -163,7 +163,7 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 		rt.core = &staticHandler{
 			root: root, index: site.Static.IndexFiles, spa: site.Static.SPAFallback,
 			browse: site.Static.DirectoryBrowsing, cache: site.Static.CacheControl, errPages: r.ErrorPages,
-			types: rt.types,
+			types: rt.types, precompressed: r.Compression,
 		}
 	case model.SiteRedirect:
 		rt.core = rt.redirectHandler()
@@ -179,19 +179,26 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			finish()
 		})
 	}
-	if r.Compression {
-		gz, err := gzhttp.NewWrapper(gzhttp.ExceptContentTypes([]string{"text/event-stream"}))
-		if err == nil {
-			inner := rt.dispatch
-			wrapped := gz(inner)
-			rt.dispatch = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if req.Header.Get("Upgrade") != "" {
-					inner.ServeHTTP(w, req) // never wrap WebSocket upgrades
-					return
-				}
-				wrapped.ServeHTTP(w, req)
-			})
+	// The cache stores what the site produced, uncompressed, and hits are
+	// compressed on the way out like misses: one entry serves every client
+	// whatever it accepts, at the cost of compressing again per hit (cheap
+	// at the dynamic Brotli level).
+	// Static sites are not cached: their files are already served from the
+	// disk cache, with pre-compressed variants the cache would bypass.
+	if r.Cache.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
+		if prev != nil && prev.site == site && prev.cache != nil {
+			rt.cache = prev.cache // same configuration: keep what is cached
+		} else {
+			affName := ""
+			if rt.affinity != nil {
+				affName = rt.affinity.name
+			}
+			rt.cache = newResponseCache(r.Cache, r.Compression, affName)
 		}
+		rt.dispatch = rt.cache.handler(rt.dispatch)
+	}
+	if r.Compression {
+		rt.dispatch = compressHandler(rt.dispatch)
 	}
 	if r.AccessLog {
 		if prev != nil && prev.access != nil {

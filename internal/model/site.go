@@ -342,6 +342,34 @@ type RoutingConfig struct {
 	ErrorPages       map[string]string `json:"errorPages,omitempty"` // "502" -> HTML
 	AccessLog        bool              `json:"accessLog"`
 	Affinity         AffinityConfig    `json:"affinity"`
+	Cache            CacheConfig       `json:"cache"`
+}
+
+// CacheConfig is an in-memory response cache in front of a node or proxy
+// site, like IIS output caching or ARR's cache: GET and HEAD responses that are
+// cacheable by HTTP's rules (Cache-Control, Expires, Vary) are answered
+// from memory. The budget is per site, so one busy site cannot evict
+// another's entries; the server's worst case is the sum of the budgets.
+type CacheConfig struct {
+	Enabled     bool `json:"enabled"`
+	MaxMemoryMB int  `json:"maxMemoryMB"` // this site's budget; least recently used entries are evicted
+	MaxObjectKB int  `json:"maxObjectKB"` // larger responses are passed through, not stored
+	// DefaultTTLSec applies to responses without Cache-Control max-age,
+	// s-maxage or Expires. 0 = cache only responses that declare freshness.
+	DefaultTTLSec int      `json:"defaultTtlSec,omitempty"`
+	VaryByQuery   string   `json:"varyByQuery"`           // all | none | listed
+	QueryParams   []string `json:"queryParams,omitempty"` // the parameters that matter when varyByQuery is listed
+	VaryHeaders   []string `json:"varyHeaders,omitempty"` // request headers that select a variant, on top of the response's Vary
+	BypassPaths   []string `json:"bypassPaths,omitempty"` // path prefixes never cached, e.g. /api
+}
+
+// CacheStats are shown with a site's status.
+type CacheStats struct {
+	Entries  int     `json:"entries"`
+	Bytes    int64   `json:"bytes"`
+	Hits     int64   `json:"hits"`
+	Misses   int64   `json:"misses"`
+	HitRatio float64 `json:"hitRatio"` // hits / (hits + misses), 0-1
 }
 
 // AffinityConfig is ARR's "client affinity": a cookie pins a client to the

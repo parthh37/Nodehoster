@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	blitiri.com.ar/go/spf v1.6.0
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/andybalholm/brotli v1.2.4
 	github.com/emersion/go-msgauth v0.7.0
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/emersion/go-smtp v0.25.0

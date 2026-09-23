@@ -82,6 +82,7 @@ export const sitesApi = {
   logs: (id: string, type: LogType, lines = 500) => http.get<LogLine[]>(`/api/sites/${enc(id)}/logs${qs({ type, lines })}`),
   logsDownloadUrl: (id: string, type: LogType) => `/api/sites/${enc(id)}/logs/download${qs({ type })}`,
   clearLogs: (id: string) => http.post(`/api/sites/${enc(id)}/logs/clear`),
+  purgeCache: (id: string, path?: string) => http.post<{ purged: number }>(`/api/sites/${enc(id)}/cache/purge`, path ? { path } : {}),
 
   deployments: (id: string) => http.get<Deployment[]>(`/api/sites/${enc(id)}/deployments`),
   deployZip: (id: string, file: File) => {

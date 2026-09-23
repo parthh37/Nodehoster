@@ -286,6 +286,30 @@ export interface RoutingConfig {
   errorPages?: Record<string, string>;
   accessLog: boolean;
   affinity: AffinityConfig;
+  cache: CacheConfig;
+}
+
+/** In-memory response cache (IIS output caching). */
+export interface CacheConfig {
+  enabled: boolean;
+  /** This site's budget. */
+  maxMemoryMB: number;
+  maxObjectKB: number;
+  /** For responses without max-age/Expires; 0 = cache only those that declare freshness. */
+  defaultTtlSec?: number;
+  varyByQuery: 'all' | 'none' | 'listed' | string;
+  queryParams?: string[];
+  varyHeaders?: string[];
+  bypassPaths?: string[];
+}
+
+export interface CacheStats {
+  entries: number;
+  bytes: number;
+  hits: number;
+  misses: number;
+  /** 0-1 */
+  hitRatio: number;
 }
 
 /** Cookie-based session affinity (ARR client affinity). */
@@ -403,6 +427,7 @@ export interface SiteStatus {
   instances: InstanceStatus[] | null;
   traffic: TrafficStats;
   upstreams?: UpstreamStatus[] | null;
+  cache?: CacheStats | null;
 }
 
 export interface MetricPoint {

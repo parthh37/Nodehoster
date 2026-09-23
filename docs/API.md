@@ -153,6 +153,7 @@ The desktop manager's local pipe always acts as `admin`.
 | GET | `/api/sites/{id}/logs/stream?type=app` | | SSE `event: log` data `LogLine` |
 | GET | `/api/sites/{id}/logs/download?type=app` | | text file |
 | POST | `/api/sites/{id}/logs/clear` | | 204 |
+| POST | `/api/sites/{id}/cache/purge` | `{path?}` | `{purged}` (operator; empties the response cache, or entries whose path starts with `path`) |
 
 ### Deployments
 
@@ -257,6 +258,46 @@ only one backend. On a request another NodeHoster forwarded
 (`X-NodeHoster-Hop`), the cookie is `<name>-hop`, so the front server's
 cookie is never overwritten; use distinct names when chaining sites
 behind each other in other ways.
+
+## Compression and response cache
+
+`routing.compression` (unchanged boolean) compresses responses with Brotli
+(level 4) or gzip, whichever the client's `Accept-Encoding` prefers by
+q-value (Brotli on a tie), for text-like types (`text/*`, JSON, JavaScript,
+XML, SVG, `+json`/`+xml`, fonts other than woff) of 1 KB or more. Never for
+`text/event-stream`, responses that already have a `Content-Encoding` or
+`Content-Range`, `Cache-Control: no-transform`, HEAD, range requests or
+WebSocket upgrades. Compressible responses always get
+`Vary: Accept-Encoding`; a strong `ETag` becomes weak when compressed. For
+static files (static sites and static-folder locations) a `file.br` or
+`file.gz` next to `file` that is not older than it is sent as it is.
+
+`routing.cache` = `{enabled, maxMemoryMB (64), maxObjectKB (1024),
+defaultTtlSec, varyByQuery: "all"|"none"|"listed", queryParams[],
+varyHeaders[], bypassPaths[]}` keeps responses of node and proxy sites
+(their locations included) in memory, per site: each site has its own
+budget, so a busy site cannot evict another's entries, and least recently
+used entries are evicted. Static sites are not cached (their files come
+from the disk cache, pre-compressed variants included). Only
+GET and HEAD requests without `Range`; statuses 200, 203, 301, 404 and 410;
+freshness from `s-maxage`, `max-age`, then `Expires` (minus `Age`), else
+`defaultTtlSec` (0 = not cached). Not stored: `no-store`, `private`,
+`no-cache`, `Vary: *`, `text/event-stream`, responses with `Set-Cookie`,
+and answers to requests with `Authorization` or cookies — unless the
+response says `public` (a stored `Set-Cookie` is never replayed). The
+session affinity cookie counts as neither. Each `Vary` header (and each
+of `varyHeaders`) selects a separate variant. Entries are uncompressed:
+when the site compresses, the application is asked without
+`Accept-Encoding` and each client gets its own encoding from the one
+entry. Concurrent misses for a URL wait (up to 10 s) for the first one's
+response; URLs whose responses are not cacheable stop waiting for 30 s.
+Responses carry `X-Cache: HIT|MISS|BYPASS` and hits an `Age`; conditional
+requests on a hit get 304; a request with `Cache-Control: no-cache` (a
+browser reload) is fetched and refreshes the entry, one with `no-store`
+bypasses the cache. `SiteStatus.cache` = `{entries, bytes, hits,
+misses, hitRatio}` when enabled. The cache is emptied when the site's
+configuration changes, on recycles and restarts and on deployment
+activation. Purge paths match the request path after URL rewrite rules.
 
 ## Mail (SMTP server)
 

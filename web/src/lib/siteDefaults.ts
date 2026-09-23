@@ -139,6 +139,7 @@ export function defaultRouting(): RoutingConfig {
     errorPages: {},
     accessLog: true,
     affinity: { enabled: false, cookieName: 'NHAffinity', lifetimeSec: 0 },
+    cache: { enabled: false, maxMemoryMB: 64, maxObjectKB: 1024, defaultTtlSec: 0, varyByQuery: 'all', queryParams: [], varyHeaders: [], bypassPaths: [] },
   };
 }
 
@@ -195,6 +196,7 @@ export function normalizeSite(input: Site): Site {
     rateLimit: { ...r.rateLimit, ...s.routing?.rateLimit },
     maintenance: { ...r.maintenance, ...s.routing?.maintenance },
     affinity: { ...r.affinity, ...s.routing?.affinity },
+    cache: { ...r.cache, ...s.routing?.cache },
   };
   s.deploy = { ...s.deploy, git: { ...s.deploy?.git }, keepReleases: s.deploy?.keepReleases ?? 5 };
   if (s.type === 'node') {
