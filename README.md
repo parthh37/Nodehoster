@@ -90,7 +90,22 @@ NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addt
 ```
 
 Exit code `0` means installed and running, `1` installed but the service did
-not start (see `C:\ProgramData\NodeHoster\logs\nodehoster.log`).
+not start (see `C:\ProgramData\NodeHoster\logs\nodehoster.log`), `7` not
+installed because a newer version is (add `/ALLOWDOWNGRADE` to install the
+older one anyway; interactive setups ask instead).
+
+Uninstall from **Settings → Apps**, or unattended (keeps the data):
+
+```
+"C:\Program Files\NodeHoster\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+```
+
+Uninstalling removes the service, the firewall rule, the PATH entry and the
+status icon; an interactive uninstall asks whether to delete the data too.
+
+The setup is not code-signed yet, so Windows SmartScreen may say "Windows
+protected your PC": choose **More info → Run anyway**, after checking the file
+against `SHA256SUMS.txt` from the same release.
 
 Open **https://localhost:8484** (the console uses a self-signed certificate
 until you pick one in Settings → Admin console). Sign in as `admin` with the
@@ -180,14 +195,18 @@ The UI dev server (`cd web && npm run dev`) proxies API calls to
 `https://localhost:8484`. NodeHoster Manager is Windows-only
 (`GOOS=windows go build ./cmd/nodehoster-manager` cross-compiles it); its
 manifest and icon are committed `.syso` files, regenerated with
-`go generate ./cmd/nodehoster-manager`. The server builds and runs on macOS and Linux too
+`go generate ./cmd/nodehoster-manager` (which also writes the installer's
+`installer/nodehoster.ico`); `nodehoster.exe`'s icon and version resources
+are regenerated with `go generate ./cmd/nodehoster`. The server builds and runs on macOS and Linux too
 (no job objects or DPAPI there), which is convenient for development.
 
 CI runs on GitHub-hosted runners (`.github/workflows/build.yml`). Go tests on
 Windows (including integration tests of job objects, the agent pipe and the
 process manager) and Linux (with the race detector) and the web console
-tests run in parallel; a packaging job then builds the binary, smoke-tests it
-and builds the installer and a portable zip. Tags `vX.Y.Z` upload the release
+tests run in parallel; a packaging job then builds the binary, smoke-tests it,
+builds the installer and tests it (`installer/test.ps1`: install, upgrade,
+refused and forced downgrade, uninstall, checking the machine after each),
+and builds a portable zip. Tags `vX.Y.Z` upload the release
 to `s3://<bucket>/nodehoster/releases/<version>/` (never overwritten) and
 create a GitHub release that links to it; nothing is stored on GitHub. The
 upload tool is `tools/s3publish`; its configuration is described at the top
