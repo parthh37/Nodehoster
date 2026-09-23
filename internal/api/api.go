@@ -183,6 +183,8 @@ func (a *API) routes(r chi.Router) {
 		r.Put("/settings", a.putSettings)
 		r.Post("/settings/webhooks/test", a.testWebhook)
 		r.Post("/rewrite/import", a.rewriteImport)
+		r.Post("/import/preview", a.importPreview)
+		r.Post("/import/apply", a.importApply)
 		r.Get("/mail/queue/{id}/eml", a.mailContent)
 		r.Delete("/mail/queue/{id}", a.mailDelete)
 		r.Post("/mail/test", a.mailTest)

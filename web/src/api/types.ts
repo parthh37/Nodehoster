@@ -1003,3 +1003,85 @@ export interface MailHealth {
   domains: MailDomainHealth[] | null;
   checkedAt: string;
 }
+
+// ---------------------------------------------------------------- import (IIS, iisnode web.config, PM2)
+
+/** iis = an uploaded applicationHost.config; local-iis = this server's (Windows). */
+export type ImportSource = 'iis' | 'local-iis' | 'webconfig' | 'pm2';
+
+export type ImportNoteLevel = 'converted' | 'approximated' | 'skipped';
+
+export interface ImportNote {
+  level: ImportNoteLevel | string;
+  text: string;
+}
+
+/** One way of importing an item: a complete site draft, or a task added to a site. */
+export interface ImportOption {
+  /** "Node.js application", "Background worker", "Static site", "Reverse proxy", "Redirect", "Scheduled task". */
+  label: string;
+  kind: 'site' | 'task' | string;
+  site?: Site;
+  task?: ScheduledTask;
+  /** "import:<item key>", an existing node/worker site's id, or empty (the user picks). */
+  taskSite?: string;
+}
+
+/** Something found in the source: an IIS site or application, a PM2 app. */
+export interface ImportItem {
+  key: string;
+  /** For display: `IIS site "Shop"`, `PM2 app "api"`. */
+  source: string;
+  options: ImportOption[];
+  /** The proposed option. */
+  choice: number;
+  /** Proposed for import (false when there are conflicts). */
+  selected: boolean;
+  notes: ImportNote[];
+  /** Validation problems of the proposed option as proposed. */
+  conflicts: string[];
+}
+
+/** POST /api/import/preview. Nothing is created. */
+export interface ImportPreview {
+  source: ImportSource | string;
+  items: ImportItem[];
+  warnings: string[];
+}
+
+export interface ImportApplyItem {
+  key: string;
+  kind: 'site' | 'task' | string;
+  site?: Site;
+  task?: ScheduledTask;
+  taskSite?: string;
+}
+
+export interface ImportApplyRequest {
+  /** For the audit log. */
+  source?: string;
+  items: ImportApplyItem[];
+  /** Start the created sites; otherwise they are left stopped. */
+  start: boolean;
+}
+
+export interface ImportCreated {
+  key: string;
+  kind: 'site' | 'task' | string;
+  /** The created site, or the site that got the task. */
+  siteId: string;
+  name: string;
+  warning?: string;
+}
+
+export interface ImportFailed {
+  key: string;
+  name: string;
+  error: string;
+  field?: string;
+}
+
+export interface ImportApplyResult {
+  created: ImportCreated[];
+  failed: ImportFailed[];
+}

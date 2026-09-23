@@ -281,6 +281,75 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 | POST | `/api/tokens` | `{name, expiresDays?, role?, siteIds?}` | `{token: "nh_…", info: APIToken}` (token shown once; see [Permissions](#permissions) for `role`/`siteIds`) |
 | DELETE | `/api/tokens/{id}` | | 204 |
 
+## Importing sites (IIS, iisnode, PM2)
+
+Admin only. Nothing is executed and no password is imported: an uploaded
+ecosystem file is read as data (see below), and application pool
+identities only produce a note.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/import/preview` | multipart `source` + `file` (+ `name`, `appRoot` for `webconfig`), or JSON `{source, text, filename?, name?, appRoot?}`, or `{source: "local-iis"}` | `ImportPreview`; 422 `{error, field}` when the file cannot be read |
+| POST | `/api/import/apply` | `{source?, items: ImportApplyItem[], start}` | `{created: [{key, kind, siteId, name, warning?}], failed: [{key, name, error, field?}]}` |
+
+Sources:
+
+- `iis`: an uploaded `applicationHost.config`; `local-iis`: this server's
+  (`%windir%\System32\inetsrv\config\applicationHost.config`, Windows only).
+  Each site becomes a draft: bindings (http/https; other protocols, and https
+  bindings without a specific host name, are left out; the IIS certificate
+  stays in Windows, so https bindings get `certMode: "auto"`), the root
+  physical path (`%SystemDrive%`-style variables expanded), `serverAutoStart`.
+  What runs it is read from the `<location>` sections for the site and the
+  `web.config` in its folder: an iisnode handler (or `httpPlatformHandler`
+  starting node.exe) makes a `node` site, `httpRedirect` a `redirect` site, a
+  single URL Rewrite rule forwarding everything to another server (ARR) a
+  `proxy` site, anything else a `static` site with its default documents,
+  directory browsing, MIME maps and rewrite rules. Virtual directories and
+  static applications become `static` locations; an iisnode application
+  below a site becomes its own `node` site without bindings, mounted with a
+  location of kind `site` (`siteId: "import:<key>"` until applied). Sites
+  running ASP.NET Core, PHP or other handlers are noted and not selected.
+- `webconfig`: one iisnode application's `web.config`: the handler's script,
+  `<iisnode>` (`nodeProcessCountPerApplication` → instances, 0 = CPU count;
+  `nodeProcessCommandLine` → Node.js version from the path and options;
+  `watchedFiles` → watch files; `gracefulShutdownTimeout`; `node_env`;
+  others are listed as ignored), `<appSettings>` → variables (names looking
+  like keys, secrets, passwords, tokens or connection strings, and URLs with
+  a password, become secrets; `WEBSITE_NODE_DEFAULT_VERSION` → Node.js
+  version) and URL Rewrite rules through the rule importer, without the
+  iisnode rules that only route to the entry script.
+- `pm2`: `ecosystem.config.js|.cjs|.json` or `pm2 jlist` / `pm2 prettylist`
+  output. JavaScript is never run: a file that exports a plain literal
+  (`module.exports = {...}`, `export default`, comments, trailing commas,
+  bare keys, strings without `${}`) is parsed; anything computed
+  (`process.env.X`, variables, `require`) is refused with a hint to import
+  `pm2 jlist > apps.json` instead. Mapped: name, script (`npm`/`yarn run x`
+  → npm script), cwd, args, node_args, interpreter (Node.js version from an
+  nvm path; other interpreters are not selected), instances (`max`/0 = CPU
+  count, -n = CPUs − n), env merged with env_production (`PORT` dropped: it
+  is assigned), max_memory_restart, cron_restart (a daily `M H * * *` →
+  recycle time), watch/ignore_watch, autorestart/max_restarts/min_uptime,
+  kill_timeout, listen_timeout. `pm2 jlist` values that are PM2's defaults
+  and the machine's own variables are left out. An app without a port whose
+  name looks like a worker is proposed as a `worker`; one with
+  `autorestart: false` and `cron_restart` as a scheduled task, of the app in
+  the same folder when there is one.
+
+`ImportPreview` is `{source, items, warnings}`; each `ImportItem` is `{key,
+source, options: [{label, kind: site|task, site?, task?, taskSite?}],
+choice, selected, notes: [{level: converted|approximated|skipped, text}],
+conflicts}`. Conflicts (name taken, binding in use, invalid draft) are
+checked like a save against the existing sites and the selected items
+before; items with conflicts are not selected.
+
+Apply takes the reviewed options (`ImportApplyItem` = `{key, kind, site?,
+task?, taskSite?}`; `taskSite` is `import:<key>` or an existing node or
+worker site id). It creates sites that others mount first, never overwrites
+a site (a taken name fails that item), adds tasks to their site, and leaves
+the sites stopped unless `start` is true. Each creation is audited
+(`site.import`; a task added to a site: `site.update`).
+
 ## URL rewrite and MIME types
 
 Rewrite rules, outbound rules, rewrite maps and per-site MIME types are

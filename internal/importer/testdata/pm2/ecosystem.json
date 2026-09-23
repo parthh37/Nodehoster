@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "name": "web",
+      "script": "/srv/web/index.js",
+      "autorestart": true,
+      "cron_restart": "*/15 * * * *",
+      "max_memory_restart": 536870912,
+      "listen_timeout": 15000,
+      "env": { "PORT": "8080", "SESSION_SECRET": "s3cr3t", "bad-name": "x" }
+    }
+  ]
+}

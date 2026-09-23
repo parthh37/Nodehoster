@@ -7,6 +7,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { SitesPage } from '@/pages/sites/SitesPage';
 import { NewSitePage } from '@/pages/sites/NewSitePage';
+import { ImportSitesPage } from '@/pages/sites/ImportSitesPage';
 import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
@@ -109,6 +110,7 @@ const router = createBrowserRouter([
       { index: true, element: <Home /> },
       { path: 'sites', element: <SitesPage /> },
       { path: 'sites/new', element: <NewSitePage /> },
+      { path: 'sites/import', element: <ImportSitesPage /> },
       { path: 'sites/:id/:tab?', element: <SiteDetailPage /> },
       {
         path: 'certificates',

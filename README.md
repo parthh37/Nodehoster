@@ -72,6 +72,7 @@ IIS Manager, with a status icon in the notification area.
 - Install/build commands, shared paths (`.env`, `uploads`) persisted across releases
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
+- **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
 
 **Administration**
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
@@ -219,6 +220,19 @@ running once it has stayed up for 2 seconds. Recurring jobs (a nightly
 report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
 site: each run starts the script in the site's current release with its
 Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`.
+
+### Migrating from IIS/iisnode or PM2
+
+**Sites → Import sites** in the web console (or **Import from IIS…** on
+the Sites page of NodeHoster Manager, which reads this server's IIS) proposes
+a site per IIS site, iisnode application or PM2 app, with notes on what was
+converted, approximated or left out. Nothing is created until you confirm;
+imported sites are created stopped. IIS is not changed: stop its sites
+before starting the NodeHoster ones, as both cannot listen on the same port.
+HTTPS bindings get Let's Encrypt certificates (IIS certificates stay in the
+Windows store; import the PFX to reuse one), and application pool passwords
+are never imported. PM2 ecosystem files are read, never run: if yours
+computes values, import `pm2 jlist > apps.json` instead.
 
 ## Data directory
 

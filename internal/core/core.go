@@ -697,8 +697,13 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	return nil
 }
 
-// CreateSite validates, stores and applies a new site.
+// CreateSite validates, stores and applies a new site, starting it when
+// it is set to start automatically.
 func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, error) {
+	return c.createSite(ctx, in, in.AutoStart)
+}
+
+func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
 	in.ID = uuid.NewString()
@@ -716,7 +721,7 @@ func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, err
 	c.cacheMu.Unlock()
 	c.Procs.Apply(in)
 	c.Tasks.Apply(in)
-	if in.AutoStart {
+	if start {
 		c.startSite(in)
 	}
 	c.reload()

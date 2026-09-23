@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Boxes, Plus, Search } from 'lucide-react';
+import { Boxes, Import, Plus, Search } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -53,11 +53,16 @@ export function SitesPage() {
         description="Each site is a set of bindings plus what answers the requests arriving on them."
         actions={
           isAdmin && (
-            <Link to="/sites/new">
-              <Button variant="primary" icon={<Plus className="h-4 w-4" />}>
-                New site
-              </Button>
-            </Link>
+            <>
+              <Link to="/sites/import">
+                <Button icon={<Import className="h-4 w-4" />}>Import sites</Button>
+              </Link>
+              <Link to="/sites/new">
+                <Button variant="primary" icon={<Plus className="h-4 w-4" />}>
+                  New site
+                </Button>
+              </Link>
+            </>
           )
         }
       />

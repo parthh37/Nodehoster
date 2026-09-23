@@ -14,6 +14,10 @@ import type {
   CreatedToken,
   DNSCatalogEntry,
   Deployment,
+  ImportApplyRequest,
+  ImportApplyResult,
+  ImportPreview,
+  ImportSource,
   LogLine,
   LogType,
   MailHealth,
@@ -213,4 +217,21 @@ export const rewriteApi = {
 
 export const mimeApi = {
   defaults: () => http.get<MimeMap[]>('/api/mime/defaults'),
+};
+
+/** Importing sites from IIS, an iisnode web.config or PM2 (administrators). */
+export const importApi = {
+  /** Reads an uploaded file or pasted text; `name`/`appRoot` are for a single web.config. */
+  preview: (source: Exclude<ImportSource, 'local-iis'>, input: File | string, extra: { name?: string; appRoot?: string } = {}) => {
+    if (typeof input === 'string') return http.post<ImportPreview>('/api/import/preview', { source, text: input, ...extra });
+    const fd = new FormData();
+    fd.append('source', source);
+    fd.append('file', input);
+    if (extra.name) fd.append('name', extra.name);
+    if (extra.appRoot) fd.append('appRoot', extra.appRoot);
+    return http.post<ImportPreview>('/api/import/preview', fd);
+  },
+  /** This server's applicationHost.config (Windows with IIS only). */
+  previewLocalIIS: () => http.post<ImportPreview>('/api/import/preview', { source: 'local-iis' }),
+  apply: (req: ImportApplyRequest) => http.post<ImportApplyResult>('/api/import/apply', req),
 };

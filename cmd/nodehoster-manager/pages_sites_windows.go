@@ -187,6 +187,7 @@ func (s *sitesPage) actionsPane(m *manager) []Widget {
 	return []Widget{
 		heading("Sites"),
 		link(nil, "Add site…", func() { addSiteDialog(m) }),
+		link(nil, "Import from IIS…", func() { importIISDialog(m) }),
 		heading("Selected site"),
 		link(&s.open, "Open", sel(func(id string) { m.showSite(id) })),
 		link(&s.start, "Start", sel(func(id string) { m.siteAction(id, "start") })),
