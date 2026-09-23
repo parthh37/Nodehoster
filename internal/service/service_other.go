@@ -15,3 +15,4 @@ func Uninstall() error                              { return errUnsupported }
 func Start() error                                  { return errUnsupported }
 func Stop() error                                   { return errUnsupported }
 func Status() (string, error)                       { return "", errUnsupported }
+func ProcessID() (uint32, error)                    { return 0, errUnsupported }

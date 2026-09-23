@@ -168,6 +168,27 @@ jobs:
           Copy-Item README.md dist/
           ./dist/nodehoster.exe version
 
+      - name: Build nodehoster-manager.exe
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.ver.outputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # Windows version resources are four numbers: X.Y.Z.0 for
+          # releases, 0.0.0.<run> for development builds.
+          if ($env:VERSION -match '^([0-9]+)\.([0-9]+)\.([0-9]+)$') { $winver = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" }
+          else { $winver = "0.0.0.$([Math]::Min([int]$env:RUN_NUMBER, 65535))" }
+          Push-Location cmd/nodehoster-manager
+          go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --arch amd64 --out rsrc --file-version $winver --product-version $winver
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code) { exit $code }
+          $pkg = "github.com/parthh37/nodehoster/internal/config"
+          $ld = "-s -w -H windowsgui -X $pkg.Version=$env:VERSION -X $pkg.Commit=${{ github.sha }}"
+          go build -trimpath -ldflags $ld -o dist/nodehoster-manager.exe ./cmd/nodehoster-manager
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          (Get-Item dist/nodehoster-manager.exe).VersionInfo | Format-List FileDescription, FileVersion
+
       - name: Smoke test
         run: |
           $ErrorActionPreference = "Stop"
@@ -190,6 +211,24 @@ jobs:
             $body = @{ username = "admin"; password = $pw } | ConvertTo-Json
             $login = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType "application/json" -Body $body -SessionVariable s http://127.0.0.1:18484/api/auth/login
             if ($login.StatusCode -ne 200) { throw "login failed" }
+
+            # The desktop manager's pipes (the runner is an elevated
+            # administrator): the admin pipe answers without a login and
+            # names the caller; the status pipe serves the summary.
+            function Invoke-Pipe($name, $path) {
+              $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", $name, [System.IO.Pipes.PipeDirection]::InOut)
+              $pipe.Connect(10000)
+              try {
+                $w = New-Object System.IO.StreamWriter($pipe)
+                $w.Write("GET $path HTTP/1.1`r`nHost: nodehoster`r`nConnection: close`r`n`r`n")
+                $w.Flush()
+                return (New-Object System.IO.StreamReader($pipe)).ReadToEnd()
+              } finally { $pipe.Dispose() }
+            }
+            $who = Invoke-Pipe "NodeHoster.Admin" "/api/local/whoami"
+            if ($who -notmatch '200 OK' -or $who -notmatch '"account":"[^"]+\\[^"]+"') { throw "local admin pipe: $who" }
+            $sum = Invoke-Pipe "NodeHoster.Status" "/status"
+            if ($sum -notmatch '200 OK' -or $sum -notmatch '"sites":\[') { throw "status pipe: $sum" }
             Write-Host "Smoke test passed"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
@@ -221,7 +260,7 @@ jobs:
       - name: Package portable zip
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          Compress-Archive -Path dist\nodehoster.exe, dist\README.md -DestinationPath "dist\NodeHoster-$v-windows-x64.zip" -Force
+          Compress-Archive -Path dist\nodehoster.exe, dist\nodehoster-manager.exe, dist\README.md -DestinationPath "dist\NodeHoster-$v-windows-x64.zip" -Force
           Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | Where-Object { (Split-Path $_.Path -Leaf) -ne "nodehoster.exe" } | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 

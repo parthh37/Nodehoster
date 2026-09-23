@@ -3,7 +3,9 @@
 An IIS-style application server for **Node.js on Windows**. Sites and
 bindings like IIS, application-pool–style process management, a built-in
 reverse proxy and automatic HTTPS with Let's Encrypt — one self-contained
-`nodehoster.exe` running as a Windows service, administered from a web console.
+`nodehoster.exe` running as a Windows service, administered from a web
+console or from **NodeHoster Manager**, a desktop console in the style of
+IIS Manager, with a status icon in the notification area.
 
 ## Features
 
@@ -54,6 +56,8 @@ reverse proxy and automatic HTTPS with Let's Encrypt — one self-contained
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
 
 **Administration**
+- **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
+- **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
@@ -88,6 +92,30 @@ Portable use: unzip `nodehoster.exe` anywhere and run, from an elevated prompt,
 nodehoster service install
 nodehoster service start
 ```
+
+### NodeHoster Manager
+
+**Start → NodeHoster Manager** opens the desktop console (it asks for
+administrator rights, like IIS Manager). The left pane lists the server,
+its sites, certificates, Node.js versions, web console users and the event
+and audit logs; the right pane has the actions for what is selected:
+start/stop/restart/recycle a site, edit its bindings, environment and basic
+settings, browse it, follow its log live, roll back a release, reset a web
+console user's password or two-factor authentication, change where the web
+console listens, back up the configuration, and start or stop the service.
+
+It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
+opens to elevated Administrators: there is no NodeHoster login, and nothing
+about the web console (its port, certificate or accounts) can lock you out.
+If the web console cannot start (for example its port is taken), the
+service now keeps hosting sites and reports the problem; fix it from the
+manager (Server → Web console → Settings) and restart the service.
+
+The **status icon** (`nodehoster-manager.exe --tray`) starts at sign-in for
+every user (installer task; each user can turn it off from its menu). It
+runs unelevated and reads a read-only status pipe; its color is the overall
+health, its menu lists the sites and opens the manager, and it notifies
+about crashes, rapid-fail protection, failed deployments and certificates.
 
 ### Command line
 
@@ -138,7 +166,10 @@ go run ./cmd/nodehoster --data ./.devdata run
 ```
 
 The UI dev server (`cd web && npm run dev`) proxies API calls to
-`https://localhost:8484`. The server builds and runs on macOS and Linux too
+`https://localhost:8484`. NodeHoster Manager is Windows-only
+(`GOOS=windows go build ./cmd/nodehoster-manager` cross-compiles it); its
+manifest and icon are committed `.syso` files, regenerated with
+`go generate ./cmd/nodehoster-manager`. The server builds and runs on macOS and Linux too
 (no job objects or DPAPI there), which is convenient for development.
 
 CI runs on GitHub-hosted runners (`.github/workflows/build.yml`). Go tests on
@@ -155,6 +186,7 @@ of the workflow.
 
 ```
 cmd/nodehoster        entry point, CLI, admin listener
+cmd/nodehoster-manager desktop manager and status icon (Win32, walk)
 internal/core         composition root; site lifecycle
 internal/procmgr      process supervisor (+ agent/ injected into apps)
 internal/proxy        listeners, binding match, request pipeline, load balancing
@@ -162,6 +194,8 @@ internal/certs        ACME (lego), import/export, renewal
 internal/deploy       zip/git deployments and releases
 internal/nodeversions Node.js runtime installer
 internal/api          REST API (docs/API.md) and embedded web UI
+internal/localapi     local pipes for the desktop programs (client; server in localserver)
+internal/desktop      desktop presentation logic: health, formatting, icons
 internal/auth         users, sessions, tokens, TOTP
 internal/store        SQLite persistence
 internal/secrets      AES-GCM + DPAPI

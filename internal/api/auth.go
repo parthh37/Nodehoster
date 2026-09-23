@@ -236,6 +236,9 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		Role     *model.Role `json:"role"`
 		Disabled *bool       `json:"disabled"`
 		Password *string     `json:"password"`
+		// ResetTOTP turns two-factor authentication off, for a user who
+		// lost their authenticator. They can enroll again after signing in.
+		ResetTOTP bool `json:"resetTotp"`
 	}
 	if err := decode(r, &in); err != nil {
 		a.fail(w, err)
@@ -267,14 +270,21 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		u.PasswordHash, u.MustChange = hash, id != user(r).ID
 	}
+	if in.ResetTOTP {
+		u.TOTPEnabled, u.TOTPSecret = false, ""
+	}
 	if err := a.c.Store.PutUser(r.Context(), u); err != nil {
 		a.fail(w, err)
 		return
 	}
-	if u.Disabled || (in.Password != nil && *in.Password != "") {
+	if u.Disabled || in.ResetTOTP || (in.Password != nil && *in.Password != "") {
 		a.c.Store.DeleteUserSessions(r.Context(), u.ID, "")
 	}
-	a.audit(r, "user.update", u.Username, "")
+	detail := ""
+	if in.ResetTOTP {
+		detail = "two-factor authentication reset"
+	}
+	a.audit(r, "user.update", u.Username, detail)
 	writeJSON(w, http.StatusOK, u.User)
 }
 
