@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -106,6 +107,61 @@ func (c *Client) Put(ctx context.Context, path string, in, out any) error {
 
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.Do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// Upload posts a file as a multipart form (field name field), streaming it:
+// release archives can be large, so no request timeout applies. The JSON
+// response is decoded into out (unless nil).
+func (c *Client) Upload(ctx context.Context, path, field, filename string, r io.Reader, out any) error {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		fw, err := mw.CreateFormFile(field, filename)
+		if err == nil {
+			_, err = io.Copy(fw, r)
+		}
+		if err == nil {
+			err = mw.Close()
+		}
+		pw.CloseWithError(err)
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, pr)
+	if err != nil {
+		pr.Close()
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return connError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return decodeError(resp)
+	}
+	if out == nil {
+		io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// Download copies a response body (a file, such as the configuration
+// backup) to w, without a request timeout.
+func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return 0, connError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return 0, decodeError(resp)
+	}
+	return io.Copy(w, resp.Body)
 }
 
 // Stream reads server-sent events from path until ctx ends or the stream

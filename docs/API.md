@@ -277,12 +277,14 @@ Events: `mail.failed` (a message could not be delivered) and `mail.error`
 A site-scoped (or site-restricted) token sees only its sites and no
 certificate metrics.
 
-## Local endpoints (desktop manager)
+## Local endpoints (desktop manager, command line)
 
 The server also listens on two local endpoints that do not depend on the
 admin listener, its certificate or any NodeHoster account. They are how
-NodeHoster Manager (`nodehoster-manager.exe`) works when the web console
-does not. HTTP/1.1 over a named pipe on Windows, over a Unix socket in the
+NodeHoster Manager (`nodehoster-manager.exe`), the management commands of
+`nodehoster.exe` (`site list`, `deploy`, `logs`...; their `--json` output is
+this API's JSON) and the NodeHoster PowerShell module work when the web
+console does not. HTTP/1.1 over a named pipe on Windows, over a Unix socket in the
 data directory elsewhere (`admin.sock`, `status.sock`).
 
 **`\\.\pipe\NodeHoster.Admin`**: the API above, without authentication:

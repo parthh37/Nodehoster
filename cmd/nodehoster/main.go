@@ -23,6 +23,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/api"
 	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/certs"
+	"github.com/parthh37/nodehoster/internal/cli"
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/localapi"
@@ -37,7 +38,7 @@ import (
 const usage = `NodeHoster %s — Node.js application server
 
 Usage:
-  nodehoster [--data DIR] <command>
+  nodehoster [--data DIR] [--json] <command>
 
 Commands:
   run                      Run in the foreground (default)
@@ -50,13 +51,21 @@ Commands:
                            sign-on turned it off
   version                  Print the version
 
+Management (talks to the running service; on Windows from an elevated
+prompt, like NodeHoster Manager). <site> is a site name or ID:
+%s
+  --json prints the API's JSON instead of tables, for scripts. Add --help
+  after a command for its flags. Exit codes: 0 done, 1 failed (including a
+  failed deployment, or the service not running), 2 wrong usage.
+
 The data directory defaults to %s
 (override with --data or the NODEHOSTER_DATA environment variable).
 `
 
 func main() {
 	dataDir := flag.String("data", config.DefaultDataDir(), "data directory")
-	flag.Usage = func() { fmt.Fprintf(os.Stderr, usage, config.Version, config.DefaultDataDir()) }
+	jsonOut := flag.Bool("json", false, "machine-readable output for management commands")
+	flag.Usage = func() { fmt.Fprintf(os.Stderr, usage, config.Version, cli.Usage(), config.DefaultDataDir()) }
 	flag.Parse()
 	args := flag.Args()
 
@@ -68,6 +77,9 @@ func main() {
 		return
 	}
 
+	if cli.Has(args) {
+		os.Exit(cli.Main(args, *dataDir, *jsonOut))
+	}
 	cmd := "run"
 	if len(args) > 0 {
 		cmd = args[0]
@@ -91,7 +103,7 @@ func main() {
 	case "version":
 		fmt.Printf("NodeHoster %s (%s)\n", config.Version, config.Commit)
 	case "help", "-h", "--help":
-		flag.Usage()
+		fmt.Fprintf(os.Stdout, usage, config.Version, cli.Usage(), config.DefaultDataDir())
 	default:
 		flag.Usage()
 		os.Exit(2)

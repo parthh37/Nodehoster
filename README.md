@@ -72,6 +72,7 @@ IIS Manager, with a status icon in the notification area.
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
 - **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
+- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
 - **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
@@ -156,6 +157,42 @@ nodehoster reset-password [user]   recover access (also turns password sign-in b
                                    if single sign-on turned it off)
 nodehoster version
 nodehoster --data D:\NodeHoster run   use another data directory
+```
+
+Like `appcmd.exe` for IIS, `nodehoster` also manages the running service,
+over the same local admin pipe as NodeHoster Manager (so from an elevated
+prompt, with no password). `<site>` is a site's name or ID:
+
+```
+nodehoster site list | show <site> | start|stop|restart|recycle <site>
+nodehoster deploy <site> --zip app.zip       upload a release, showing the log until it finishes
+nodehoster deploy <site> --git [--branch x]  deploy from the site's repository
+nodehoster releases <site>                   deployments; * marks the active release
+nodehoster rollback <site> [<release-id>]    default: the previous successful release
+nodehoster logs <site> [-n 100] [-f] [--access]
+nodehoster events [-n 50] [--site x]
+nodehoster cert list | cert renew <id|name|domain>
+nodehoster backup <file> | restore <file> [--yes]
+```
+
+`--json` prints the API's JSON instead of tables (while following, one JSON
+object per line; a deployment's log goes to stderr). Exit codes: 0 done,
+1 failed (the service refused, a deployment failed, it is not running or
+access was denied), 2 wrong usage. `nodehoster <command> --help` lists a
+command's flags.
+
+**PowerShell**: setup installs the `NodeHoster` module for Windows
+PowerShell 5.1 and PowerShell 7, which wraps these commands and returns
+objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
+[-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
+`Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
+`Get-NHCertificate`. They take site names from the pipeline:
+
+```powershell
+Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
+Publish-NHSite shop -ZipPath .\build\shop.zip
+Get-NHLog shop -Tail 50 | Where-Object Stream -eq 'stderr'
+Get-Help Publish-NHSite -Examples
 ```
 
 ## Hosting a Node.js app
