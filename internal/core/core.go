@@ -24,6 +24,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/deploy"
 	"github.com/parthh37/nodehoster/internal/events"
 	"github.com/parthh37/nodehoster/internal/ipban"
+	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/mail"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/nodeversions"
@@ -54,6 +55,7 @@ type Core struct {
 	Mail      *mail.Server
 	Bans      *ipban.Manager
 	Tasks     *tasks.Scheduler
+	Ship      *logship.Shipper
 	StartedAt time.Time
 	IsService bool
 
@@ -107,9 +109,15 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
 
+	c.Ship = newShipper(log, c.siteName)
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
 	if err := c.openBans(ctx); err != nil {
 		return nil, fmt.Errorf("load IP bans: %w", err)
+	}
+	c.Bus.OnEmit = func(e model.Event) {
+		if c.Ship.Wants(model.LogSourceEvent) {
+			c.Ship.Ship(eventRecord(e))
+		}
 	}
 	c.Auth = auth.New(st, box)
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
@@ -122,6 +130,11 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: filepath.Join(paths.Data, "run"),
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
 		IsLocationTarget: c.isLocationTarget,
+		OnLog: func(siteID string, l model.LogLine) {
+			if c.Ship.Wants(model.LogSourceApp) {
+				c.Ship.Ship(appRecord(siteID, l))
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -132,7 +145,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
-		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans, Ship: c.Ship,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
@@ -160,6 +173,8 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		c.Procs.Apply(s)
 		c.Tasks.Apply(s)
 	}
+	c.applyLogShipping(c.settings.LogShipping)
+	c.attachShipper()
 	return c, nil
 }
 
@@ -212,6 +227,7 @@ func (c *Core) Shutdown() {
 	if err := c.Bans.Flush(); err != nil {
 		c.Log.Error("save IP bans", "err", err)
 	}
+	c.Ship.Close()
 	c.Store.Close()
 }
 
@@ -293,6 +309,9 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := c.prepareBackup(&in.Backup, cur.Backup); err != nil {
 		return cur, err
 	}
+	if err := c.prepareLogShipping(&in.LogShipping, cur.LogShipping); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -303,6 +322,7 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.applyBans()
 	c.reload()
 	c.Mail.Apply(in.Mail)
+	c.applyLogShipping(in.LogShipping)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
 		go c.Certs.RetryPending(context.Background())
 	}
@@ -357,6 +377,7 @@ func (c *Core) MaskedSettings() model.Settings {
 	}
 	maskSSO(&s.SSO)
 	maskBackup(&s.Backup)
+	maskLogShipping(&s.LogShipping)
 	return s
 }
 

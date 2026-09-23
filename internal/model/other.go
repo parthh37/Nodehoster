@@ -82,23 +82,24 @@ type ProxySettings struct {
 // Settings are server-wide and editable from the UI. Bootstrap settings that
 // are needed before the database opens live in config.Bootstrap instead.
 type Settings struct {
-	ACME               ACMESettings    `json:"acme"`
-	TLS                TLSSettings     `json:"tls"`
-	Proxy              ProxySettings   `json:"proxy"`
-	PortRangeStart     int             `json:"portRangeStart"`
-	PortRangeEnd       int             `json:"portRangeEnd"`
-	DefaultNodeVersion string          `json:"defaultNodeVersion"` // "" = node on PATH
-	DNSProviders       []DNSProvider   `json:"dnsProviders"`
-	Webhooks           []WebhookTarget `json:"webhooks"`
-	LogMaxSizeMB       int             `json:"logMaxSizeMB"`
-	LogMaxFiles        int             `json:"logMaxFiles"`
-	LogRetentionDays   int             `json:"logRetentionDays"`
-	CertExpiryWarnDays int             `json:"certExpiryWarnDays"`
-	Mime               MimeSettings    `json:"mime"`
-	Mail               MailSettings    `json:"mail"`
-	SSO                SSOSettings     `json:"sso"`
-	IPBan              IPBanSettings   `json:"ipBan"`
-	Backup             BackupSettings  `json:"backup"`
+	ACME               ACMESettings        `json:"acme"`
+	TLS                TLSSettings         `json:"tls"`
+	Proxy              ProxySettings       `json:"proxy"`
+	PortRangeStart     int                 `json:"portRangeStart"`
+	PortRangeEnd       int                 `json:"portRangeEnd"`
+	DefaultNodeVersion string              `json:"defaultNodeVersion"` // "" = node on PATH
+	DNSProviders       []DNSProvider       `json:"dnsProviders"`
+	Webhooks           []WebhookTarget     `json:"webhooks"`
+	LogMaxSizeMB       int                 `json:"logMaxSizeMB"`
+	LogMaxFiles        int                 `json:"logMaxFiles"`
+	LogRetentionDays   int                 `json:"logRetentionDays"`
+	CertExpiryWarnDays int                 `json:"certExpiryWarnDays"`
+	Mime               MimeSettings        `json:"mime"`
+	Mail               MailSettings        `json:"mail"`
+	SSO                SSOSettings         `json:"sso"`
+	IPBan              IPBanSettings       `json:"ipBan"`
+	Backup             BackupSettings      `json:"backup"`
+	LogShipping        LogShippingSettings `json:"logShipping"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

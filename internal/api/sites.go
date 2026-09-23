@@ -512,7 +512,7 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyWebhook(r, body, secret) {
-		a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "webhook.rejected", Target: s.Name})
+		a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "webhook.rejected", Target: s.Name})
 		writeErr(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -530,7 +530,7 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook"})
+	a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook"})
 	writeJSON(w, http.StatusAccepted, dep)
 }
 

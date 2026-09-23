@@ -60,6 +60,10 @@ type Bus struct {
 
 	mu   sync.Mutex
 	subs map[chan model.Event]struct{}
+
+	// OnEmit, set once before use, sees every event (log shipping). It
+	// must not block.
+	OnEmit func(model.Event)
 }
 
 func New(st *store.Store, log *slog.Logger, settings func() model.Settings, siteName func(string) string) *Bus {
@@ -103,6 +107,9 @@ func (b *Bus) Emit(level, typ, siteID, msg string) {
 	}
 	b.mu.Unlock()
 
+	if b.OnEmit != nil {
+		b.OnEmit(e)
+	}
 	go b.deliver(e)
 }
 

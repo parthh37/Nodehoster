@@ -110,6 +110,9 @@ func (c *Core) restoreConfig(ctx context.Context, data []byte, withFiles map[str
 		if _, ok := probe.Settings["backup"]; !ok {
 			b.Settings.Backup = c.Settings().Backup
 		}
+		if _, ok := probe.Settings["logShipping"]; !ok {
+			b.Settings.LogShipping = c.Settings().LogShipping
+		}
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, b.Settings); err != nil {
 		return nil, err
@@ -145,5 +148,6 @@ func (c *Core) restoreConfig(ctx context.Context, data []byte, withFiles map[str
 	}
 	c.reload()
 	c.Mail.Apply(c.Settings().Mail)
+	c.applyLogShipping(c.Settings().LogShipping)
 	return &b, nil
 }

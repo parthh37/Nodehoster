@@ -589,6 +589,7 @@ func DefaultSettings() Settings {
 		Mail:               defaultMail(),
 		IPBan:              DefaultIPBan(),
 		Backup:             DefaultBackup(),
+		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 	}
 }
 

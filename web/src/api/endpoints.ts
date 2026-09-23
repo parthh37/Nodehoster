@@ -23,6 +23,10 @@ import type {
   ImportPreview,
   ImportSource,
   LogLine,
+  LogSearchParams,
+  LogSearchResult,
+  LogTarget,
+  LogTargetStatus,
   LogType,
   MailHealth,
   MailMessage,
@@ -86,6 +90,13 @@ export const serverApi = {
   },
 };
 
+export const logShippingApi = {
+  status: () => http.get<LogTargetStatus[]>('/api/logshipping/status'),
+  test: (t: LogTarget) => http.post('/api/logshipping/test', t),
+  searchServerLog: (p: LogSearchParams, signal?: AbortSignal) =>
+    http.get<LogSearchResult>(`/api/server/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
+};
+
 export const backupsApi = {
   status: () => http.get<BackupStatus>('/api/backups'),
   run: () => http.post<BackupStatus>('/api/backups/run'),
@@ -118,6 +129,8 @@ export const sitesApi = {
   logsDownloadUrl: (id: string, type: LogType) => `/api/sites/${enc(id)}/logs/download${qs({ type })}`,
   clearLogs: (id: string) => http.post(`/api/sites/${enc(id)}/logs/clear`),
   purgeCache: (id: string, path?: string) => http.post<{ purged: number }>(`/api/sites/${enc(id)}/cache/purge`, path ? { path } : {}),
+  searchLogs: (id: string, p: LogSearchParams, signal?: AbortSignal) =>
+    http.get<LogSearchResult>(`/api/sites/${enc(id)}/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
 
   deployments: (id: string) => http.get<Deployment[]>(`/api/sites/${enc(id)}/deployments`),
   deployZip: (id: string, file: File) => {

@@ -122,6 +122,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/logs", a.siteLogs)
 		r.Get("/sites/{id}/logs/stream", a.siteLogStream)
 		r.Get("/sites/{id}/logs/download", a.siteLogDownload)
+		r.Get("/sites/{id}/logs/search", a.siteLogSearch)
 		r.Get("/sites/{id}/deployments", a.listDeployments)
 		r.Get("/sites/{id}/deployments/{dep}/log", a.deploymentLog)
 		r.Get("/sites/{id}/deployments/{dep}/log/stream", a.deploymentLogStream)
@@ -207,6 +208,9 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/backups/shared-sizes", a.backupSharedSizes)
 		r.Get("/backups/destinations/{dest}/files", a.backupFiles)
 		r.Post("/backups/destinations/{dest}/restore", a.backupRestoreFrom)
+		r.Get("/logshipping/status", a.logShippingStatus)
+		r.Post("/logshipping/test", a.logShippingTest)
+		r.Get("/server/logs/search", a.serverLogSearch)
 	})
 }
 
@@ -302,7 +306,7 @@ func (a *API) audit(r *http.Request, action, target, detail string) {
 	if u := user(r); u != nil {
 		name = u.Username
 	}
-	a.c.Store.AddAudit(context.Background(), model.AuditEntry{
+	a.c.AddAudit(context.Background(), model.AuditEntry{
 		Time: time.Now(), User: name, IP: clientIP(r), Action: action, Target: target, Detail: detail,
 	})
 }

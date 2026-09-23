@@ -124,7 +124,7 @@ func (a *API) ssoFail(w http.ResponseWriter, r *http.Request, username, code str
 	if len(detail) > 500 {
 		detail = strings.ToValidUTF8(detail[:500], "") + "…"
 	}
-	a.c.Store.AddAudit(context.Background(), model.AuditEntry{Time: time.Now(), User: username, IP: clientIP(r), Action: "login.failed", Target: username, Detail: detail})
+	a.c.AddAudit(context.Background(), model.AuditEntry{Time: time.Now(), User: username, IP: clientIP(r), Action: "login.failed", Target: username, Detail: detail})
 	http.Redirect(w, r, "/login?sso_error="+url.QueryEscape(code), http.StatusSeeOther)
 }
 
@@ -245,7 +245,7 @@ func (a *API) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	setSessionCookie(w, r, token)
 	audit := func(action, detail string) {
-		a.c.Store.AddAudit(context.Background(), model.AuditEntry{Time: time.Now(), User: u.Username, IP: ip, Action: action, Target: u.Username, Detail: detail})
+		a.c.AddAudit(context.Background(), model.AuditEntry{Time: time.Now(), User: u.Username, IP: ip, Action: action, Target: u.Username, Detail: detail})
 	}
 	if res.Created {
 		audit("user.create", "created by single sign-on: "+a.describeAccess(&u.User))

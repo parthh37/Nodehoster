@@ -44,12 +44,12 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		// A wrong password (or code) counts towards banning the address,
 		// as a failed basic authentication on a site does.
 		a.c.Bans.Record(net.ParseIP(clientIP(r)), ipban.AuthFailure)
-		a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: in.Username, IP: clientIP(r), Action: "login.failed", Target: in.Username})
+		a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: in.Username, IP: clientIP(r), Action: "login.failed", Target: in.Username})
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "totpRequired": errors.Is(err, auth.ErrTOTPInvalid)})
 		return
 	}
 	setSessionCookie(w, r, token)
-	a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: u.Username, IP: clientIP(r), Action: "login", Target: u.Username})
+	a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: u.Username, IP: clientIP(r), Action: "login", Target: u.Username})
 	writeJSON(w, http.StatusOK, map[string]any{"user": u.User, "mustChangePassword": u.MustChange})
 }
 

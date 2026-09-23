@@ -84,6 +84,8 @@ IIS Manager, with a status icon in the notification area.
 - **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
+- **Log shipping** to syslog (RFC 5424 over UDP, TCP or TLS), Seq (CLEF) or any HTTP collector (JSON or NDJSON batches): server log, sites' output and access logs, events and audit log, per-site filters; bounded queues that drop the oldest records rather than ever slowing a site, retries with back-off, delivery counters
+- **Log search** across current and rotated (also gzipped) log files: text or regular expressions, stream and time range, newest first
 - Backup & restore of the whole configuration
 - **Scheduled backups** to a folder or network share, S3-compatible storage (AWS, R2, B2, MinIO, Wasabi), Azure Blob Storage or SFTP (host key verified): configuration, certificates and keys, optionally the sites' shared folders; retention per destination; optional passphrase encryption (AES-256-GCM) that makes an archive restorable on a replacement server; restore from a file or straight from a destination
 

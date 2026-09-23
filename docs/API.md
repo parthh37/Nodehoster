@@ -12,8 +12,9 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 - **Errors**: non-2xx responses have body `{ "error": "message", "field": "bindings[0].host" }`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
-  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase and
-  backup destination credentials) are returned as
+  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
+  backup destination credentials, the Seq API key and log-shipping headers marked
+  `secret`) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
   403 when not permitted. A user is either server-wide (one of those roles, on
@@ -106,7 +107,7 @@ What a site-scoped caller gets:
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
 | `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, rewrite import, server metrics) | 403 |
+| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, log shipping, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 
 **Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
@@ -153,6 +154,7 @@ The desktop manager's local pipe always acts as `admin`.
 | GET | `/api/sites/{id}/logs?type=app&lines=500` | | `LogLine[]` (`type`: `app` \| `access`) |
 | GET | `/api/sites/{id}/logs/stream?type=app` | | SSE `event: log` data `LogLine` |
 | GET | `/api/sites/{id}/logs/download?type=app` | | text file |
+| GET | `/api/sites/{id}/logs/search?q=&regex=&source=app\|access&stream=all\|stdout\|stderr\|system&since=&until=&limit=200&cursor=` | | `{lines: LogLine[], truncated, cursor?, scannedBytes}` (viewer on the site; see [Log search](#log-search)) |
 | POST | `/api/sites/{id}/logs/clear` | | 204 |
 | POST | `/api/sites/{id}/cache/purge` | `{path?}` | `{purged}` (operator; empties the response cache, or entries whose path starts with `path`) |
 
@@ -582,6 +584,62 @@ encrypted archive without `passphrase` (or with a wrong one) is a 422 with
 
 Events: `backup.completed` (info), `backup.failed` (error: no destination,
 or not every destination, received the archive).
+
+## Log shipping
+
+`Settings.logShipping.targets[]` (`LogTarget`), admin only:
+`{id, name, type: syslog|seq|http, enabled, sources[], siteIds[], minLevel,
+syslog | seq | http}`. `sources` is any of `server` (NodeHoster's log, from
+`minLevel`: debug, info, warning, error), `app` (sites' stdout, stderr and
+system lines), `access` (requests of sites with access logging on),
+`event` and `audit`. `siteIds` (empty = all) limits the records that
+belong to a site (app, access, site events); the server log, audit log and
+server events are chosen by `sources` alone.
+
+- `syslog: {address: "host:port", transport: udp|tcp|tls, facility (user,
+  daemon, local0…local7; default local0), appName, hostname, caCert?,
+  insecureSkipVerify}` — RFC 5424; MSGID is the source; site, siteId,
+  instance, stream and access fields are structured data
+  `[nodehoster@32473 …]`; severity from the level (stderr is warning, or
+  error when the line looks like one; access 4xx warning, 5xx error). TCP
+  and TLS use octet counting; UDP messages are cut at 8 KiB.
+- `seq: {url, apiKey}` — CLEF (`application/vnd.serilog.clef`) posted to
+  `{url}/api/events/raw?clef` with `X-Seq-ApiKey`; properties Site, SiteId,
+  Instance, Stream, Source and, for requests, RequestMethod, RequestPath,
+  StatusCode, Bytes, Elapsed, ClientIp, Host, UserAgent.
+- `http: {url, format: json|ndjson, headers: [{name, value, secret}]}` —
+  batches of records `{time, source, level, message, siteId?, site?,
+  instance?, stream?, access?: {method, path, status, bytes, durationMs,
+  clientIp, host, userAgent, referer}, attrs?}`, as a JSON array or one
+  per line.
+
+Shipping never blocks logging: each target has a queue of 10,000 records
+(the oldest are dropped when it is full, and counted), batches of up to 500
+sent at least every second, and failed batches retried with exponential
+backoff (0.5 s doubling to 30 s, six attempts; 4xx other than 408/429 is
+not retried). The shipper's own errors go to the server log file only,
+at most once a minute per target.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/logshipping/status` | | `[{id, name, type, enabled, queued, sent, dropped, failed, lastError?, lastErrorAt?, lastSuccess?}]` |
+| POST | `/api/logshipping/test` | `LogTarget` (masked secrets are taken from the saved target with the same `id`) | 204, or 502 `{error}` with the collector's answer |
+
+## Log search
+
+Searches read the current file backwards, then the rotated copies
+(`app-<time>.log`, also `.gz`), newest first, stopping after 3 seconds or
+256 MB read with `truncated: true`. `cursor` continues after the last line
+returned (at the limit or the budget); a cursor survives a rotation.
+Parameters: `q` (case-insensitive text, or an RE2 regular expression of at
+most 512 characters with `regex=1`; matched against the message, not the
+timestamp prefix), `since` / `until` (RFC 3339, or a duration back from
+now such as `15m`, `24h`), `limit` (default 200, at most 1000), `cursor`.
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/sites/{id}/logs/search?source=app\|access&stream=…` | viewer on the site | `{lines: LogLine[], truncated, cursor?, scannedBytes}` |
+| GET | `/api/server/logs/search?level=warning` | admin | same; `LogLine.s` is the line's level, `m` the whole line |
 
 ## Prometheus
 

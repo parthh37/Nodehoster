@@ -33,4 +33,5 @@ export const qk = {
   backups: ['backups'] as const,
   backupFiles: (destId: string) => ['backups', 'files', destId] as const,
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
+  logShippingStatus: ['logshipping', 'status'] as const,
 };

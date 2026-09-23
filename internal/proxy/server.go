@@ -25,6 +25,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/events"
 	"github.com/parthh37/nodehoster/internal/ipban"
+	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 )
@@ -42,6 +43,7 @@ type Deps struct {
 	AffinityKey []byte
 	// Bans is automatic IP banning; nil in tests that do not need it.
 	Bans *ipban.Manager
+	Ship     *logship.Shipper // access log shipping; may be nil
 }
 
 type route struct {
@@ -587,9 +589,18 @@ func (s *Server) writeAccess(rt *siteRuntime, r *http.Request, status int, size 
 	if ref == "" {
 		ref = "-"
 	}
+	now, ip, ms := time.Now(), s.clientIP(r), float64(d.Microseconds())/1000
 	fmt.Fprintf(rt.access, "%s - %s [%s] %q %d %d %q %q %s %.1fms\n",
-		s.clientIP(r), user, time.Now().Format("02/Jan/2006:15:04:05 -0700"),
-		r.Method+" "+r.URL.RequestURI()+" "+r.Proto, status, size, ref, ua, r.Host, float64(d.Microseconds())/1000)
+		ip, user, now.Format("02/Jan/2006:15:04:05 -0700"),
+		r.Method+" "+r.URL.RequestURI()+" "+r.Proto, status, size, ref, ua, r.Host, ms)
+	if sh := s.deps.Ship; sh.Wants(model.LogSourceAccess) {
+		sh.Ship(logship.Record{
+			Time: now, Source: model.LogSourceAccess, Level: logship.AccessLevel(status), SiteID: rt.site.ID,
+			Message: fmt.Sprintf("%s %s %d %d %.1fms", r.Method, r.URL.RequestURI(), status, size, ms),
+			Access: &logship.AccessFields{Method: r.Method, Path: r.URL.RequestURI(), Status: status, Bytes: size, DurationMs: ms,
+				ClientIP: ip, Host: r.Host, UserAgent: r.UserAgent(), Referer: r.Referer()},
+		})
+	}
 }
 
 func templateEscape(s string) string {

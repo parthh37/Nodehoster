@@ -42,6 +42,9 @@ type Options struct {
 	// IsLocationTarget reports whether another site mounts this one as a
 	// location, which means it serves HTTP even without bindings.
 	IsLocationTarget func(siteID string) bool
+	// OnLog, optional, sees every line a site's log sink writes (log
+	// shipping). It must not block.
+	OnLog func(siteID string, l model.LogLine)
 }
 
 type Manager struct {
@@ -99,6 +102,9 @@ func (m *Manager) Logs(siteID string) *LogSink {
 	}
 	s := m.opts.Settings()
 	l := NewLogSink(filepath.Join(m.opts.LogsDir, siteID, "app.log"), s.LogMaxSizeMB, s.LogMaxFiles, s.LogRetentionDays)
+	if on := m.opts.OnLog; on != nil {
+		l.onWrite = func(line model.LogLine) { on(siteID, line) }
+	}
 	m.logs[siteID] = l
 	return l
 }

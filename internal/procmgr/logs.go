@@ -23,6 +23,8 @@ type LogSink struct {
 	next int
 	full bool
 	subs map[chan model.LogLine]struct{}
+
+	onWrite func(model.LogLine) // set at creation, called outside mu
 }
 
 func NewLogSink(path string, maxSizeMB, maxFiles, maxAgeDays int) *LogSink {
@@ -41,6 +43,9 @@ func NewLogSink(path string, maxSizeMB, maxFiles, maxAgeDays int) *LogSink {
 }
 
 func (s *LogSink) Write(l model.LogLine) {
+	if s.onWrite != nil {
+		defer s.onWrite(l)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fmt.Fprintf(s.file, "%s [%d %s] %s\n", l.Time.Format("2006-01-02T15:04:05.000Z07:00"), l.Instance, l.Stream, l.Text)

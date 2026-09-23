@@ -16,11 +16,12 @@ import { normalizeSettings } from '@/lib/settingsDefaults';
 import { AcmeTab, DnsTab, NotificationsTab, ProcessTab, TlsTab } from './SettingsTabs';
 import { AdminConsoleTab } from './AdminTabs';
 import { BackupsTab } from './BackupsTab';
+import { LogShippingTab } from './LogShippingTab';
 import { MimeTab } from './MimeTab';
 import { SecurityTab } from './SecurityTab';
 import { SsoTab } from './SsoTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'admin' | 'sso' | 'backup';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
@@ -30,12 +31,13 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'mime', label: 'MIME types' },
   { key: 'security', label: 'Security' },
   { key: 'process', label: 'Process & logs' },
+  { key: 'logshipping', label: 'Log shipping' },
   { key: 'admin', label: 'Admin console' },
   { key: 'sso', label: 'Single sign-on' },
   { key: 'backup', label: 'Backups' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'sso', 'backup'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -47,6 +49,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('sso')) return 'sso';
   if (field.startsWith('ipBan')) return 'security';
   if (field.startsWith('backup')) return 'backup';
+  if (field.startsWith('logShipping')) return 'logshipping';
   return 'process';
 }
 
@@ -129,6 +132,7 @@ export function SettingsPage() {
         {props && tab === 'security' && <SecurityTab {...props} />}
         {props && tab === 'process' && <ProcessTab {...props} />}
         {props && tab === 'sso' && <SsoTab {...props} />}
+        {props && tab === 'logshipping' && <LogShippingTab {...props} />}
         {props && tab === 'backup' && <BackupsTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}

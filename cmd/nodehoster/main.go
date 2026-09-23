@@ -29,6 +29,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/localapi"
 	"github.com/parthh37/nodehoster/internal/localapi/localserver"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -239,7 +240,8 @@ func newLogger(paths config.Paths, level string, interactive bool) *slog.Logger 
 	if interactive {
 		out = io.MultiWriter(out, os.Stderr)
 	}
-	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl}))
+	// The Tee also ships the server log once log shipping is configured.
+	return slog.New(logship.NewTee(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl})))
 }
 
 func run(dataDir string, stop <-chan struct{}, isService bool) error {

@@ -643,6 +643,7 @@ export interface Settings {
   sso: SSOSettings;
   ipBan: IPBanSettings;
   backup: BackupSettings;
+  logShipping: LogShippingSettings;
 }
 
 /** Single sign-on to the console with OpenID Connect (Entra ID and others). */
@@ -1211,4 +1212,71 @@ export interface RestoreResult {
   certificates: number;
   sharedSites: string[];
   warnings: string[];
+}
+
+// ---------------------------------------------------------------- log shipping & search
+
+export type LogSource = 'server' | 'app' | 'access' | 'event' | 'audit';
+export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
+export type LogTargetType = 'syslog' | 'seq' | 'http';
+
+export interface LogShippingSettings {
+  targets: LogTarget[];
+}
+
+export interface LogTarget {
+  id: string;
+  name: string;
+  type: LogTargetType;
+  enabled: boolean;
+  sources: LogSource[];
+  /** Records of other sites are not sent; empty = every site. */
+  siteIds: string[];
+  /** Lowest server-log level sent. */
+  minLevel: LogLevel;
+  syslog?: {
+    address: string;
+    transport: 'udp' | 'tcp' | 'tls';
+    facility: string;
+    appName: string;
+    hostname: string;
+    caCert?: string;
+    insecureSkipVerify: boolean;
+  };
+  seq?: { url: string; apiKey?: string };
+  http?: { url: string; format: 'json' | 'ndjson'; headers: { name: string; value: string; secret: boolean }[] };
+}
+
+export interface LogTargetStatus {
+  id: string;
+  name: string;
+  type: LogTargetType;
+  enabled: boolean;
+  queued: number;
+  sent: number;
+  dropped: number;
+  failed: number;
+  lastError?: string;
+  lastErrorAt?: string;
+  lastSuccess?: string;
+}
+
+export interface LogSearchResult {
+  lines: LogLine[];
+  /** Stopped at the time/byte budget; older lines may still match. */
+  truncated: boolean;
+  cursor?: string;
+  scannedBytes: number;
+}
+
+export interface LogSearchParams {
+  q?: string;
+  regex?: boolean;
+  stream?: 'all' | 'stdout' | 'stderr' | 'system';
+  source?: LogType;
+  level?: LogLevel;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
 }

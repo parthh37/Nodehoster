@@ -3,6 +3,7 @@
 
 import type { IPBanSettings, MailSettings, MimeSettings, Settings, SSOSettings } from '@/api/types';
 import { normalizeBackup } from './backup';
+import { normalizeLogShipping } from './logShipping';
 
 export function defaultMail(): MailSettings {
   return {
@@ -84,6 +85,7 @@ export function normalizeSettings(s: Settings): Settings {
     sso: normalizeSSO(s.sso),
     ipBan: normalizeIPBan(s.ipBan),
     backup: normalizeBackup(s.backup),
+    logShipping: normalizeLogShipping(s.logShipping),
   };
 }
 
