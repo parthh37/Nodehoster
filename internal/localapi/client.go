@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -109,10 +110,10 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.Do(ctx, http.MethodDelete, path, nil, nil)
 }
 
-// Upload posts a file as a multipart form (field name field), streaming it:
+// UploadFile posts a file as a multipart form (field name field), streaming it:
 // release archives can be large, so no request timeout applies. The JSON
 // response is decoded into out (unless nil).
-func (c *Client) Upload(ctx context.Context, path, field, filename string, r io.Reader, out any) error {
+func (c *Client) UploadFile(ctx context.Context, path, field, filename string, r io.Reader, out any) error {
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 	go func() {
@@ -146,22 +147,54 @@ func (c *Client) Upload(ctx context.Context, path, field, filename string, r io.
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Download copies a response body (a file, such as the configuration
-// backup) to w, without a request timeout.
-func (c *Client) Download(ctx context.Context, path string, w io.Writer) (int64, error) {
+// Download copies the body of a GET to w and returns the file name the
+// server suggests (Content-Disposition) and the number of bytes copied.
+// Unlike Get it has no timeout of its own: large downloads (backups) are
+// bounded by ctx only.
+func (c *Client) Download(ctx context.Context, path string, w io.Writer) (name string, n int64, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	resp, err := c.stream.Do(req)
 	if err != nil {
-		return 0, connError(err)
+		return "", 0, connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return 0, decodeError(resp)
+		return "", 0, decodeError(resp)
 	}
-	return io.Copy(w, resp.Body)
+	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
+		name = params["filename"]
+	}
+	n, err = io.Copy(w, resp.Body)
+	return name, n, err
+}
+
+// Upload POSTs body as is (not JSON) and decodes a JSON response into out
+// (unless nil). Like Download it is bounded by ctx only.
+func (c *Client) Upload(ctx context.Context, path, contentType string, body io.Reader, header http.Header, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, body)
+	if err != nil {
+		return err
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return connError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return decodeError(resp)
+	}
+	if out == nil {
+		io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // Stream reads server-sent events from path until ctx ends or the stream

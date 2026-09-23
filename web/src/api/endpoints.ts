@@ -10,6 +10,10 @@ import type {
   AuditEntry,
   AuthMethods,
   AvailableNode,
+  BackupDestination,
+  BackupObject,
+  BackupStatus,
+  BackupTestResult,
   CertificateView,
   CreatedToken,
   DNSCatalogEntry,
@@ -30,6 +34,7 @@ import type {
   NHEvent,
   NodeVersions,
   RewriteImport,
+  RestoreResult,
   RewriteImportRequest,
   Role,
   ServerInfo,
@@ -37,6 +42,7 @@ import type {
   Site,
   SiteGrant,
   SiteStatus,
+  SharedSize,
   SiteView,
   SSOSettings,
   SSOTestResult,
@@ -70,11 +76,24 @@ export const serverApi = {
   events: (limit = 100, siteId?: string) => http.get<NHEvent[]>(`/api/events${qs({ limit, siteId })}`),
   audit: (limit = 100, offset = 0) => http.get<AuditEntry[]>(`/api/audit${qs({ limit, offset })}`),
   backupUrl: '/api/backup',
-  restore: (file: File) => {
+  /** An archive with the configured contents and passphrase. */
+  backupArchiveUrl: '/api/backup?format=zip',
+  restore: (file: File, passphrase?: string) => {
     const fd = new FormData();
     fd.append('file', file);
-    return http.post('/api/restore', fd);
+    if (passphrase) fd.append('passphrase', passphrase);
+    return http.post<RestoreResult>('/api/restore', fd);
   },
+};
+
+export const backupsApi = {
+  status: () => http.get<BackupStatus>('/api/backups'),
+  run: () => http.post<BackupStatus>('/api/backups/run'),
+  test: (d: BackupDestination) => http.post<BackupTestResult>('/api/backups/test', d),
+  sharedSizes: () => http.get<SharedSize[]>('/api/backups/shared-sizes'),
+  files: (destId: string) => http.get<BackupObject[]>(`/api/backups/destinations/${enc(destId)}/files`),
+  restoreFrom: (destId: string, file: string, passphrase?: string) =>
+    http.post<RestoreResult>(`/api/backups/destinations/${enc(destId)}/restore`, { file, passphrase: passphrase || undefined }),
 };
 
 export type SiteAction = 'start' | 'stop' | 'restart' | 'recycle';

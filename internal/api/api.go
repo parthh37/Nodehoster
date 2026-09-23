@@ -201,6 +201,12 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/restore", a.restore)
 		r.Post("/bans", a.createBan)
 		r.Delete("/bans/{ip}", a.deleteBan)
+		r.Get("/backups", a.backupStatus)
+		r.Post("/backups/run", a.backupRun)
+		r.Post("/backups/test", a.backupTest)
+		r.Get("/backups/shared-sizes", a.backupSharedSizes)
+		r.Get("/backups/destinations/{dest}/files", a.backupFiles)
+		r.Post("/backups/destinations/{dest}/restore", a.backupRestoreFrom)
 	})
 }
 

@@ -12,7 +12,8 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 - **Errors**: non-2xx responses have body `{ "error": "message", "field": "bindings[0].host" }`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
-  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`) are returned as
+  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase and
+  backup destination credentials) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
   403 when not permitted. A user is either server-wide (one of those roles, on
@@ -105,7 +106,7 @@ What a site-scoped caller gets:
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
 | `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup, rewrite import, server metrics) | 403 |
+| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 
 **Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
@@ -129,8 +130,8 @@ The desktop manager's local pipe always acts as `admin`.
 | GET | `/api/events?limit=100&siteId=` | `Event[]` newest first |
 | GET | `/api/audit?limit=100&offset=0` | `AuditEntry[]` newest first |
 | GET | `/api/stream` | **Server-Sent Events**: `event: status` data `SiteStatus[]` every 2s; `event: event` data `Event` as they happen |
-| GET | `/api/backup` | JSON file download (sites, certificates metadata, settings) |
-| POST | `/api/restore` | multipart `file` → 204 |
+| GET | `/api/backup` | JSON file download (sites, certificates metadata, settings); `?format=zip`: a backup archive as the backup settings make it (see [Backups](#backups)) |
+| POST | `/api/restore` | a `.json` export or a `.zip` archive: multipart `file` (+ `passphrase` for an encrypted archive), or the raw file as the body with `X-Backup-Passphrase` → `RestoreResult` (was 204 before archives) |
 
 ## Sites
 
@@ -517,6 +518,70 @@ public mail server that is closed after its greeting.
 
 Events: `mail.failed` (a message could not be delivered) and `mail.error`
 (the server cannot listen).
+
+## Backups
+
+Scheduled backups copy an archive to one or more destinations. Settings are
+`Settings.backup` (`BackupSettings`), admin only:
+
+| Field | |
+|---|---|
+| `enabled`, `time` (`"HH:MM"`, server local time), `weekdays` (0 = Sunday … 6; empty = every day) | schedule; a time missed while the service was stopped is not caught up |
+| `keepLast`, `keepDays` | retention per destination, applied after each upload to this server's archives only; an archive is kept if either rule keeps it, the newest always; both 0 = keep everything |
+| `includeCertificates` (default on), `includeShared`, `sharedSiteIds` (empty = all) | contents besides the configuration: certificate PEMs and keys, `sites/<id>/shared` folders |
+| `passphrase` | secret; encrypts archives and makes them restorable on another server |
+| `destinations[]` | `{id, name, type, enabled, folder \| s3 \| azure \| sftp}` |
+
+Destination sections (secrets in *italics* read as `__SECRET__`):
+`folder: {path}` (local or UNC); `s3: {endpoint?, region, bucket, prefix?,
+accessKeyId, *secretAccessKey*, pathStyle}` (endpoint empty = AWS);
+`azure: {account, container, prefix?, *sasToken*?, *accountKey*?, endpoint?}`;
+`sftp: {host, port, username, *password*?, *privateKey*?, *passphrase*?,
+directory, hostKey}` — `hostKey` (`SHA256:…`) is required and checked on
+every connection.
+
+**Archive**: `nodehoster-backup-<host>-<yyyyMMdd-HHmmss>.zip` (UTC) with
+`manifest.json` (format, version, host, created, contents, SHA-256 of every
+file), `backup.json` (the `GET /api/backup` export), `certs/<id>/cert.pem`,
+`certs/<id>/key.pem.sealed` and `sites/<id>/shared/…`. Without a passphrase
+secrets and keys stay sealed with this server's DPAPI-protected master key,
+so the archive only restores on this machine. With one, the archive is a
+zip of a public `manifest.json` and `payload.enc`: the archive above,
+encrypted with AES-256-GCM in 64 KiB chunks under a scrypt-derived key (salt
+and parameters in its header), holding `key.pem` in place of the sealed
+key and `secrets.json` (every secret in plain text) so another server
+re-seals them with its own key. S3 uploads are single requests (archives up
+to 5 GiB); Azure uses blocks above 64 MiB.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/backups` | | `BackupStatus` `{enabled, running, runningSince?, runningWhat?, nextRun?, encrypted, hostname, history: BackupRun[]}` (last 50 runs, newest first) |
+| POST | `/api/backups/run` | | 202 `BackupStatus`; 409 while a backup or restore runs |
+| POST | `/api/backups/test` | `BackupDestination` (masked secrets are taken from the saved destination with the same `id`) | `{ok, error?, hostKey?}` — lists, writes and deletes a small file. SFTP without a matching `hostKey` connects no further and returns the server's `hostKey` to confirm |
+| GET | `/api/backups/shared-sizes` | | `[{siteId, siteName, bytes, files, partial}]` (bounded walk; `partial` = stopped counting) |
+| GET | `/api/backups/destinations/{id}/files` | | `[{name, size, modified, host, created}]` — archives from every server, newest first |
+| POST | `/api/backups/destinations/{id}/restore` | `{file, passphrase?}` | `RestoreResult` |
+
+`BackupRun` = `{id, trigger: schedule|manual, startedAt, finishedAt, status:
+success|partial|failed, error?, file, size, encrypted, contents[],
+destinations: [{id, name, ok, error?, pruned}]}`.
+
+`RestoreResult` = `{format: json|archive, hostname?, created?, encrypted,
+sites, certificates, sharedSites[], warnings[]}`. A restore replaces the
+settings and the sites in the backup (others are kept; a backup without
+`settings.backup` keeps the current backup settings); secrets sealed with
+another server's key are re-sealed from `secrets.json` or cleared (with a
+warning); certificate files are written only for certificates this server
+lacks or has no files for; each restored shared folder is unpacked beside
+the current one, the site is stopped if running, the current folder is kept
+as `shared.pre-restore` and the site is started again. Entry names are
+checked before anything is written (only the layout above, no `..`,
+absolute paths or links) and every file's checksum is verified. An
+encrypted archive without `passphrase` (or with a wrong one) is a 422 with
+`field: "passphrase"`.
+
+Events: `backup.completed` (info), `backup.failed` (error: no destination,
+or not every destination, received the archive).
 
 ## Prometheus
 

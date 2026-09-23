@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,7 +250,31 @@ func (a *API) putAdminSettings(w http.ResponseWriter, r *http.Request) {
 
 // ---- backup
 
+// backup downloads the configuration export (JSON), or with ?format=zip
+// an archive with the contents and passphrase of the backup settings.
 func (a *API) backup(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("format") == "zip" {
+		path, name, err := a.c.BackupArchive(r.Context())
+		if err != nil {
+			a.backupFail(w, err)
+			return
+		}
+		defer os.Remove(path)
+		f, err := os.Open(path)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		defer f.Close()
+		a.audit(r, "backup.download", "server", name)
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		if st, err := f.Stat(); err == nil {
+			w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+		}
+		io.Copy(w, f)
+		return
+	}
 	data, err := a.c.Backup(r.Context())
 	if err != nil {
 		a.fail(w, err)
@@ -261,25 +287,22 @@ func (a *API) backup(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// restore accepts a configuration export (.json) or a backup archive
+// (.zip), see receiveBackup for the upload forms.
 func (a *API) restore(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
-	f, _, err := r.FormFile("file")
-	if err != nil {
-		a.fail(w, fmt.Errorf("upload a backup file"))
-		return
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
+	path, passphrase, err := a.receiveBackup(w, r)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	if err := a.c.Restore(r.Context(), data); err != nil {
-		a.fail(w, err)
+	defer os.Remove(path)
+	res, err := a.c.RestoreFile(r.Context(), path, passphrase)
+	if err != nil {
+		a.backupFail(w, err)
 		return
 	}
-	a.audit(r, "backup.restore", "server", "")
-	w.WriteHeader(http.StatusNoContent)
+	a.audit(r, "backup.restore", "server", res.Format)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // ---- Prometheus

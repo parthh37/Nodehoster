@@ -85,6 +85,7 @@ IIS Manager, with a status icon in the notification area.
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
 - Backup & restore of the whole configuration
+- **Scheduled backups** to a folder or network share, S3-compatible storage (AWS, R2, B2, MinIO, Wasabi), Azure Blob Storage or SFTP (host key verified): configuration, certificates and keys, optionally the sites' shared folders; retention per destination; optional passphrase encryption (AES-256-GCM) that makes an archive restorable on a replacement server; restore from a file or straight from a destination
 
 ## Install
 
@@ -139,7 +140,8 @@ and audit logs; the right pane has the actions for what is selected:
 start/stop/restart/recycle a site, edit its bindings, environment and basic
 settings, browse it, follow its log live, roll back a release, reset a web
 console user's password or two-factor authentication, change where the web
-console listens, back up the configuration, and start or stop the service.
+console listens, back up to a file, run a scheduled backup now and see its
+history, restore from a backup, and start or stop the service.
 
 It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
 opens to elevated Administrators: there is no NodeHoster login, and nothing
@@ -247,6 +249,14 @@ computes values, import `pm2 jlist > apps.json` instead.
 | `node\` | installed Node.js versions |
 | `sites\<id>\releases\` | deployed releases; `shared\` persisted files |
 | `logs\` | server log; `logs\sites\<id>\` app and access logs, `tasks\` scheduled task runs |
+| `tmp\` | work files, including archives while a backup or restore runs |
+
+`master.key` cannot be copied to another machine, so a copy of this folder
+does not carry the secrets to a new server. Use **Settings → Backups** with a
+passphrase instead: the archive holds the configuration, certificates and
+(optionally) shared folders, and restores on any NodeHoster server. Releases
+and Node.js versions are not backed up: redeploy after restoring. A backup
+without a passphrase restores on this machine only.
 
 ## Development
 

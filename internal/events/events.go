@@ -39,6 +39,8 @@ const (
 	MailError       = "mail.error"   // the SMTP server cannot listen
 	TaskFailed      = "task.failed"  // a scheduled task exited with an error or could not start
 	TaskTimeout     = "task.timeout" // a scheduled task ran past its timeout and was killed
+	BackupCompleted = "backup.completed"
+	BackupFailed    = "backup.failed" // no destination, or some, received the archive
 )
 
 // SecurityBanned: automatic IP banning banned an address (or an
@@ -47,7 +49,7 @@ const SecurityBanned = "security.banned"
 
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
-	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout}
+	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed}
 
 type Bus struct {
 	store    *store.Store

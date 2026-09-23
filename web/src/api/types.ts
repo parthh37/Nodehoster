@@ -642,6 +642,7 @@ export interface Settings {
   mail: MailSettings;
   sso: SSOSettings;
   ipBan: IPBanSettings;
+  backup: BackupSettings;
 }
 
 /** Single sign-on to the console with OpenID Connect (Entra ID and others). */
@@ -1084,4 +1085,130 @@ export interface ImportFailed {
 export interface ImportApplyResult {
   created: ImportCreated[];
   failed: ImportFailed[];
+}
+
+// ---------------------------------------------------------------- backups
+
+export type BackupDestinationType = 'folder' | 's3' | 'azure' | 'sftp';
+
+/** Scheduled backups (Settings → Backups). Secrets come back as SECRET. */
+export interface BackupSettings {
+  enabled: boolean;
+  /** "HH:MM", server local time. */
+  time: string;
+  /** 0 = Sunday … 6 = Saturday; empty = every day. */
+  weekdays: number[];
+  keepLast: number;
+  keepDays: number;
+  includeCertificates: boolean;
+  includeShared: boolean;
+  /** Empty = every site. */
+  sharedSiteIds: string[];
+  passphrase?: string;
+  destinations: BackupDestination[];
+}
+
+export interface BackupDestination {
+  id: string;
+  name: string;
+  type: BackupDestinationType;
+  enabled: boolean;
+  folder?: { path: string };
+  s3?: {
+    endpoint?: string;
+    region: string;
+    bucket: string;
+    prefix?: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    pathStyle: boolean;
+  };
+  azure?: {
+    account: string;
+    container: string;
+    prefix?: string;
+    sasToken?: string;
+    accountKey?: string;
+    endpoint?: string;
+  };
+  sftp?: {
+    host: string;
+    port: number;
+    username: string;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+    directory: string;
+    /** SHA256:… fingerprint of the server's host key. */
+    hostKey: string;
+  };
+}
+
+export type BackupRunStatus = 'success' | 'partial' | 'failed';
+
+export interface BackupDestResult {
+  id: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  pruned: number;
+}
+
+export interface BackupRun {
+  id: string;
+  trigger: 'schedule' | 'manual' | string;
+  startedAt: string;
+  finishedAt: string;
+  status: BackupRunStatus;
+  error?: string;
+  file?: string;
+  size: number;
+  encrypted: boolean;
+  contents: string[];
+  destinations: BackupDestResult[];
+}
+
+export interface BackupStatus {
+  enabled: boolean;
+  running: boolean;
+  runningSince?: string;
+  runningWhat?: string;
+  nextRun?: string;
+  encrypted: boolean;
+  hostname: string;
+  history: BackupRun[];
+}
+
+export interface BackupTestResult {
+  ok: boolean;
+  error?: string;
+  /** SFTP: the server's host key fingerprint, to confirm. */
+  hostKey?: string;
+}
+
+export interface BackupObject {
+  name: string;
+  size: number;
+  modified: string;
+  host: string;
+  created: string;
+}
+
+export interface SharedSize {
+  siteId: string;
+  siteName: string;
+  bytes: number;
+  files: number;
+  partial: boolean;
+}
+
+export interface RestoreResult {
+  format: 'json' | 'archive';
+  hostname?: string;
+  created?: string;
+  encrypted: boolean;
+  sites: number;
+  certificates: number;
+  sharedSites: string[];
+  warnings: string[];
 }

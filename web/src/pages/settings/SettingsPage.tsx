@@ -14,7 +14,8 @@ import { useToast } from '@/components/Toast';
 import { clone, jsonEqual } from '@/lib/obj';
 import { normalizeSettings } from '@/lib/settingsDefaults';
 import { AcmeTab, DnsTab, NotificationsTab, ProcessTab, TlsTab } from './SettingsTabs';
-import { AdminConsoleTab, BackupTab } from './AdminTabs';
+import { AdminConsoleTab } from './AdminTabs';
+import { BackupsTab } from './BackupsTab';
 import { MimeTab } from './MimeTab';
 import { SecurityTab } from './SecurityTab';
 import { SsoTab } from './SsoTab';
@@ -31,10 +32,10 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'process', label: 'Process & logs' },
   { key: 'admin', label: 'Admin console' },
   { key: 'sso', label: 'Single sign-on' },
-  { key: 'backup', label: 'Backup & restore' },
+  { key: 'backup', label: 'Backups' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'sso'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'sso', 'backup'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -45,6 +46,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('mime')) return 'mime';
   if (field.startsWith('sso')) return 'sso';
   if (field.startsWith('ipBan')) return 'security';
+  if (field.startsWith('backup')) return 'backup';
   return 'process';
 }
 
@@ -127,9 +129,9 @@ export function SettingsPage() {
         {props && tab === 'security' && <SecurityTab {...props} />}
         {props && tab === 'process' && <ProcessTab {...props} />}
         {props && tab === 'sso' && <SsoTab {...props} />}
+        {props && tab === 'backup' && <BackupsTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
-      {tab === 'backup' && <BackupTab />}
       {dirty && (
         <SaveBar
           label="You have unsaved settings"

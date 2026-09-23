@@ -108,6 +108,9 @@ func (b *Box) Unseal(v string) (string, error) {
 	return string(out), nil
 }
 
+// IsSealed reports whether v is a value produced by Seal.
+func IsSealed(v string) bool { return strings.HasPrefix(v, prefix) }
+
 // MustUnseal returns "" on failure; used where a missing secret is handled
 // downstream (for example an auth failure against a git remote).
 func (b *Box) MustUnseal(v string) string {

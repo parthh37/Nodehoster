@@ -317,6 +317,8 @@ export const EVENT_TYPES = [
   'cert.expiring',
   'server.started',
   'security.banned',
+  'backup.completed',
+  'backup.failed',
 ];
 
 const FORMATS = [

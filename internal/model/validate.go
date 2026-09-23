@@ -588,6 +588,7 @@ func DefaultSettings() Settings {
 		Mime:               MimeSettings{Types: []MimeMap{}, UnknownTypes: UnknownMimeServe},
 		Mail:               defaultMail(),
 		IPBan:              DefaultIPBan(),
+		Backup:             DefaultBackup(),
 	}
 }
 

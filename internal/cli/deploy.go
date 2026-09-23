@@ -59,7 +59,7 @@ func deployCmd(fs *flag.FlagSet) Runner {
 				return ferr
 			}
 			defer f.Close()
-			err = e.Client.Upload(e.Ctx, sitePath(s)+"/deploy/zip", "file", filepath.Base(*zipFile), f, &dep)
+			err = e.Client.UploadFile(e.Ctx, sitePath(s)+"/deploy/zip", "file", filepath.Base(*zipFile), f, &dep)
 		}
 		if err != nil {
 			return err

@@ -125,28 +125,6 @@ func shortCommit(c string) string {
 	return c
 }
 
-func (m *manager) backupConfig() {
-	dlg := walk.FileDialog{
-		Title:    "Back up the NodeHoster configuration",
-		Filter:   "Backup (*.json)|*.json",
-		FilePath: "nodehoster-backup-" + time.Now().Format("20060102-150405") + ".json",
-	}
-	if ok, _ := dlg.ShowSave(m.mw); !ok {
-		return
-	}
-	path := dlg.FilePath
-	if filepath.Ext(path) == "" {
-		path += ".json"
-	}
-	m.do("Backing up the configuration", func(ctx context.Context) error {
-		var raw json.RawMessage
-		if err := m.cl.Get(ctx, "/api/backup", &raw); err != nil {
-			return err
-		}
-		return os.WriteFile(path, raw, 0o600)
-	})
-}
-
 // ---- the sites list
 
 type sitesPage struct {

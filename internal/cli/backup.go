@@ -23,7 +23,7 @@ func init() {
 
 func backup(e *Env, args []string) error {
 	if args[0] == "-" {
-		_, err := e.Client.Download(e.Ctx, "/api/backup", e.Stdout)
+		_, _, err := e.Client.Download(e.Ctx, "/api/backup", e.Stdout)
 		return err
 	}
 	// Written next to the target and renamed, so that a failure never
@@ -33,7 +33,7 @@ func backup(e *Env, args []string) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	n, err := e.Client.Download(e.Ctx, "/api/backup", tmp)
+	_, n, err := e.Client.Download(e.Ctx, "/api/backup", tmp)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
@@ -71,7 +71,7 @@ func restoreCmd(fs *flag.FlagSet) Runner {
 				return errors.New("cancelled; nothing was restored")
 			}
 		}
-		if err := e.Client.Upload(e.Ctx, "/api/restore", "file", filepath.Base(args[0]), f, nil); err != nil {
+		if err := e.Client.UploadFile(e.Ctx, "/api/restore", "file", filepath.Base(args[0]), f, nil); err != nil {
 			return err
 		}
 		if e.JSON {

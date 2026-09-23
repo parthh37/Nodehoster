@@ -71,6 +71,9 @@ type Core struct {
 	sites   map[string]*model.Site
 	running map[string]bool // desired state of non-node sites
 
+	backups backupState
+
+	ctx    context.Context // ends at Shutdown
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -163,7 +166,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 // Start opens listeners, starts auto-start sites and background jobs.
 func (c *Core) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
+	c.ctx, c.cancel = ctx, cancel
 	c.cacheMu.RLock()
 	var auto []*model.Site
 	for _, s := range c.sites {
@@ -191,6 +194,7 @@ func (c *Core) Start() {
 	go func() { defer c.wg.Done(); c.metricsLoop(ctx) }()
 	go func() { defer c.wg.Done(); c.housekeeping(ctx) }()
 	go func() { defer c.wg.Done(); c.invalidateCaches(ctx) }()
+	go func() { defer c.wg.Done(); c.backupLoop(ctx) }()
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -286,6 +290,9 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := c.prepareSSO(&in.SSO, cur.SSO); err != nil {
 		return cur, err
 	}
+	if err := c.prepareBackup(&in.Backup, cur.Backup); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -349,6 +356,7 @@ func (c *Core) MaskedSettings() model.Settings {
 		}
 	}
 	maskSSO(&s.SSO)
+	maskBackup(&s.Backup)
 	return s
 }
 
