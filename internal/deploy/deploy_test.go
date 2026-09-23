@@ -739,6 +739,13 @@ func TestDeployIsExclusivePerSite(t *testing.T) {
 		t.Fatal("Subscribe: running deployment not found")
 	}
 	defer cancel()
+	// The stream is live only: what was written before Subscribe is in the
+	// log file. Read it after subscribing, as the API does, so no line
+	// falls in between.
+	history, err := h.d.Log(site.ID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	second := writeZip(t, h.root, "2.zip", []zipEntry{{name: "b.txt"}})
 	if _, err := h.d.DeployZip(context.Background(), site, second, "u"); !errors.Is(err, ErrBusy) {
@@ -780,7 +787,12 @@ loop:
 		}
 		break
 	}
-	if !strings.Contains(streamed.String(), "extracting archive") {
+	if all := string(history) + streamed.String(); !strings.Contains(all, "extracting archive") {
+		t.Errorf("log file and live stream missed early output: %q", all)
+	}
+	// Activation waits on the gate, opened after Subscribe: its outcome
+	// must reach the stream.
+	if !strings.Contains(streamed.String(), "deployment succeeded") {
 		t.Errorf("live log stream missed output: %q", streamed.String())
 	}
 
