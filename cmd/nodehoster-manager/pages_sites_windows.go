@@ -27,6 +27,7 @@ type serverPage struct {
 	props                                                  table
 	banner                                                 *walk.Label
 	start, stop, restart, console, consoleSettings, backup *walk.LinkLabel
+	mime, mail                                             *walk.LinkLabel
 }
 
 func (s *serverPage) init(m *manager) *page {
@@ -58,6 +59,8 @@ func (s *serverPage) actionsPane(m *manager) []Widget {
 		link(&s.console, "Open in browser", m.openConsole),
 		link(&s.consoleSettings, "Settings…", func() { adminConsoleDialog(m) }),
 		heading("Configuration"),
+		link(&s.mime, "MIME types…", func() { serverMimeDialog(m) }),
+		link(&s.mail, "SMTP E-mail…", func() { mailPropertiesDialog(m) }),
 		link(&s.backup, "Back up…", m.backupConfig),
 		link(nil, "Open data folder", func() { shellOpen(m.dataDir()) }),
 		link(nil, "Open server log", func() { shellOpen(filepath.Join(m.dataDir(), "logs", "nodehoster.log")) }),
@@ -67,7 +70,7 @@ func (s *serverPage) actionsPane(m *manager) []Widget {
 func (s *serverPage) redraw(m *manager) {
 	setEnabled(m.service == "stopped", s.start)
 	setEnabled(m.service == "running", s.stop, s.restart)
-	setEnabled(m.connected(), s.consoleSettings, s.backup)
+	setEnabled(m.connected(), s.consoleSettings, s.backup, s.mime, s.mail)
 	setEnabled(m.connected() && m.info != nil && m.info.AdminURL != "", s.console)
 
 	banner := ""
@@ -395,6 +398,8 @@ func (s *sitePage) actionsPane(m *manager) []Widget {
 		link(nil, "Basic settings…", func() { basicSettingsDialog(m, m.site) }),
 		link(nil, "Bindings…", func() { bindingsDialog(m, m.site) }),
 		link(nil, "Environment…", func() { envDialog(m, m.site) }),
+		link(nil, "URL Rewrite…", func() { rewriteDialog(m, m.site) }),
+		link(nil, "MIME types…", func() { siteMimeDialog(m, m.site) }),
 		link(&s.explore, "Explore folder", func() { s.exploreFolder(m) }),
 		link(nil, "View logs", func() { s.tabs.SetCurrentIndex(tabLogs) }),
 		link(&s.activate, "Deployments", func() { s.tabs.SetCurrentIndex(tabDeployments) }),

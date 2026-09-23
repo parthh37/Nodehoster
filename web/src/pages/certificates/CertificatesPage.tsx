@@ -68,8 +68,8 @@ export function CertificatesPage() {
       message: inUse ? (
         <>
           This certificate is used by{' '}
-          {(c.usedBy ?? []).map((u) => u.siteName).join(', ')}. Change those bindings first — the server will refuse to delete a certificate in
-          use.
+          {(c.usedBy ?? []).map((u) => u.siteName).join(', ')}. Choose another certificate there first — the server will refuse to delete a
+          certificate in use.
         </>
       ) : (
         'The certificate and its private key are removed from the store. This cannot be undone.'
@@ -187,7 +187,7 @@ export function CertificatesPage() {
                       ) : (
                         <div className="flex flex-col gap-0.5">
                           {(c.usedBy ?? []).slice(0, 3).map((u, i) => (
-                            <Link key={i} to={`/sites/${u.siteId}/bindings`} className="nh-link truncate text-xs" title={u.binding}>
+                            <Link key={i} to={u.siteId ? `/sites/${u.siteId}/bindings` : '/mail/settings'} className="nh-link truncate text-xs" title={u.binding}>
                               {u.siteName}
                             </Link>
                           ))}

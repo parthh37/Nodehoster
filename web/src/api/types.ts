@@ -79,6 +79,17 @@ export interface NodeConfig {
   recycle: RecycleConfig;
   limits: ProcessLimits;
   runAs: RunAsConfig;
+  loadBalancer: LoadBalancerConfig;
+}
+
+/** Share a node site's traffic between this server and others running the same app. */
+export interface LoadBalancerConfig {
+  enabled: boolean;
+  localWeight: number;
+  servers: Upstream[];
+  strategy: LoadBalancing | string;
+  healthCheck: HealthCheck;
+  insecureSkipVerify: boolean;
 }
 
 export interface Upstream {
@@ -116,19 +127,92 @@ export interface HeaderRule {
   value?: string;
 }
 
-export type RewriteAction = 'rewrite' | 'redirect' | 'block' | 'respond';
+export type RewriteAction = 'rewrite' | 'redirect' | 'block' | 'respond' | 'none';
 
+export type ConditionMatchType = 'pattern' | 'isFile' | 'isDirectory';
+
+/** IIS URL Rewrite condition: Input (text with server variables) matched against Pattern, or tested as a file/directory. */
+export interface RewriteCondition {
+  input: string;
+  matchType: ConditionMatchType | string;
+  pattern?: string;
+  negate?: boolean;
+  ignoreCase?: boolean;
+}
+
+/** '' keeps the original query unless the target has one. */
+export type RewriteQueryString = '' | 'append' | 'discard';
+
+/** Inbound rule. Match is a regular expression on the path including its leading "/". */
 export interface RewriteRule {
   name: string;
   enabled: boolean;
   match: string;
+  negate?: boolean;
+  ignoreCase?: boolean;
+  /** Shorthand for a {HTTP_HOST} condition. */
   host?: string;
+  conditions?: RewriteCondition[];
+  matchAny?: boolean;
   action: RewriteAction | string;
+  /** A rewrite to an absolute http(s) URL proxies the request there. */
   target?: string;
+  queryString?: RewriteQueryString | string;
+  preserveHost?: boolean;
   statusCode?: number;
   body?: string;
+  contentType?: string;
   stop: boolean;
 }
+
+/** Lookup table used in targets as {Name:key}. */
+export interface RewriteMap {
+  name: string;
+  defaultValue?: string;
+  entries: Record<string, string> | null;
+}
+
+export type OutboundScope = 'header' | 'tags' | 'body';
+
+export interface OutboundRule {
+  name: string;
+  enabled: boolean;
+  scope: OutboundScope | string;
+  header?: string;
+  tags?: string[];
+  match: string;
+  negate?: boolean;
+  ignoreCase?: boolean;
+  conditions?: RewriteCondition[];
+  matchAny?: boolean;
+  action: 'rewrite' | 'none' | string;
+  value?: string;
+  stop: boolean;
+}
+
+export type RewriteImportFormat = 'webconfig' | 'htaccess';
+
+export interface RewriteImportRequest {
+  format: RewriteImportFormat;
+  text: string;
+}
+
+/** Result of POST /rewrite/import. Nothing is saved server-side. */
+export interface RewriteImport {
+  rules: RewriteRule[] | null;
+  outboundRules: OutboundRule[] | null;
+  rewriteMaps: RewriteMap[] | null;
+  warnings: string[] | null;
+}
+
+/** Maps a file extension (".webmanifest") to a Content-Type. */
+export interface MimeMap {
+  extension: string;
+  type: string;
+}
+
+/** serve = as application/octet-stream; deny = 404 (IIS without a MIME map). */
+export type UnknownMimeTypes = 'serve' | 'deny';
 
 export type LocationKind = 'site' | 'url' | 'static';
 
@@ -189,7 +273,12 @@ export interface RoutingConfig {
   requestHeaders?: HeaderRule[];
   responseHeaders?: HeaderRule[];
   rewrites?: RewriteRule[];
+  outboundRules?: OutboundRule[];
+  rewriteMaps?: RewriteMap[];
   locations?: Location[];
+  mimeTypes?: MimeMap[];
+  /** '' = the server setting. */
+  unknownMimeTypes?: '' | UnknownMimeTypes | string;
   ip: IPRestrictions;
   basicAuth: BasicAuthConfig;
   rateLimit: RateLimitConfig;
@@ -291,6 +380,7 @@ export interface TrafficStats {
 
 export interface UpstreamStatus {
   url: string;
+  local?: boolean;
   healthy: boolean;
   activeConns: number;
   lastError?: string;
@@ -444,6 +534,14 @@ export interface Settings {
   logMaxFiles: number;
   logRetentionDays: number;
   certExpiryWarnDays: number;
+  mime: MimeSettings;
+  mail: MailSettings;
+}
+
+/** Server-wide MIME types, added to or overriding the built-in table. */
+export interface MimeSettings {
+  types: MimeMap[] | null;
+  unknownTypes: UnknownMimeTypes | string;
 }
 
 export interface DNSCatalogField {
@@ -556,4 +654,104 @@ export interface AvailableNode {
   lts: string | false;
   date: string;
   security: boolean;
+}
+
+// ---------------------------------------------------------------- mail (SMTP virtual server)
+
+export type MailDelivery = 'direct' | 'smarthost';
+export type SmartHostSecurity = 'starttls' | 'tls' | 'none';
+
+export interface MailUser {
+  username: string;
+  /** "__SECRET__" when set; never the hash itself. */
+  passwordHash?: string;
+  /** Write-only: non-empty sets a new password, empty keeps the existing one. */
+  password?: string;
+}
+
+export interface MailSmartHost {
+  host: string;
+  port: number;
+  security: SmartHostSecurity | string;
+  username?: string;
+  password?: string;
+  insecureSkipVerify: boolean;
+}
+
+export interface DKIMKey {
+  domain: string;
+  selector: string;
+  enabled: boolean;
+  /** "__SECRET__" for a stored key; "" on a new key = generate RSA-2048 on save; otherwise an imported PEM. */
+  privateKey?: string;
+  /** Read-only, filled by the server. */
+  dnsName?: string;
+  /** Read-only TXT value to publish at dnsName. */
+  dnsRecord?: string;
+}
+
+export interface MailSettings {
+  enabled: boolean;
+  listenIp: string;
+  port: number;
+  hostname?: string;
+  allowIps: string[] | null;
+  requireAuth: boolean;
+  users?: MailUser[] | null;
+  certificateId?: string;
+  allowedSenderDomains?: string[] | null;
+  maxMessageMB: number;
+  maxRecipients: number;
+  delivery: MailDelivery | string;
+  smartHost: MailSmartHost;
+  expireHours: number;
+  keepFailedDays: number;
+  dkim?: DKIMKey[] | null;
+  pickupDirectory: boolean;
+}
+
+export type MailMessageState = 'queued' | 'sending' | 'failed';
+export type MailRecipientState = 'pending' | 'delivered' | 'failed';
+export type MailSource = 'smtp' | 'pickup' | 'test';
+
+export interface MailRecipient {
+  address: string;
+  state: MailRecipientState | string;
+  error?: string;
+  deliveredAt?: string | null;
+}
+
+export interface MailMessage {
+  id: string;
+  from: string;
+  recipients: MailRecipient[] | null;
+  subject?: string;
+  size: number;
+  source: MailSource | string;
+  clientIp?: string;
+  user?: string;
+  state: MailMessageState | string;
+  attempts: number;
+  receivedAt: string;
+  nextAttempt?: string | null;
+  lastAttempt?: string | null;
+  lastError?: string;
+}
+
+export interface MailStatus {
+  enabled: boolean;
+  listening: boolean;
+  addr?: string;
+  error?: string;
+  queued: number;
+  failed: number;
+  accepted: number;
+  delivered: number;
+  bounced: number;
+  since: string;
+}
+
+export interface MailTest {
+  from?: string;
+  to: string;
 }

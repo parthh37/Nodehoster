@@ -120,6 +120,52 @@ Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 | POST | `/api/tokens` | `{name, expiresDays?}` | `{token: "nh_…", info: APIToken}` (token shown once) |
 | DELETE | `/api/tokens/{id}` | | 204 |
 
+## URL rewrite and MIME types
+
+Rewrite rules, outbound rules, rewrite maps and per-site MIME types are
+part of a site (`routing.rewrites`, `routing.outboundRules`,
+`routing.rewriteMaps`, `routing.mimeTypes`, `routing.unknownMimeTypes`)
+and saved with `PUT /api/sites/{id}`. Server-wide MIME types are
+`Settings.mime`.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/rewrite/import` | `{format: "webconfig"\|"htaccess", text}` | `{rules, outboundRules, rewriteMaps, warnings}` — converted, not saved |
+| GET | `/api/mime/defaults` | | `MimeMap[]` — the built-in table |
+
+Inbound rules match a regular expression against the path including its
+leading `/`. Targets, condition inputs and outbound values may use
+`{R:n}` or `$n` (rule captures), `{C:n}` (captures of the last matched
+condition), server variables (`{HTTP_HOST}`, `{QUERY_STRING}`, `{URL}`,
+`{REQUEST_URI}`, `{REQUEST_METHOD}`, `{REMOTE_ADDR}`, `{HTTPS}`,
+`{SERVER_PORT}`, `{REQUEST_FILENAME}`, `{CACHE_URL}`, any header as
+`{HTTP_X_NAME}`; in outbound rules also `{RESPONSE_X_NAME}`), rewrite maps
+(`{MapName:key}`) and `{ToLower:…}`, `{ToUpper:…}`, `{UrlEncode:…}`,
+`{UrlDecode:…}`. A rewrite to an absolute `http(s)://` URL proxies the
+request there.
+
+## Mail (SMTP server)
+
+The SMTP server's configuration is `Settings.mail`. Secrets follow the
+usual convention: `smartHost.password` and `dkim[].privateKey` read as
+`__SECRET__`; `users[].passwordHash` reads as `__SECRET__` and a user's
+`password` is write-only (empty keeps the current one). A DKIM key saved
+without `privateKey` gets a new RSA-2048 key; `dnsName` and `dnsRecord`
+are the TXT record to publish.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/mail/status` | viewer | | `MailStatus` |
+| GET | `/api/mail/queue?state=queued\|failed` | viewer | | `MailMessage[]`, newest first |
+| POST | `/api/mail/queue/{id}/retry` | operator | | 204 — a failed message is queued again |
+| POST | `/api/mail/queue/retry` | operator | | 204 — every queued message now |
+| GET | `/api/mail/queue/{id}/eml` | admin | | `message/rfc822` |
+| DELETE | `/api/mail/queue/{id}` | admin | | 204 |
+| POST | `/api/mail/test` | admin | `{to, from?}` | 202 `MailMessage` |
+
+Events: `mail.failed` (a message could not be delivered) and `mail.error`
+(the server cannot listen).
+
 ## Prometheus
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes

@@ -131,6 +131,18 @@ func (s *Server) accessLogPath(id string) string {
 // AccessLogPath is where a site's access log is written.
 func (s *Server) AccessLogPath(id string) string { return s.accessLogPath(id) }
 
+// physicalRoot is the directory a site's files are in, for the rewrite
+// engine's {REQUEST_FILENAME}; "" for sites without one.
+func (s *Server) physicalRoot(site *model.Site) string {
+	switch {
+	case site.Type == model.SiteStatic && site.Static != nil:
+		return site.ResolveRoot(s.deps.SitesDir, site.Static.Root)
+	case site.Type == model.SiteNode && site.Node != nil:
+		return site.ResolveRoot(s.deps.SitesDir, site.Node.AppRoot)
+	}
+	return ""
+}
+
 func (s *Server) runtime(id string) *siteRuntime {
 	return s.table.Load().sites[id]
 }

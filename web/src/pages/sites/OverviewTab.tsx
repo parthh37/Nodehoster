@@ -46,6 +46,7 @@ export function OverviewTab({ site, status }: { site: SiteView; status: SiteStat
 
       {site.type === 'node' && <InstancesCard site={site} status={status} now={now} />}
       {site.type === 'proxy' && <UpstreamsCard status={status} />}
+      {site.type === 'node' && site.node?.loadBalancer?.enabled && <UpstreamsCard status={status} title="Servers" />}
 
       <MetricsCard site={site} />
     </div>
@@ -145,10 +146,10 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
   );
 }
 
-function UpstreamsCard({ status }: { status: SiteStatus | undefined }) {
+function UpstreamsCard({ status, title = 'Upstream health' }: { status: SiteStatus | undefined; title?: string }) {
   const ups = status?.upstreams ?? [];
   return (
-    <Card title="Upstream health" flush>
+    <Card title={title} flush>
       <Table>
         <THead>
           <tr>
@@ -163,9 +164,19 @@ function UpstreamsCard({ status }: { status: SiteStatus | undefined }) {
           {ups.map((u) => (
             <Tr key={u.url}>
               <Td>
-                <Mono>{u.url}</Mono>
+                {u.local ? <span className="font-medium">{u.url}</span> : <Mono>{u.url}</Mono>}
               </Td>
-              <Td>{u.healthy ? <Badge tone="green" dot>healthy</Badge> : <Badge tone="red" dot>down</Badge>}</Td>
+              <Td>
+                {u.healthy ? (
+                  <Badge tone="green" dot>
+                    healthy
+                  </Badge>
+                ) : (
+                  <Badge tone="red" dot>
+                    {u.local ? 'not ready' : 'down'}
+                  </Badge>
+                )}
+              </Td>
               <Td className="text-right tabular">{u.activeConns}</Td>
               <Td className="max-w-md truncate text-xs text-red-600 dark:text-red-400" title={u.lastError}>
                 {u.lastError || <span className="text-zinc-400">—</span>}

@@ -37,11 +37,22 @@ IIS Manager, with a status icon in the notification area.
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
 - Upstream load balancing: round-robin (weighted), least connections, IP hash, random; active and passive health checks
 - HTTPS redirect, HSTS, gzip compression, request body limit, upstream timeout
-- **URL Rewrite** rules (regex, `$1` substitutions): rewrite, redirect, block, custom response
+- **URL Rewrite** like the IIS module: ordered rules with conditions (headers, query string, server variables, file/directory exists), match all/any, negation, `{R:1}` / `{C:1}` back-references, rewrite maps and `{ToLower:…}`-style functions; rewrite, redirect, block, custom response
+- Rewrite to an absolute URL proxies the request there (like URL Rewrite with ARR); **outbound rules** rewrite response headers (`Location`), URLs in HTML tags or any text in a body
+- **Import** rules from an IIS `web.config` or an Apache `.htaccess` (mod_rewrite, `Redirect`, `RedirectMatch`); what cannot be converted is listed
+- **MIME types** like IIS: a built-in table (the Windows registry is never consulted, so `.js` is never served as `text/plain`), server-wide and per-site mappings, and unknown extensions either served as `application/octet-stream` or refused with 404
 - Request/response header rules, **IP & domain restrictions** (CIDR allow/deny)
 - Basic authentication, per-client **rate limiting**
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
+
+**SMTP server (send-only, like the IIS 6 SMTP virtual server)**
+- Applications send through `127.0.0.1:25` (nodemailer, `System.Net.Mail`…) or drop `.eml` files in a **pickup folder**
+- Connection and relay restrictions by IP/CIDR, optional SMTP authentication (PLAIN/LOGIN, bcrypt-hashed users), STARTTLS with a certificate from the store, allowed sender domains, size and recipient limits
+- Delivery **directly** to the recipients' mail servers (MX lookup, opportunistic TLS) or through a **smart host** (SendGrid, Amazon SES, Microsoft 365…) with STARTTLS/TLS and a password
+- **DKIM signing** per domain: keys generated for you, with the DNS record to publish
+- On-disk queue that survives restarts, retries with back-off until the message expires, undeliverable mail kept for inspection; queue view with retry, delete and download; notifications for failed mail
+- Never accepts mail for local mailboxes: it is a relay for your applications, not a mail server
 
 **Certificates**
 - **Let's Encrypt / ZeroSSL / any ACME CA**, HTTP-01 and DNS-01 (wildcards)

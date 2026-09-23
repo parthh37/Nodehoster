@@ -22,10 +22,12 @@ import (
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/deploy"
 	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/mail"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/nodeversions"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/proxy"
+	"github.com/parthh37/nodehoster/internal/rewrite"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/store"
 	"golang.org/x/crypto/bcrypt"
@@ -46,6 +48,7 @@ type Core struct {
 	Certs     *certs.Manager
 	Nodes     *nodeversions.Manager
 	Deploy    *deploy.Deployer
+	Mail      *mail.Server
 	StartedAt time.Time
 	IsService bool
 
@@ -90,6 +93,10 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if err := st.GetDoc(ctx, settingsKey, &c.settings); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
+	c.settings.Mail.ApplyDefaults() // settings saved before the SMTP server existed
+	if c.settings.Mime.UnknownTypes == "" {
+		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
+	}
 
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
 	c.Auth = auth.New(st, box)
@@ -111,6 +118,14 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs,
 	})
+	c.Mail, err = mail.New(mail.Options{
+		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
+		Settings: func() model.MailSettings { return c.Settings().Mail },
+		Unseal:   box.MustUnseal, Cert: c.Certs.Get,
+	})
+	if err != nil {
+		return nil, err
+	}
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
 		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease,
@@ -150,6 +165,7 @@ func (c *Core) Start() {
 		}
 	}
 	c.reload()
+	c.Mail.Start()
 	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
 
 	c.wg.Add(3)
@@ -166,6 +182,7 @@ func (c *Core) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c.Proxy.Shutdown(ctx)
+	c.Mail.Shutdown(ctx)
 	c.Procs.Shutdown()
 	c.wg.Wait()
 	c.Store.Close()
@@ -233,6 +250,12 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if in.LogMaxFiles <= 0 {
 		in.LogMaxFiles = 10
 	}
+	if err := in.Mime.Validate(); err != nil {
+		return cur, err
+	}
+	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -241,6 +264,7 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.settingsMu.Unlock()
 	c.Procs.SetPortRange(in.PortRangeStart, in.PortRangeEnd)
 	c.reload()
+	c.Mail.Apply(in.Mail)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
 		go c.Certs.RetryPending(context.Background())
 	}
@@ -273,7 +297,130 @@ func (c *Core) MaskedSettings() model.Settings {
 	if s.Webhooks == nil {
 		s.Webhooks = []model.WebhookTarget{}
 	}
+	if s.Mime.Types == nil {
+		s.Mime.Types = []model.MimeMap{}
+	}
+	m := &s.Mail
+	if m.SmartHost.Password != "" {
+		m.SmartHost.Password = secrets.Mask
+	}
+	m.Users = slices.Clone(m.Users)
+	for i := range m.Users {
+		if m.Users[i].PasswordHash != "" {
+			m.Users[i].PasswordHash = secrets.Mask
+		}
+		m.Users[i].Password = ""
+	}
+	m.DKIM = slices.Clone(m.DKIM)
+	for i := range m.DKIM {
+		if m.DKIM[i].PrivateKey != "" {
+			m.DKIM[i].PrivateKey = secrets.Mask
+		}
+	}
 	return s
+}
+
+// prepareMail validates the SMTP server settings and seals their
+// secrets, keeping masked ones from cur: the smart host password, user
+// passwords (hashed with bcrypt, matched by user name) and DKIM keys (a
+// new key without one gets a generated key; matched by domain and
+// selector).
+func (c *Core) prepareMail(in *model.MailSettings, cur model.MailSettings) error {
+	in.ApplyDefaults()
+	h := &in.SmartHost
+	switch h.Password {
+	case secrets.Mask:
+		h.Password = cur.SmartHost.Password
+	case "":
+	default:
+		sealed, err := c.Box.Seal(h.Password)
+		if err != nil {
+			return err
+		}
+		h.Password = sealed
+	}
+	if h.Username == "" {
+		h.Password = ""
+	}
+	for i := range in.Users {
+		u := &in.Users[i]
+		u.Username = strings.TrimSpace(u.Username)
+		if u.Password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return err
+			}
+			u.PasswordHash, u.Password = string(hash), ""
+			continue
+		}
+		// Never trust a hash sent by a client: keep the stored one.
+		u.PasswordHash = ""
+		for _, o := range cur.Users {
+			if strings.EqualFold(o.Username, u.Username) {
+				u.PasswordHash = o.PasswordHash
+			}
+		}
+		if u.PasswordHash == "" {
+			return &model.ValidationError{Field: fmt.Sprintf("mail.users[%d].password", i), Message: "set a password"}
+		}
+	}
+	if err := in.Validate(); err != nil {
+		return err
+	}
+	for i := range in.DKIM {
+		d := &in.DKIM[i]
+		f := fmt.Sprintf("mail.dkim[%d]", i)
+		var pemKey string
+		switch d.PrivateKey {
+		case secrets.Mask:
+			d.PrivateKey = ""
+			for _, o := range cur.DKIM {
+				if o.Domain == d.Domain && o.Selector == d.Selector {
+					d.PrivateKey = o.PrivateKey
+				}
+			}
+			if d.PrivateKey == "" {
+				return &model.ValidationError{Field: f + ".privateKey", Message: "the key was not found; remove this entry and add it again"}
+			}
+			pemKey = c.Box.MustUnseal(d.PrivateKey)
+		case "":
+			k, err := mail.GenerateDKIMKey()
+			if err != nil {
+				return err
+			}
+			pemKey = k
+		default:
+			if _, err := mail.ParseDKIMKey(d.PrivateKey); err != nil {
+				return &model.ValidationError{Field: f + ".privateKey", Message: err.Error()}
+			}
+			pemKey = d.PrivateKey
+		}
+		rec, err := mail.DKIMRecord(pemKey)
+		if err != nil {
+			return &model.ValidationError{Field: f + ".privateKey", Message: err.Error()}
+		}
+		d.DNSName, d.DNSRecord = mail.DKIMName(d.Selector, d.Domain), rec
+		if d.PrivateKey == "" || d.PrivateKey == pemKey {
+			if d.PrivateKey, err = c.Box.Seal(pemKey); err != nil {
+				return err
+			}
+		}
+	}
+	if id := in.CertificateID; id != "" && c.Certs.Get(id) == nil {
+		if _, err := c.Store.GetCertificate(context.Background(), id); err != nil {
+			return &model.ValidationError{Field: "mail.certificateId", Message: "the selected certificate does not exist"}
+		}
+	}
+	if in.Enabled {
+		for _, s := range c.Sites() {
+			for _, b := range s.Bindings {
+				if b.Port == in.Port && (b.IP == "" || in.ListenIP == "" || b.IP == in.ListenIP) {
+					return &model.ValidationError{Field: "mail.port", Message: fmt.Sprintf("port %d is used by site %q", b.Port, s.Name)}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ---- sites
@@ -382,6 +529,16 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	in.ApplyDefaults()
 	if err := in.Validate(); err != nil {
 		return err
+	}
+	if err := rewrite.Validate(in.Routing); err != nil {
+		return err
+	}
+	if m := c.Settings().Mail; m.Enabled {
+		for i, b := range in.Bindings {
+			if b.Port == m.Port && (b.IP == "" || m.ListenIP == "" || b.IP == m.ListenIP) {
+				return &model.ValidationError{Field: fmt.Sprintf("bindings[%d].port", i), Message: fmt.Sprintf("port %d is used by the SMTP server", b.Port)}
+			}
+		}
 	}
 	var others []*model.Site
 	for _, s := range c.Sites() {
@@ -641,6 +798,7 @@ func (c *Core) Status(s *model.Site) model.SiteStatus {
 	var st model.SiteStatus
 	if s.Type == model.SiteNode {
 		st, _ = c.Procs.Status(s.ID)
+		st.Upstreams = c.Proxy.UpstreamStatus(s.ID) // other servers when load balanced
 	} else {
 		st = model.SiteStatus{SiteID: s.ID, State: model.StateStopped, Instances: []model.InstanceStatus{}}
 		if c.IsRunning(s) {
@@ -718,6 +876,10 @@ func (c *Core) CertificateUsage(cert *model.Certificate) []CertUse {
 				out = append(out, CertUse{SiteID: s.ID, SiteName: s.Name, Binding: b.String()})
 			}
 		}
+	}
+	if m := c.Settings().Mail; m.CertificateID == cert.ID {
+		// SiteID is empty: the console links this entry to the SMTP settings.
+		out = append(out, CertUse{SiteName: "SMTP server", Binding: fmt.Sprintf("STARTTLS on port %d", m.Port)})
 	}
 	return out
 }

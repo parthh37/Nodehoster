@@ -13,10 +13,16 @@ import type {
   Deployment,
   LogLine,
   LogType,
+  MailMessage,
+  MailStatus,
+  MailTest,
   Me,
   MetricPoint,
+  MimeMap,
   NHEvent,
   NodeVersions,
+  RewriteImport,
+  RewriteImportRequest,
   Role,
   ServerInfo,
   Settings,
@@ -140,4 +146,24 @@ export const tokensApi = {
   create: (name: string, expiresDays?: number) =>
     http.post<CreatedToken>('/api/tokens', expiresDays ? { name, expiresDays } : { name }),
   revoke: (id: string) => http.del(`/api/tokens/${enc(id)}`),
+};
+
+export type MailQueueFilter = 'queued' | 'failed' | '';
+
+export const mailApi = {
+  status: () => http.get<MailStatus>('/api/mail/status'),
+  queue: (state: MailQueueFilter = '') => http.get<MailMessage[]>(`/api/mail/queue${qs({ state })}`),
+  retry: (id: string) => http.post(`/api/mail/queue/${enc(id)}/retry`),
+  retryAll: () => http.post('/api/mail/queue/retry'),
+  remove: (id: string) => http.del(`/api/mail/queue/${enc(id)}`),
+  emlUrl: (id: string) => `/api/mail/queue/${enc(id)}/eml`,
+  test: (body: MailTest) => http.post<MailMessage>('/api/mail/test', body),
+};
+
+export const rewriteApi = {
+  import: (body: RewriteImportRequest) => http.post<RewriteImport>('/api/rewrite/import', body),
+};
+
+export const mimeApi = {
+  defaults: () => http.get<MimeMap[]>('/api/mime/defaults'),
 };

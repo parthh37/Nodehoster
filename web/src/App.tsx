@@ -11,6 +11,7 @@ import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
 import { EventsPage } from '@/pages/EventsPage';
+import { MailPage } from '@/pages/mail/MailPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { UsersPage } from '@/pages/UsersPage';
 import { AuditPage } from '@/pages/AuditPage';
@@ -89,6 +90,7 @@ const router = createBrowserRouter([
       { path: 'sites/:id/:tab?', element: <SiteDetailPage /> },
       { path: 'certificates', element: <CertificatesPage /> },
       { path: 'node', element: <NodePage /> },
+      { path: 'mail/:tab?', element: <MailPage /> },
       { path: 'events', element: <EventsPage /> },
       {
         path: 'settings/:tab?',

@@ -98,6 +98,21 @@ type NodeConfig struct {
 	Recycle     RecycleConfig `json:"recycle"`
 	Limits      ProcessLimits `json:"limits"`
 	RunAs       RunAsConfig   `json:"runAs"`
+
+	LoadBalancer LoadBalancerConfig `json:"loadBalancer"`
+}
+
+// LoadBalancerConfig makes this server the front door for an application
+// that also runs on other servers: requests are shared between the local
+// instances and those servers. Each server hosts and deploys the site
+// itself; this only decides where a request is answered.
+type LoadBalancerConfig struct {
+	Enabled            bool        `json:"enabled"`
+	LocalWeight        int         `json:"localWeight"` // this server's share, like an upstream weight
+	Servers            []Upstream  `json:"servers"`     // "http://10.0.0.12" — the site's binding on that server
+	Strategy           string      `json:"strategy"`    // round_robin | least_conn | ip_hash | random
+	HealthCheck        HealthCheck `json:"healthCheck"`
+	InsecureSkipVerify bool        `json:"insecureSkipVerify"`
 }
 
 type HealthCheck struct {
@@ -162,17 +177,95 @@ type HeaderRule struct {
 	Value  string `json:"value,omitempty"`
 }
 
-// RewriteRule is a small subset of the IIS URL Rewrite module.
+// RewriteRule is an inbound rule of the IIS URL Rewrite module. Match is a
+// regular expression on the path including its leading "/". Targets may
+// use {R:n} (rule captures, or $n), {C:n} (captures of the last matched
+// condition), server variables such as {HTTP_HOST} or {QUERY_STRING},
+// rewrite maps as {MapName:key} and {ToLower:…}, {ToUpper:…},
+// {UrlEncode:…}, {UrlDecode:…}.
 type RewriteRule struct {
-	Name       string `json:"name"`
-	Enabled    bool   `json:"enabled"`
-	Match      string `json:"match"`            // regular expression on the path (+query if IncludeQuery)
-	Host       string `json:"host,omitempty"`   // optional regular expression condition on Host
-	Action     string `json:"action"`           // rewrite | redirect | block | respond
-	Target     string `json:"target,omitempty"` // $1-style substitutions allowed
-	StatusCode int    `json:"statusCode,omitempty"`
-	Body       string `json:"body,omitempty"` // for respond
-	Stop       bool   `json:"stop"`           // stop processing further rules
+	Name       string             `json:"name"`
+	Enabled    bool               `json:"enabled"`
+	Match      string             `json:"match"`
+	Negate     bool               `json:"negate,omitempty"` // the rule applies when Match does not match
+	IgnoreCase bool               `json:"ignoreCase,omitempty"`
+	Host       string             `json:"host,omitempty"` // shorthand for a {HTTP_HOST} condition
+	Conditions []RewriteCondition `json:"conditions,omitempty"`
+	MatchAny   bool               `json:"matchAny,omitempty"` // conditions: any instead of all
+	Action     string             `json:"action"`             // rewrite | redirect | block | respond | none
+	// Target of rewrite and redirect. A rewrite to an absolute http(s) URL
+	// proxies the request there, like URL Rewrite with ARR.
+	Target       string `json:"target,omitempty"`
+	QueryString  string `json:"queryString,omitempty"`  // "" keep unless the target has one | append | discard
+	PreserveHost bool   `json:"preserveHost,omitempty"` // rewrite to a URL: forward the client's Host
+	StatusCode   int    `json:"statusCode,omitempty"`
+	Body         string `json:"body,omitempty"`        // respond
+	ContentType  string `json:"contentType,omitempty"` // respond; "" = text/plain
+	Stop         bool   `json:"stop"`                  // stop processing further rules
+}
+
+// RewriteCondition is an IIS URL Rewrite condition: Input (text with
+// server variables, e.g. "{HTTP_HOST}") matched against Pattern, or tested
+// as a file or directory under the site's physical path.
+type RewriteCondition struct {
+	Input      string `json:"input"`
+	MatchType  string `json:"matchType"` // pattern | isFile | isDirectory
+	Pattern    string `json:"pattern,omitempty"`
+	Negate     bool   `json:"negate,omitempty"`
+	IgnoreCase bool   `json:"ignoreCase,omitempty"`
+}
+
+// RewriteMap is a named lookup table used in targets as {Name:key}. Keys
+// are matched without regard to case, like IIS.
+type RewriteMap struct {
+	Name         string            `json:"name"`
+	DefaultValue string            `json:"defaultValue,omitempty"`
+	Entries      map[string]string `json:"entries"`
+}
+
+// OutboundRule rewrites responses: a header (e.g. Location), URLs in HTML
+// tag attributes (IIS filterByTags) or text anywhere in a text body.
+type OutboundRule struct {
+	Name       string             `json:"name"`
+	Enabled    bool               `json:"enabled"`
+	Scope      string             `json:"scope"`            // header | tags | body
+	Header     string             `json:"header,omitempty"` // scope header
+	Tags       []string           `json:"tags,omitempty"`   // scope tags: a, area, base, form, frame, head, iframe, img, input, link, script
+	Match      string             `json:"match"`
+	Negate     bool               `json:"negate,omitempty"`
+	IgnoreCase bool               `json:"ignoreCase,omitempty"`
+	Conditions []RewriteCondition `json:"conditions,omitempty"`
+	MatchAny   bool               `json:"matchAny,omitempty"`
+	Action     string             `json:"action"` // rewrite | none
+	Value      string             `json:"value,omitempty"`
+	Stop       bool               `json:"stop"`
+}
+
+// MimeMap maps a file extension to a Content-Type, like an IIS mimeMap.
+type MimeMap struct {
+	Extension string `json:"extension"` // ".webmanifest"
+	Type      string `json:"type"`      // "application/manifest+json"
+}
+
+const (
+	UnknownMimeServe = "serve" // as application/octet-stream
+	UnknownMimeDeny  = "deny"  // 404, like IIS without a MIME map
+)
+
+// RewriteImportRequest is the body of POST /rewrite/import: an IIS
+// web.config (or just its <rewrite> section) or Apache .htaccess rules.
+type RewriteImportRequest struct {
+	Format string `json:"format"` // webconfig | htaccess
+	Text   string `json:"text"`
+}
+
+// RewriteImport is what an import produced. Nothing is saved: the caller
+// adds the rules to a site and saves it.
+type RewriteImport struct {
+	Rules         []RewriteRule  `json:"rules"`
+	OutboundRules []OutboundRule `json:"outboundRules"`
+	RewriteMaps   []RewriteMap   `json:"rewriteMaps"`
+	Warnings      []string       `json:"warnings"` // what could not be converted
 }
 
 // Location mounts another backend under a path prefix, like an IIS
@@ -225,22 +318,29 @@ type MaintenanceConfig struct {
 }
 
 type RoutingConfig struct {
-	HTTPSRedirect   bool              `json:"httpsRedirect"`
-	HSTS            HSTSConfig        `json:"hsts"`
-	Compression     bool              `json:"compression"`
-	MaxBodyMB       int               `json:"maxBodyMB,omitempty"`  // 0 = unlimited
-	TimeoutSec      int               `json:"timeoutSec,omitempty"` // upstream response header timeout
-	WebSockets      bool              `json:"webSockets"`
-	RequestHeaders  []HeaderRule      `json:"requestHeaders,omitempty"`
-	ResponseHeaders []HeaderRule      `json:"responseHeaders,omitempty"`
-	Rewrites        []RewriteRule     `json:"rewrites,omitempty"`
-	Locations       []Location        `json:"locations,omitempty"`
-	IP              IPRestrictions    `json:"ip"`
-	BasicAuth       BasicAuthConfig   `json:"basicAuth"`
-	RateLimit       RateLimitConfig   `json:"rateLimit"`
-	Maintenance     MaintenanceConfig `json:"maintenance"`
-	ErrorPages      map[string]string `json:"errorPages,omitempty"` // "502" -> HTML
-	AccessLog       bool              `json:"accessLog"`
+	HTTPSRedirect   bool           `json:"httpsRedirect"`
+	HSTS            HSTSConfig     `json:"hsts"`
+	Compression     bool           `json:"compression"`
+	MaxBodyMB       int            `json:"maxBodyMB,omitempty"`  // 0 = unlimited
+	TimeoutSec      int            `json:"timeoutSec,omitempty"` // upstream response header timeout
+	WebSockets      bool           `json:"webSockets"`
+	RequestHeaders  []HeaderRule   `json:"requestHeaders,omitempty"`
+	ResponseHeaders []HeaderRule   `json:"responseHeaders,omitempty"`
+	Rewrites        []RewriteRule  `json:"rewrites,omitempty"`
+	OutboundRules   []OutboundRule `json:"outboundRules,omitempty"`
+	RewriteMaps     []RewriteMap   `json:"rewriteMaps,omitempty"`
+	Locations       []Location     `json:"locations,omitempty"`
+	// Files served by this site (static site, static-folder locations):
+	// extra or overriding MIME types, and what to do with extensions no
+	// map knows ("" = the server setting).
+	MimeTypes        []MimeMap         `json:"mimeTypes,omitempty"`
+	UnknownMimeTypes string            `json:"unknownMimeTypes,omitempty"`
+	IP               IPRestrictions    `json:"ip"`
+	BasicAuth        BasicAuthConfig   `json:"basicAuth"`
+	RateLimit        RateLimitConfig   `json:"rateLimit"`
+	Maintenance      MaintenanceConfig `json:"maintenance"`
+	ErrorPages       map[string]string `json:"errorPages,omitempty"` // "502" -> HTML
+	AccessLog        bool              `json:"accessLog"`
 }
 
 type GitSource struct {

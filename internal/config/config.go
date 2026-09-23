@@ -40,6 +40,7 @@ type Paths struct {
 	ACME     string // acme accounts
 	Node     string // node runtimes: node/<version>/
 	Sites    string // sites/<id>/{releases,shared}
+	Mail     string // mail/{queue,failed,pickup}: the SMTP server's spool
 	Tmp      string
 }
 
@@ -79,12 +80,13 @@ func NewPaths(data string) Paths {
 		ACME:     filepath.Join(data, "acme"),
 		Node:     filepath.Join(data, "node"),
 		Sites:    filepath.Join(data, "sites"),
+		Mail:     filepath.Join(data, "mail"),
 		Tmp:      filepath.Join(data, "tmp"),
 	}
 }
 
 func (p Paths) Ensure() error {
-	for _, d := range []string{p.Data, p.Logs, p.SiteLogs, p.Certs, p.ACME, p.Node, p.Sites, p.Tmp} {
+	for _, d := range []string{p.Data, p.Logs, p.SiteLogs, p.Certs, p.ACME, p.Node, p.Sites, p.Mail, p.Tmp} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return fmt.Errorf("create %s: %w", d, err)
 		}

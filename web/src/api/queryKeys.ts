@@ -16,4 +16,8 @@ export const qk = {
   dnsCatalog: ['settings', 'dns-catalog'] as const,
   users: ['users'] as const,
   tokens: ['tokens'] as const,
+  mail: ['mail'] as const,
+  mailStatus: ['mail', 'status'] as const,
+  mailQueue: (state: string) => ['mail', 'queue', state] as const,
+  mimeDefaults: ['mime', 'defaults'] as const,
 };

@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { Construction, Gauge, Globe2, KeyRound, ListOrdered, Route, Shield, ShieldBan, FileWarning, Heading } from 'lucide-react';
+import { Construction, Gauge, Globe2, KeyRound, Route, Shield, ShieldBan, FileWarning, Heading } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { qk } from '@/api/queryKeys';
-import type { BasicAuthUser, HeaderRule, Location, RewriteRule, RoutingConfig } from '@/api/types';
+import type { BasicAuthUser, HeaderRule, Location, RoutingConfig } from '@/api/types';
 import { Card, Callout, FormSection, Grid, Sections } from '@/components/Layout';
 import { Field, PathError } from '@/components/Field';
 import { Input, NumberInput, Select, Textarea } from '@/components/Input';
@@ -14,7 +14,7 @@ import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './types';
 
 const IP_RE = /^([0-9.]+|[0-9a-fA-F:]+)(\/\d{1,3})?$/;
-const validateIP = (v: string) => (IP_RE.test(v) ? null : 'Enter an IP address or CIDR, e.g. 10.0.0.0/8');
+export const validateIP = (v: string) => (IP_RE.test(v) ? null : 'Enter an IP address or CIDR, e.g. 10.0.0.0/8');
 
 function useRouting({ site, update }: SiteEditorProps) {
   const r = site.routing;
@@ -174,88 +174,6 @@ export function HeadersCard(props: SiteEditorProps) {
           <HeaderRules value={r.responseHeaders} onChange={(v) => set({ responseHeaders: v })} path="routing.responseHeaders" />
         </FormSection>
       </Sections>
-    </Card>
-  );
-}
-
-export function RewritesCard(props: SiteEditorProps) {
-  const { r, set } = useRouting(props);
-  return (
-    <Card
-      title={<span className="flex items-center gap-2"><ListOrdered className="h-4 w-4 text-zinc-400" />URL rewrite rules</span>}
-      description={
-        <>
-          Evaluated top to bottom against the path (regular expressions, <span className="font-mono">$1</span> substitutions in the target). A rule
-          with <em>stop</em> ends processing.
-        </>
-      }
-    >
-      <RowsEditor<RewriteRule>
-        items={r.rewrites}
-        onChange={(v) => set({ rewrites: v })}
-        orderable
-        path="routing.rewrites"
-        addLabel="Add rule"
-        create={() => ({ name: '', enabled: true, match: '^/old/(.*)$', action: 'redirect', target: '/new/$1', statusCode: 301, stop: true })}
-        empty={<p className="text-xs text-zinc-500">No rewrite rules. Requests pass through unchanged.</p>}
-        rowClassName="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
-        render={(rule, up, i) => {
-          const p = `routing.rewrites[${i}]`;
-          return (
-            <div className={cn('space-y-3', !rule.enabled && 'opacity-60')}>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="flex h-5 w-5 items-center justify-center rounded bg-zinc-100 font-mono text-2xs text-zinc-500 dark:bg-zinc-800">{i + 1}</span>
-                <Input className="w-56" value={rule.name} placeholder="Rule name" onChange={(e) => up({ name: e.target.value })} />
-                <Switch size="sm" checked={rule.enabled} onChange={(v) => up({ enabled: v })} label="Enabled" />
-                <Checkbox checked={rule.stop} onChange={(v) => up({ stop: v })} label="Stop processing" />
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Match path (regex)" path={`${p}.match`}>
-                  <Input mono value={rule.match} placeholder="^/blog/(.*)$" onChange={(e) => up({ match: e.target.value })} />
-                </Field>
-                <Field label="Host condition (regex, optional)" path={`${p}.host`}>
-                  <Input mono value={rule.host ?? ''} placeholder="^www\.example\.com$" onChange={(e) => up({ host: e.target.value })} />
-                </Field>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-[10rem_1fr_8rem]">
-                <Field label="Action" path={`${p}.action`}>
-                  <Select
-                    value={rule.action}
-                    onChange={(v) =>
-                      up({
-                        action: v,
-                        statusCode: v === 'redirect' ? 301 : v === 'block' ? 403 : v === 'respond' ? 200 : 0,
-                      })
-                    }
-                    options={[
-                      { value: 'rewrite', label: 'Rewrite' },
-                      { value: 'redirect', label: 'Redirect' },
-                      { value: 'block', label: 'Block' },
-                      { value: 'respond', label: 'Respond' },
-                    ]}
-                  />
-                </Field>
-                {(rule.action === 'rewrite' || rule.action === 'redirect') && (
-                  <Field label={rule.action === 'rewrite' ? 'Rewrite to' : 'Redirect to'} path={`${p}.target`}>
-                    <Input mono value={rule.target ?? ''} placeholder={rule.action === 'rewrite' ? '/index.php?p=$1' : 'https://example.com/$1'} onChange={(e) => up({ target: e.target.value })} />
-                  </Field>
-                )}
-                {(rule.action === 'block' || rule.action === 'respond') && <span />}
-                {rule.action !== 'rewrite' && (
-                  <Field label="Status" path={`${p}.statusCode`}>
-                    <NumberInput mono min={100} max={599} value={rule.statusCode} onChange={(v) => up({ statusCode: v })} />
-                  </Field>
-                )}
-              </div>
-              {rule.action === 'respond' && (
-                <Field label="Response body" path={`${p}.body`}>
-                  <Textarea mono rows={3} value={rule.body ?? ''} onChange={(e) => up({ body: e.target.value })} />
-                </Field>
-              )}
-            </div>
-          );
-        }}
-      />
     </Card>
   );
 }

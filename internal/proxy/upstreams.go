@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"math/rand/v2"
 	"net/http"
@@ -33,9 +34,11 @@ func pickBackend(list []*procmgr.Backend, rr *atomic.Uint64) *procmgr.Backend {
 	return best
 }
 
-// upstream is one target of a reverse-proxy site.
+// upstream is one target of a reverse-proxy site, or of a load-balanced
+// node site where one member stands for the site's own local instances.
 type upstream struct {
-	url     *url.URL
+	url     *url.URL // nil for the local member
+	local   bool
 	weight  int
 	healthy atomic.Bool
 	active  atomic.Int64
@@ -56,11 +59,39 @@ type upstreamPool struct {
 	bus      *events.Bus
 	stop     chan struct{}
 	once     sync.Once
+
+	// localReady reports whether the local member can take requests;
+	// nil when the pool has no local member.
+	localReady func() bool
+	localCount func() int
 }
 
-func newUpstreamPool(site *model.Site, bus *events.Bus, prev *upstreamPool) *upstreamPool {
-	p := &upstreamPool{siteID: site.ID, siteName: site.Name, strategy: site.Proxy.LoadBalancing, hc: site.Proxy.HealthCheck, bus: bus, stop: make(chan struct{})}
-	for _, u := range site.Proxy.Upstreams {
+type poolConfig struct {
+	upstreams []model.Upstream
+	strategy  string
+	hc        model.HealthCheck
+	insecure  bool
+
+	// For a load-balanced node site: the local instances' share and state.
+	localWeight int
+	localReady  func() bool
+	localCount  func() int
+}
+
+func proxyPoolConfig(site *model.Site) poolConfig {
+	p := site.Proxy
+	return poolConfig{upstreams: p.Upstreams, strategy: p.LoadBalancing, hc: p.HealthCheck, insecure: p.InsecureSkipVerify}
+}
+
+func newUpstreamPool(site *model.Site, cfg poolConfig, bus *events.Bus, prev *upstreamPool) *upstreamPool {
+	p := &upstreamPool{
+		siteID: site.ID, siteName: site.Name, strategy: cfg.strategy, hc: cfg.hc, bus: bus, stop: make(chan struct{}),
+		localReady: cfg.localReady, localCount: cfg.localCount,
+	}
+	if cfg.localReady != nil {
+		p.list = append(p.list, &upstream{local: true, weight: max(cfg.localWeight, 1)})
+	}
+	for _, u := range cfg.upstreams {
 		parsed, err := url.Parse(u.URL)
 		if err != nil {
 			continue
@@ -70,7 +101,7 @@ func newUpstreamPool(site *model.Site, bus *events.Bus, prev *upstreamPool) *ups
 		// Keep health state across configuration reloads.
 		if prev != nil {
 			for _, old := range prev.list {
-				if old.url.String() == parsed.String() {
+				if !old.local && old.url.String() == parsed.String() {
 					up.healthy.Store(old.healthy.Load())
 					up.fails.Store(old.fails.Load())
 				}
@@ -79,7 +110,7 @@ func newUpstreamPool(site *model.Site, bus *events.Bus, prev *upstreamPool) *ups
 		p.list = append(p.list, up)
 	}
 	if p.hc.Enabled {
-		go p.healthLoop(site.Proxy.InsecureSkipVerify)
+		go p.healthLoop(cfg.insecure)
 	}
 	return p
 }
@@ -92,6 +123,12 @@ func (p *upstreamPool) available() []*upstream {
 	var out []*upstream
 	now := time.Now().UnixNano()
 	for _, u := range p.list {
+		if u.local {
+			if p.localReady() {
+				out = append(out, u)
+			}
+			continue
+		}
 		if !u.healthy.Load() {
 			continue
 		}
@@ -170,7 +207,9 @@ func (p *upstreamPool) healthLoop(insecure bool) {
 	defer t.Stop()
 	for {
 		for _, u := range p.list {
-			p.check(client, u)
+			if !u.local {
+				p.check(client, u)
+			}
 		}
 		select {
 		case <-p.stop:
@@ -217,6 +256,13 @@ func (p *upstreamPool) status() []model.UpstreamStatus {
 	out := make([]model.UpstreamStatus, 0, len(p.list))
 	now := time.Now().UnixNano()
 	for _, u := range p.list {
+		if u.local {
+			out = append(out, model.UpstreamStatus{
+				URL: fmt.Sprintf("this server (%d ready)", p.localCount()), Local: true,
+				Healthy: p.localReady(), ActiveConns: u.active.Load(),
+			})
+			continue
+		}
 		u.mu.Lock()
 		le := u.lastErr
 		u.mu.Unlock()
@@ -224,4 +270,13 @@ func (p *upstreamPool) status() []model.UpstreamStatus {
 		out = append(out, model.UpstreamStatus{URL: u.url.String(), Healthy: healthy, ActiveConns: u.active.Load(), LastError: le})
 	}
 	return out
+}
+
+// canRetryLocally decides whether a request that failed on a remote server
+// of a load-balanced node site may be answered by the local instances
+// instead of returning 502 to the client. It runs before anything has been
+// written to the client, but the transport has already closed r.Body.
+func canRetryLocally(r *http.Request, err error) bool {
+	// TODO(user): decide which failed requests are safe to replay locally.
+	return false
 }

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { nodeApi } from '@/api/endpoints';
 import { qk } from '@/api/queryKeys';
-import type { HealthCheck, NodeConfig, Upstream } from '@/api/types';
+import type { HealthCheck, LoadBalancerConfig, NodeConfig, Upstream } from '@/api/types';
 import { Field } from '@/components/Field';
 import { Input, NumberInput, Select } from '@/components/Input';
 import { Checkbox, Radio, Switch } from '@/components/Switch';
@@ -271,24 +271,34 @@ export function HealthCheckFields({ value, onChange, pathPrefix }: { value: Heal
 
 // ---------------------------------------------------------------- proxy
 
-export function UpstreamsEditor({ site, update }: SiteEditorProps) {
-  const p = site.proxy!;
-  const list = p.upstreams ?? [];
-  const setList = (u: Upstream[]) =>
-    update((d) => {
-      d.proxy = { ...d.proxy!, upstreams: u };
-    });
+function ServerListEditor({
+  list,
+  onChange,
+  path,
+  label,
+  hint,
+  placeholder,
+  addLabel,
+}: {
+  list: Upstream[];
+  onChange: (u: Upstream[]) => void;
+  path: string;
+  label: string;
+  hint: string;
+  placeholder: string;
+  addLabel: string;
+}) {
   return (
-    <Field label="Upstream servers" path="proxy.upstreams" hint="Requests are forwarded to these URLs. Weight applies to round robin.">
+    <Field label={label} path={path} hint={hint}>
       <div className="space-y-2">
         {list.map((u, i) => (
           <div key={i} className="flex items-start gap-2">
-            <Field path={`proxy.upstreams[${i}].url`} className="flex-1">
+            <Field path={`${path}[${i}].url`} className="flex-1">
               <Input
                 mono
                 value={u.url}
-                placeholder="http://127.0.0.1:8080"
-                onChange={(e) => setList(list.map((x, j) => (j === i ? { ...x, url: e.target.value.trim() } : x)))}
+                placeholder={placeholder}
+                onChange={(e) => onChange(list.map((x, j) => (j === i ? { ...x, url: e.target.value.trim() } : x)))}
               />
             </Field>
             <NumberInput
@@ -298,16 +308,92 @@ export function UpstreamsEditor({ site, update }: SiteEditorProps) {
               placeholder="weight"
               title="Weight"
               value={u.weight}
-              onChange={(v) => setList(list.map((x, j) => (j === i ? { ...x, weight: v } : x)))}
+              onChange={(v) => onChange(list.map((x, j) => (j === i ? { ...x, weight: v } : x)))}
             />
-            <IconButton label="Remove" size="md" variant="danger-ghost" icon={<Trash2 className="h-4 w-4" />} onClick={() => setList(list.filter((_, j) => j !== i))} />
+            <IconButton label="Remove" size="md" variant="danger-ghost" icon={<Trash2 className="h-4 w-4" />} onClick={() => onChange(list.filter((_, j) => j !== i))} />
           </div>
         ))}
-        <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setList([...list, { url: '', weight: 1 }])}>
-          Add upstream
+        <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => onChange([...list, { url: '', weight: 1 }])}>
+          {addLabel}
         </Button>
       </div>
     </Field>
+  );
+}
+
+export function UpstreamsEditor({ site, update }: SiteEditorProps) {
+  return (
+    <ServerListEditor
+      list={site.proxy!.upstreams ?? []}
+      onChange={(u) =>
+        update((d) => {
+          d.proxy = { ...d.proxy!, upstreams: u };
+        })
+      }
+      path="proxy.upstreams"
+      label="Upstream servers"
+      hint="Requests are forwarded to these URLs. Weight applies to round robin."
+      placeholder="http://127.0.0.1:8080"
+      addLabel="Add upstream"
+    />
+  );
+}
+
+/** Share a node site's traffic with other servers that host the same app. */
+export function NodeLoadBalancer({ site, update }: SiteEditorProps) {
+  const lb = site.node!.loadBalancer;
+  const set = (patch: Partial<LoadBalancerConfig>) =>
+    update((d) => {
+      d.node = { ...d.node!, loadBalancer: { ...d.node!.loadBalancer, ...patch } };
+    });
+  return (
+    <>
+      <FormSection
+        title="Load balancing"
+        description="Serve this site here and on other servers. Each server hosts and deploys the app itself; this server receives the traffic and shares it out."
+      >
+        <Switch
+          checked={lb.enabled}
+          onChange={(v) => set(v && lb.servers.length === 0 ? { enabled: v, healthCheck: { ...lb.healthCheck, enabled: true } } : { enabled: v })}
+          label="Balance across servers"
+        />
+        {lb.enabled && (
+          <>
+            <ServerListEditor
+              list={lb.servers}
+              onChange={(servers) => set({ servers })}
+              path="node.loadBalancer.servers"
+              label="Other servers"
+              hint="The site's binding on each server. Requests keep their Host header, so the binding's host name must match."
+              placeholder="http://10.0.0.12"
+              addLabel="Add server"
+            />
+            <Grid>
+              <Field label="This server's weight" path="node.loadBalancer.localWeight" hint="Share of requests answered here, compared to each server's weight.">
+                <NumberInput min={1} max={1000} value={lb.localWeight} onChange={(v) => set({ localWeight: v })} />
+              </Field>
+              <Field label="Strategy" path="node.loadBalancer.strategy">
+                <Select value={lb.strategy} onChange={(v) => set({ strategy: v })} options={LB_STRATEGIES} />
+              </Field>
+            </Grid>
+            <Callout>
+              If the NodeHoster on another server also balances this site, it answers forwarded requests from its own instances, so requests never loop between servers.
+            </Callout>
+          </>
+        )}
+      </FormSection>
+      {lb.enabled && (
+        <FormSection title="Server health" description="Servers failing the check are skipped. This server is skipped while it has no ready instances.">
+          <HealthCheckFields value={lb.healthCheck} pathPrefix="node.loadBalancer.healthCheck" onChange={(h) => set({ healthCheck: h })} />
+          <Switch
+            checked={lb.insecureSkipVerify}
+            onChange={(v) => set({ insecureSkipVerify: v })}
+            label="Skip TLS verification"
+            description="Accept self-signed certificates from https:// servers."
+          />
+        </FormSection>
+      )}
+    </>
   );
 }
 
