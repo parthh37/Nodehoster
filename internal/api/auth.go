@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/parthh37/nodehoster/internal/auth"
+	"github.com/parthh37/nodehoster/internal/ipban"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/store"
 )
@@ -35,9 +37,13 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "totpRequired": true})
 		return
 	case errors.Is(err, auth.ErrLocked):
+		a.c.Bans.Record(net.ParseIP(clientIP(r)), ipban.AuthFailure)
 		writeErr(w, http.StatusTooManyRequests, err.Error())
 		return
 	case err != nil:
+		// A wrong password (or code) counts towards banning the address,
+		// as a failed basic authentication on a site does.
+		a.c.Bans.Record(net.ParseIP(clientIP(r)), ipban.AuthFailure)
 		a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: in.Username, IP: clientIP(r), Action: "login.failed", Target: in.Username})
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "totpRequired": errors.Is(err, auth.ErrTOTPInvalid)})
 		return

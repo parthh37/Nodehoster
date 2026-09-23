@@ -343,6 +343,7 @@ type RoutingConfig struct {
 	AccessLog        bool              `json:"accessLog"`
 	Affinity         AffinityConfig    `json:"affinity"`
 	Cache            CacheConfig       `json:"cache"`
+	Banning          SiteBanning       `json:"banning"`
 }
 
 // CacheConfig is an in-memory response cache in front of a node or proxy

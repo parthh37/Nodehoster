@@ -26,4 +26,5 @@ export const qk = {
   mimeDefaults: ['mime', 'defaults'] as const,
   authMethods: ['auth', 'methods'] as const,
   ssoCallbackUrl: ['settings', 'sso', 'callback-url'] as const,
+  bans: ['bans'] as const,
 };

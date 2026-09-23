@@ -91,12 +91,14 @@ func (c *Core) Restore(ctx context.Context, data []byte) error {
 	if b.Settings.Mime.UnknownTypes == "" {
 		b.Settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
+	b.Settings.IPBan.ApplyDefaults()
 	if err := c.Store.PutDoc(ctx, settingsKey, b.Settings); err != nil {
 		return err
 	}
 	c.settingsMu.Lock()
 	c.settings = b.Settings
 	c.settingsMu.Unlock()
+	c.applyBans()
 	c.sitesMu.Lock()
 	for _, s := range b.Sites {
 		s.ApplyDefaults()

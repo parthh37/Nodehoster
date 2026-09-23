@@ -287,6 +287,13 @@ export interface RoutingConfig {
   accessLog: boolean;
   affinity: AffinityConfig;
   cache: CacheConfig;
+  banning: SiteBanning;
+}
+
+/** The site's part in automatic IP banning. */
+export interface SiteBanning {
+  exempt?: boolean;
+  allowTrapPaths?: boolean;
 }
 
 /** In-memory response cache (IIS output caching). */
@@ -572,6 +579,7 @@ export interface Settings {
   mime: MimeSettings;
   mail: MailSettings;
   sso: SSOSettings;
+  ipBan: IPBanSettings;
 }
 
 /** Single sign-on to the console with OpenID Connect (Entra ID and others). */
@@ -614,6 +622,42 @@ export interface SSOTestResult {
   keys: number;
   redirectUrl: string;
   problems: string[];
+}
+
+/** Automatic IP banning (fail2ban-style). A threshold of 0 turns a rule off. */
+export interface BanRule {
+  threshold: number;
+  windowSec: number;
+}
+
+export interface IPBanSettings {
+  enabled: boolean;
+  authFailures: BanRule;
+  notFound: BanRule;
+  rateLimited: BanRule;
+  trapPaths: string[] | null;
+  banMinutes: number;
+  maxBanMinutes: number;
+  allowList: string[] | null;
+  ipv6Prefix: number;
+}
+
+export interface Ban {
+  address: string;
+  reason: string;
+  manual?: boolean;
+  strikes: number;
+  createdAt: string;
+  /** Absent: until removed. */
+  expiresAt?: string | null;
+  createdBy?: string;
+}
+
+export interface BanRequest {
+  address: string;
+  /** 0 = until removed */
+  minutes: number;
+  reason?: string;
 }
 
 /** Server-wide MIME types, added to or overriding the built-in table. */

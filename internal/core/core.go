@@ -22,6 +22,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/deploy"
 	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/ipban"
 	"github.com/parthh37/nodehoster/internal/mail"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/nodeversions"
@@ -49,6 +50,7 @@ type Core struct {
 	Nodes     *nodeversions.Manager
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
+	Bans      *ipban.Manager
 	StartedAt time.Time
 	IsService bool
 
@@ -97,8 +99,12 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if c.settings.Mime.UnknownTypes == "" {
 		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
+	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
 
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
+	if err := c.openBans(ctx); err != nil {
+		return nil, fmt.Errorf("load IP bans: %w", err)
+	}
 	c.Auth = auth.New(st, box)
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
@@ -120,7 +126,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
-		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
@@ -190,6 +196,9 @@ func (c *Core) Shutdown() {
 	c.Mail.Shutdown(ctx)
 	c.Procs.Shutdown()
 	c.wg.Wait()
+	if err := c.Bans.Flush(); err != nil {
+		c.Log.Error("save IP bans", "err", err)
+	}
 	c.Store.Close()
 }
 
@@ -258,6 +267,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := in.Mime.Validate(); err != nil {
 		return cur, err
 	}
+	in.IPBan.ApplyDefaults()
+	if err := in.IPBan.Validate(); err != nil {
+		return cur, err
+	}
 	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
 		return cur, err
 	}
@@ -271,6 +284,7 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.settings = in
 	c.settingsMu.Unlock()
 	c.Procs.SetPortRange(in.PortRangeStart, in.PortRangeEnd)
+	c.applyBans()
 	c.reload()
 	c.Mail.Apply(in.Mail)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {

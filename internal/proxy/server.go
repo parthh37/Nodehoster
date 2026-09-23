@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/ipban"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 )
@@ -38,6 +40,8 @@ type Deps struct {
 	// AffinityKey signs session affinity cookies; persisted by the caller
 	// so cookies survive restarts. A random key is used when empty.
 	AffinityKey []byte
+	// Bans is automatic IP banning; nil in tests that do not need it.
+	Bans *ipban.Manager
 }
 
 type route struct {
@@ -476,6 +480,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	t := s.table.Load()
 	route := t.match(port, local, hostOnly(r.Host))
+
+	// Automatic IP banning comes first, before anything a site does; a
+	// site that opts out neither refuses banned clients nor counts
+	// against them.
+	var banIP net.IP
+	if bans := s.deps.Bans; bans != nil && (route == nil || !route.site.site.Routing.Banning.Exempt) {
+		client := s.clientIP(r)
+		r = r.WithContext(context.WithValue(r.Context(), ctxClientIP, client))
+		banIP = net.ParseIP(client)
+		traps := route == nil || !route.site.site.Routing.Banning.AllowTrapPaths
+		if bans.Banned(banIP) || (traps && bans.Trap(banIP, r.URL.Path)) {
+			refuseBanned(w)
+			return
+		}
+	}
+
 	st := s.deps.Settings()
 	if route == nil {
 		if st.Proxy.ServerHeader != "" {
@@ -488,6 +508,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fmt.Fprintf(w, defaultPage, templateEscape(hostOnly(r.Host)))
 		}
+		// Scanners mostly probe addresses, not host names.
+		s.countForBan(banIP, r, http.StatusNotFound)
 		return
 	}
 	rt := route.site
@@ -516,8 +538,43 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if rt.access != nil {
 			s.writeAccess(rt, r, status, rw.written, d)
 		}
+		s.countForBan(banIP, r, status)
 	}()
 	rt.ServeHTTP(rw, r)
+}
+
+// countForBan counts an answer against the client for automatic IP
+// banning. A 401 counts only when credentials were tried: sent in an
+// Authorization header (basic authentication, a bearer token) or in a
+// submitted form (a login page that answers 401). A page load that is
+// simply asked to sign in, or an application's API call without a session,
+// is not an attack. 403 does not count: it answers who the client is, not
+// a failed sign-in, and is also what a ban or an IP restriction answers.
+func (s *Server) countForBan(ip net.IP, r *http.Request, status int) {
+	if ip == nil {
+		return
+	}
+	switch {
+	case status == http.StatusUnauthorized && (r.Header.Get("Authorization") != "" || (r.Method != http.MethodGet && r.Method != http.MethodHead)):
+		s.deps.Bans.Record(ip, ipban.AuthFailure)
+	case status == http.StatusNotFound:
+		s.deps.Bans.Record(ip, ipban.NotFound)
+	case status == http.StatusTooManyRequests:
+		s.deps.Bans.Record(ip, ipban.RateLimited)
+	}
+}
+
+// refuseBanned answers a banned client with a bare 403. Closing the
+// connection instead would, behind a CDN or load balancer, drop a
+// connection other clients' requests share and show up there as errors;
+// Connection: close still ends a direct client's keep-alive.
+func refuseBanned(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Connection", "close")
+	w.WriteHeader(http.StatusForbidden)
+	io.WriteString(w, "Forbidden\n")
 }
 
 // writeAccess appends a line in combined log format plus host and duration.

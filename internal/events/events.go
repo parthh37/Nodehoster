@@ -39,9 +39,13 @@ const (
 	MailError       = "mail.error"  // the SMTP server cannot listen
 )
 
+// SecurityBanned: automatic IP banning banned an address (or an
+// administrator did).
+const SecurityBanned = "security.banned"
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
-	MailFailed, MailError}
+	MailFailed, MailError, SecurityBanned}
 
 type Bus struct {
 	store    *store.Store

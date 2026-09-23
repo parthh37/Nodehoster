@@ -97,6 +97,7 @@ type Settings struct {
 	Mime               MimeSettings    `json:"mime"`
 	Mail               MailSettings    `json:"mail"`
 	SSO                SSOSettings     `json:"sso"`
+	IPBan              IPBanSettings   `json:"ipBan"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

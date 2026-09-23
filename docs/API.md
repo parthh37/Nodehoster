@@ -299,6 +299,56 @@ misses, hitRatio}` when enabled. The cache is emptied when the site's
 configuration changes, on recycles and restarts and on deployment
 activation. Purge paths match the request path after URL rewrite rules.
 
+## Automatic IP banning
+
+Like fail2ban (or IIS Dynamic IP Restrictions). Server-wide settings in
+`Settings.ipBan` = `{enabled, authFailures, notFound, rateLimited,
+trapPaths[], banMinutes, maxBanMinutes, allowList[], ipv6Prefix}`; each rule
+is `{threshold, windowSec}` (threshold 0 = off; defaults 10 in 300 s, 50 in
+60 s, 30 in 60 s). Off by default. What counts, per client address:
+
+- `authFailures`: 401 answers (basic authentication or the application) to
+  requests that carried an `Authorization` header or were not GET/HEAD (a
+  submitted login form) — a browser merely asked to sign in, or an API call
+  without a session, is not counted; failed web console logins. 403 is not
+  counted (it is authorization, and what bans and IP restrictions answer).
+- `notFound`: 404 answers, including the default page for unbound hosts.
+- `rateLimited`: 429 answers (a site's rate limit or the application's).
+- `trapPaths` (prefixes, case-insensitive; defaults `/wp-login.php`,
+  `/xmlrpc.php`, `/wp-admin`, `/.env`, `/.git/`, `/phpmyadmin`, …): one
+  request bans.
+
+A ban lasts `banMinutes` (15), doubling for each further ban of the same
+address within a week, up to `maxBanMinutes` (1440). IPv4 addresses are
+banned one by one, IPv6 by `ipv6Prefix` (64). Loopback, `allowList` and
+`proxy.trustedProxies` are never banned: bans apply to the client address
+resolved through trusted proxies. Enforcement is the first thing a request
+meets on every listener, before the site's pipeline: a banned client gets a
+bare `403 Forbidden` with `Connection: close` (not a closed connection,
+which behind a CDN would break a connection shared with other clients).
+Sites opt out with `routing.banning` = `{exempt, allowTrapPaths}`: `exempt`
+sites answer banned clients and never count; `allowTrapPaths` for sites
+that do serve those paths (WordPress, PHP). Counters are in memory, capped
+at 100,000 addresses (least recently seen forgotten); bans (and a week of
+history for escalation) are saved in the database and survive restarts.
+Each ban raises a `security.banned` event (warning; at most 10 a minute,
+the rest summarized).
+
+Banned addresses cannot reach the web console either. Loopback never is,
+and the desktop manager's pipe is not subject to bans, so an administrator
+locked out lifts the ban on the server (NodeHoster Manager › Banned IP
+addresses, or a browser on the server itself).
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/bans` | | `Ban[]` in force, newest first (operator: they name client addresses) |
+| POST | `/api/bans` | `{address, minutes, reason?}` | `Ban` 201 (admin; an IP or CIDR range, at most /8 or /32 wide; `minutes` 0 = until removed) |
+| DELETE | `/api/bans/{address}` | | 204, 404 if not banned (admin; an exact address or range — escape its `/` as `%2F` — or any address inside a banned range) |
+
+`Ban` = `{address, reason, manual, strikes, createdAt, expiresAt?,
+createdBy?}`. Server-wide only: site-scoped callers get 403. Manual bans and
+unbans are audited (`ban.add`, `ban.remove`).
+
 ## Mail (SMTP server)
 
 The SMTP server's configuration is `Settings.mail`. Secrets follow the

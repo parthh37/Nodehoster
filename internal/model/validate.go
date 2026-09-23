@@ -525,6 +525,7 @@ func DefaultSettings() Settings {
 		CertExpiryWarnDays: 14,
 		Mime:               MimeSettings{Types: []MimeMap{}, UnknownTypes: UnknownMimeServe},
 		Mail:               defaultMail(),
+		IPBan:              DefaultIPBan(),
 	}
 }
 

@@ -4,6 +4,8 @@ import { http, qs } from './client';
 import type {
   ACMEOptions,
   AdminSettings,
+  Ban,
+  BanRequest,
   APIToken,
   AuditEntry,
   AuthMethods,
@@ -69,6 +71,13 @@ export const serverApi = {
 };
 
 export type SiteAction = 'start' | 'stop' | 'restart' | 'recycle';
+
+export const bansApi = {
+  list: () => http.get<Ban[]>('/api/bans'),
+  ban: (body: BanRequest) => http.post<Ban>('/api/bans', body),
+  /** Also takes any address inside a banned range. */
+  unban: (address: string) => http.del(`/api/bans/${enc(address)}`),
+};
 
 export const sitesApi = {
   list: () => http.get<SiteView[]>('/api/sites'),

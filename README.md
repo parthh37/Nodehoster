@@ -45,6 +45,7 @@ IIS Manager, with a status icon in the notification area.
 - **MIME types** like IIS: a built-in table (the Windows registry is never consulted, so `.js` is never served as `text/plain`), server-wide and per-site mappings, and unknown extensions either served as `application/octet-stream` or refused with 404
 - Request/response header rules, **IP & domain restrictions** (CIDR allow/deny)
 - Basic authentication, per-client **rate limiting**
+- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
 

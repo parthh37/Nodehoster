@@ -1,7 +1,7 @@
 // Client-side mirror of the server's settings defaults (model.MailSettings.ApplyDefaults
 // and friends) so forms bind safely to settings saved by older versions.
 
-import type { MailSettings, MimeSettings, Settings, SSOSettings } from '@/api/types';
+import type { IPBanSettings, MailSettings, MimeSettings, Settings, SSOSettings } from '@/api/types';
 
 export function defaultMail(): MailSettings {
   return {
@@ -81,6 +81,36 @@ export function normalizeSettings(s: Settings): Settings {
     mime: normalizeMime(s.mime),
     mail: normalizeMail(s.mail),
     sso: normalizeSSO(s.sso),
+    ipBan: normalizeIPBan(s.ipBan),
+  };
+}
+
+/** Mirror of model.DefaultIPBan. */
+export function defaultIPBan(): IPBanSettings {
+  return {
+    enabled: false,
+    authFailures: { threshold: 10, windowSec: 300 },
+    notFound: { threshold: 50, windowSec: 60 },
+    rateLimited: { threshold: 30, windowSec: 60 },
+    trapPaths: ['/wp-login.php', '/xmlrpc.php', '/wp-admin', '/.env', '/.git/', '/phpmyadmin', '/pma', '/cgi-bin/', '/vendor/phpunit'],
+    banMinutes: 15,
+    maxBanMinutes: 1440,
+    allowList: [],
+    ipv6Prefix: 64,
+  };
+}
+
+export function normalizeIPBan(b: Partial<IPBanSettings> | null | undefined): IPBanSettings {
+  const d = defaultIPBan();
+  if (!b) return d;
+  return {
+    ...d,
+    ...b,
+    authFailures: { ...d.authFailures, ...b.authFailures },
+    notFound: { ...d.notFound, ...b.notFound },
+    rateLimited: { ...d.rateLimited, ...b.rateLimited },
+    trapPaths: b.trapPaths ?? [],
+    allowList: b.allowList ?? [],
   };
 }
 

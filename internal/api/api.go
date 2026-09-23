@@ -43,6 +43,7 @@ func Handler(c *core.Core) http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverer)
 	r.Use(securityHeaders)
+	r.Use(a.refuseBanned)
 
 	r.Post("/hooks/deploy/{id}", a.webhookDeploy)
 	r.With(a.authenticate, a.requireFiltered).Get("/metrics", a.prometheus)
@@ -159,6 +160,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/mail/health", a.mailHealth)
 		r.Post("/mail/queue/retry", a.mailRetryAll)
 		r.Post("/mail/queue/{id}/retry", a.mailRetry)
+		r.Get("/bans", a.listBans)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleAdmin))
@@ -189,6 +191,8 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/audit", a.listAudit)
 		r.Get("/backup", a.backup)
 		r.Post("/restore", a.restore)
+		r.Post("/bans", a.createBan)
+		r.Delete("/bans/{ip}", a.deleteBan)
 	})
 }
 
