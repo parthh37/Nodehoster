@@ -7,14 +7,17 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/parthh37/nodehoster/internal/model"
 )
 
 // racedApp reports its port and waits for the test to take that port before
-// listening, the way an outgoing connection can take a port between the
-// allocator's check and the application's listen. Later runs listen at once.
+// listening (after LISTEN_DELAY ms), the way an outgoing connection or
+// another server can take a port between the allocator's check and the
+// application's listen. Later runs listen at once.
 const racedApp = `
 const fs = require('fs'), path = require('path'), http = require('http');
 const listen = () => http.createServer((req, res) => res.end('up')).listen(process.env.PORT, '127.0.0.1');
@@ -24,41 +27,92 @@ if (fs.existsSync(portFile)) {
 } else {
   fs.writeFileSync(portFile + '.tmp', process.env.PORT);
   fs.renameSync(portFile + '.tmp', portFile);
-  const t = setInterval(() => { if (fs.existsSync(claimed)) { clearInterval(t); listen(); } }, 20);
+  const t = setInterval(() => {
+    if (fs.existsSync(claimed)) { clearInterval(t); setTimeout(listen, +process.env.LISTEN_DELAY); }
+  }, 20);
 }
 `
 
 // TestStartSurvivesPortTaken: an instance whose port is taken before it can
-// listen starts on another port, and the lost port does not count as a crash.
+// listen ends up on another port, and the lost port does not count as a
+// crash. With a delay, the process holding the port answers the readiness
+// check first, so the instance looks ready until the application exits.
 func TestStartSurvivesPortTaken(t *testing.T) {
-	m, app := newRecoveryManager(t)
-	os.WriteFile(filepath.Join(app, "server.js"), []byte(racedApp), 0o644)
-	m.Apply(crashLoopSite(app, "stop"))
-	m.Start("s1")
+	for _, tc := range []struct {
+		name  string
+		delay string
+	}{{"during startup", "0"}, {"after readiness check", "1000"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, app := newRecoveryManager(t)
+			os.WriteFile(filepath.Join(app, "server.js"), []byte(racedApp), 0o644)
+			site := crashLoopSite(app, "stop")
+			site.Node.Env = []model.EnvVar{{Name: "LISTEN_DELAY", Value: tc.delay}}
+			m.Apply(site)
+			m.Start("s1")
 
-	var port string
-	waitFor(t, "the first instance's port", func() bool {
-		b, err := os.ReadFile(filepath.Join(app, "port"))
-		port = string(b)
-		return err == nil
-	})
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	os.WriteFile(filepath.Join(app, "claimed"), nil, 0o644)
+			var port string
+			waitFor(t, "the first instance's port", func() bool {
+				b, err := os.ReadFile(filepath.Join(app, "port"))
+				port = string(b)
+				return err == nil
+			})
+			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			os.WriteFile(filepath.Join(app, "claimed"), nil, 0o644)
 
-	waitFor(t, "running", func() bool { s, _ := m.Status("s1"); return s.State == model.StateRunning })
-	inst := mustStatus(t, m).Instances[0]
-	if strconv.Itoa(inst.Port) == port {
-		t.Fatalf("instance still on the taken port %s", port)
+			waitFor(t, "running on another port", func() bool {
+				s := mustStatus(t, m)
+				return s.State == model.StateRunning && strconv.Itoa(s.Instances[0].Port) != port
+			})
+			inst := mustStatus(t, m).Instances[0]
+			if inst.Restarts != 0 || inst.LastExitCode != nil {
+				t.Fatalf("the lost port counted as a failure: restarts %d, last exit recorded %v", inst.Restarts, inst.LastExitCode != nil)
+			}
+			if n := countLogs(m, "retrying on another port"); n != 1 {
+				t.Fatalf("%d retries logged, want 1", n)
+			}
+		})
 	}
-	if inst.Restarts != 0 || inst.LastExitCode != nil {
-		t.Fatalf("the lost port counted as a failure: restarts %d, last exit recorded %v", inst.Restarts, inst.LastExitCode != nil)
+}
+
+// TestPortLostAfterStart: a run that ends because the port was taken is not
+// a crash, within limits.
+func TestPortLostAfterStart(t *testing.T) {
+	site := crashLoopSite(t.TempDir(), "stop")
+	s := &slot{app: &App{site: site}}
+	inst := func(reported bool) *Instance {
+		i := &Instance{addrInUse: new(atomic.Bool)}
+		i.addrInUse.Store(reported)
+		return i
 	}
-	if n := countLogs(m, "retrying on another port"); n != 1 {
-		t.Fatalf("%d retries logged, want 1", n)
+	if s.portLost(inst(false), time.Second) {
+		t.Fatal("a crash without EADDRINUSE counted as a lost port")
+	}
+	startup := time.Duration(site.Node.StartupTimeoutSec) * time.Second
+	if s.portLost(inst(true), startup+time.Second) {
+		t.Fatal("a run longer than the startup timeout counted as a lost port")
+	}
+	for i := 0; i < portRetries; i++ {
+		if !s.portLost(inst(true), time.Second) {
+			t.Fatalf("lost port %d not recognised", i+1)
+		}
+	}
+	if s.portLost(inst(true), time.Second) {
+		t.Fatalf("more than %d lost ports in a row were not counted", portRetries)
+	}
+	if !s.portLost(inst(true), time.Second) {
+		t.Fatal("the limit did not reset after a counted failure")
+	}
+
+	fixed := *site.Node
+	fixed.PortMode, fixed.FixedPort = "fixed", 3000
+	s.app.site = &model.Site{Node: &fixed}
+	s.lostPort = 0
+	if s.portLost(inst(true), time.Second) {
+		t.Fatal("a fixed-port site retried on another port")
 	}
 }
 

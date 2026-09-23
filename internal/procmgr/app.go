@@ -70,6 +70,7 @@ type slot struct {
 	restarts int
 	lastExit *exitInfo
 	failures int // consecutive failed starts or short-lived runs
+	lostPort int // consecutive runs that ended because the port was taken
 
 	recyclePending atomic.Bool
 }
@@ -350,6 +351,13 @@ func (s *slot) run() {
 			a.m.ports.release(inst.port)
 			a.m.agent.unregister(inst.token)
 			inst.os.release()
+			if s.portLost(inst, uptime) {
+				a.logs.System("instance %d: port %d was taken by another process before the application could listen on it; retrying on another port", s.index, inst.port)
+				s.setCur(nil)
+				a.publish()
+				inst = nil
+				continue
+			}
 			s.mu.Lock()
 			s.cur = nil
 			s.lastExit = &exitInfo{code: inst.exitCode, at: time.Now()}
@@ -406,6 +414,26 @@ func (s *slot) run() {
 			c.reply <- err
 		}
 	}
+}
+
+// portLost reports whether an instance that just exited only failed because
+// another process held its port, in which case the slot starts a new one at
+// once without counting a crash. That happens when something listening on
+// the port answered the readiness check before the application gave up on
+// it. Only the application's own report counts, only for a run no longer
+// than the startup timeout, and at most portRetries times in a row.
+func (s *slot) portLost(inst *Instance, uptime time.Duration) bool {
+	site := s.app.config()
+	lost := site.Node.PortMode != "fixed" && inst.addrInUse.Load() &&
+		uptime <= time.Duration(site.Node.StartupTimeoutSec)*time.Second
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !lost || s.lostPort >= portRetries {
+		s.lostPort = 0
+		return false
+	}
+	s.lostPort++
+	return true
 }
 
 // replace brings up a new instance, moves traffic to it, then retires the
@@ -712,9 +740,9 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 	cmd.Env = env.list()
 
-	portStr := strconv.Itoa(port)
-	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr}
-	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr}
+	portStr, addrInUse := strconv.Itoa(port), new(atomic.Bool)
+	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr, addrInUse: addrInUse}
+	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr, addrInUse: addrInUse}
 	cmd.Stdout, cmd.Stderr = outW, errW
 	cmd.WaitDelay = 5 * time.Second // do not hang on grandchildren holding the pipes
 
@@ -737,7 +765,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 
 	inst := &Instance{
-		app: a, index: index, port: port, token: token,
+		app: a, index: index, port: port, token: token, addrInUse: addrInUse,
 		cmd: cmd, os: osp, pid: cmd.Process.Pid, startedAt: time.Now(),
 		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))},
 		exited:  make(chan struct{}),
@@ -767,7 +795,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		// pool another instance may bind it and look like the culprit. A
 		// worker never binds its port, so only its own output counts.
 		lost := n.PortMode != "fixed" && inst.isExited() &&
-			(outW.addrInUse.Load() || errW.addrInUse.Load() || (!a.isWorker(site) && !portFree(port)))
+			(addrInUse.Load() || (!a.isWorker(site) && !portFree(port)))
 		a.retire(inst)
 		if lost {
 			return nil, &portLostError{port: port, err: err}

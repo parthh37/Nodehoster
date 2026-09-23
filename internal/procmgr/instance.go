@@ -37,6 +37,9 @@ type Instance struct {
 
 	exited   chan struct{}
 	exitCode int
+	// addrInUse is set when the application reported that its port was
+	// already in use: it never owned the port, whatever answered on it.
+	addrInUse *atomic.Bool
 
 	mu          sync.Mutex
 	state       string // starting | ready | unhealthy | stopping | exited
@@ -227,7 +230,7 @@ type lineWriter struct {
 	stream    string
 	instance  int
 	port      string
-	addrInUse atomic.Bool
+	addrInUse *atomic.Bool
 	buf       bytes.Buffer
 }
 
@@ -256,7 +259,7 @@ func (w *lineWriter) flush() {
 }
 
 func (w *lineWriter) emit(s string) {
-	if w.port != "" && mentionsAddrInUse(s, w.port) {
+	if w.addrInUse != nil && mentionsAddrInUse(s, w.port) {
 		w.addrInUse.Store(true)
 	}
 	w.sink.Write(model.LogLine{Time: time.Now(), Stream: w.stream, Instance: w.instance, Text: s})
