@@ -89,6 +89,11 @@ type ServerInfo struct {
 	Listeners  []string  `json:"listeners"`
 	GoVersion  string    `json:"goVersion"`
 	IsService  bool      `json:"isService"`
+
+	// The web console: its URL, or why it is not listening (it does not
+	// stop the server; the desktop manager can still fix it).
+	AdminURL   string `json:"adminUrl,omitempty"`
+	AdminError string `json:"adminError,omitempty"`
 }
 
 type LogLine struct {

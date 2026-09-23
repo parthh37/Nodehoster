@@ -49,6 +49,11 @@ type Core struct {
 	StartedAt time.Time
 	IsService bool
 
+	// Set by main before Start: where the web console listens, or why it
+	// could not.
+	AdminURL   string
+	AdminError string
+
 	settingsMu sync.RWMutex
 	settings   model.Settings
 

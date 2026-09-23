@@ -35,6 +35,7 @@ func (c *Core) ServerInfo() model.ServerInfo {
 		OS: runtime.GOOS + "/" + runtime.GOARCH, StartedAt: c.StartedAt,
 		CPUCount: runtime.NumCPU(), DataDir: c.Paths.Data, Listeners: c.Proxy.Listeners(),
 		GoVersion: runtime.Version(), IsService: c.IsService,
+		AdminURL: c.AdminURL, AdminError: c.AdminError,
 	}
 	if h, err := host.Info(); err == nil {
 		info.OS = fmt.Sprintf("%s %s (%s)", h.Platform, h.PlatformVersion, h.KernelArch)
