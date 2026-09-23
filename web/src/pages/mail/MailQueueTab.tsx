@@ -185,7 +185,7 @@ function StatusPanel({ status: s, error, loading, isAdmin }: { status?: MailStat
         <Callout tone="danger" icon={<AlertCircle />} title={s.addr ? `Cannot listen on ${s.addr}` : 'Cannot listen'}>
           <span className="break-words font-mono text-xs">{s.error || 'Unknown error.'}</span>
           {s.error && /address already in use|only one usage/i.test(s.error) && (
-            <p className="mt-1">Another program (often the IIS SMTP service or another mail server) is using the port. Stop it or choose another port.</p>
+            <p className="mt-1">Another program is using the port, often the Windows (IIS) SMTP service, which NodeHoster does not need, or another mail server. Stop it or choose another port.</p>
           )}
         </Callout>
       )}

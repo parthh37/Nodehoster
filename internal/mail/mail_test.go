@@ -375,17 +375,48 @@ func TestAccessControl(t *testing.T) {
 type fakeDNS struct {
 	mx    map[string][]*net.MX
 	hosts map[string][]string
+	txt   map[string][]string
+	ptr   map[string][]string
+}
+
+func notFound(name string) error {
+	return &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (f fakeDNS) LookupTXT(_ context.Context, name string) ([]string, error) {
+	if t, ok := f.txt[strings.TrimSuffix(name, ".")]; ok {
+		return t, nil
+	}
+	return nil, notFound(name)
+}
+
+func (f fakeDNS) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	var out []net.IPAddr
+	for _, h := range f.hosts[strings.TrimSuffix(host, ".")] {
+		out = append(out, net.IPAddr{IP: net.ParseIP(h)})
+	}
+	if len(out) == 0 {
+		return nil, notFound(host)
+	}
+	return out, nil
+}
+
+func (f fakeDNS) LookupAddr(_ context.Context, addr string) ([]string, error) {
+	if p, ok := f.ptr[addr]; ok {
+		return p, nil
+	}
+	return nil, notFound(addr)
 }
 
 func (f fakeDNS) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
-	if mx, ok := f.mx[name]; ok {
+	if mx, ok := f.mx[strings.TrimSuffix(name, ".")]; ok {
 		return mx, nil
 	}
 	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
 }
 
 func (f fakeDNS) LookupHost(_ context.Context, name string) ([]string, error) {
-	if h, ok := f.hosts[name]; ok {
+	if h, ok := f.hosts[strings.TrimSuffix(name, ".")]; ok {
 		return h, nil
 	}
 	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}

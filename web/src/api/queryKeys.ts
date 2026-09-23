@@ -19,5 +19,9 @@ export const qk = {
   mail: ['mail'] as const,
   mailStatus: ['mail', 'status'] as const,
   mailQueue: (state: string) => ['mail', 'queue', state] as const,
+  // Not under ['mail']: queue actions invalidate that prefix, and the checks
+  // take up to half a minute, so they only rerun when asked for.
+  mailHealthAll: ['mail-health'] as const,
+  mailHealth: (domains: string[]) => ['mail-health', ...domains] as const,
   mimeDefaults: ['mime', 'defaults'] as const,
 };

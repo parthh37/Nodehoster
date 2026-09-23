@@ -111,6 +111,7 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/deploy/git", a.deployGit)
 		r.Post("/sites/{id}/deployments/{dep}/activate", a.activateDeployment)
 		r.Post("/certificates/{id}/renew", a.renewCert)
+		r.Get("/mail/health", a.mailHealth)
 		r.Post("/mail/queue/retry", a.mailRetryAll)
 		r.Post("/mail/queue/{id}/retry", a.mailRetry)
 	})

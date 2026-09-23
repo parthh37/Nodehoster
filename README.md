@@ -46,11 +46,13 @@ IIS Manager, with a status icon in the notification area.
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
 
-**SMTP server (send-only, like the IIS 6 SMTP virtual server)**
+**SMTP server (built in, send-only)**
+- NodeHoster's own SMTP server, part of `nodehoster.exe`: no Windows or IIS SMTP service is needed
 - Applications send through `127.0.0.1:25` (nodemailer, `System.Net.Mail`…) or drop `.eml` files in a **pickup folder**
 - Connection and relay restrictions by IP/CIDR, optional SMTP authentication (PLAIN/LOGIN, bcrypt-hashed users), STARTTLS with a certificate from the store, allowed sender domains, size and recipient limits
-- Delivery **directly** to the recipients' mail servers (MX lookup, opportunistic TLS) or through a **smart host** (SendGrid, Amazon SES, Microsoft 365…) with STARTTLS/TLS and a password
+- Delivers **directly** to the recipients' mail servers (MX lookup, opportunistic TLS) by default; a **smart host** (SendGrid, Amazon SES, Microsoft 365…) is optional
 - **DKIM signing** per domain: keys generated for you, with the DNS record to publish
+- **Deliverability check**: SPF (fully evaluated against this server's address), DKIM (published key matches), DMARC, MX, reverse DNS, HELO host name, outbound port 25 and IP/domain blacklists, with the exact DNS record to publish for each problem
 - On-disk queue that survives restarts, retries with back-off until the message expires, undeliverable mail kept for inspection; queue view with retry, delete and download; notifications for failed mail
 - Never accepts mail for local mailboxes: it is a relay for your applications, not a mail server
 

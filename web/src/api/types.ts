@@ -656,7 +656,7 @@ export interface AvailableNode {
   security: boolean;
 }
 
-// ---------------------------------------------------------------- mail (SMTP virtual server)
+// ---------------------------------------------------------------- mail (built-in SMTP server)
 
 export type MailDelivery = 'direct' | 'smarthost';
 export type SmartHostSecurity = 'starttls' | 'tls' | 'none';
@@ -695,6 +695,8 @@ export interface MailSettings {
   listenIp: string;
   port: number;
   hostname?: string;
+  /** The address receivers see mail coming from; "" = detect (set it behind NAT). */
+  publicIp?: string;
   allowIps: string[] | null;
   requireAuth: boolean;
   users?: MailUser[] | null;
@@ -754,4 +756,38 @@ export interface MailStatus {
 export interface MailTest {
   from?: string;
   to: string;
+}
+
+// ---------------------------------------------------------------- mail deliverability
+
+export type MailCheckStatus = 'pass' | 'warn' | 'fail' | 'info';
+
+/** One test of the deliverability report. */
+export interface MailCheck {
+  /** "SPF", "Reverse DNS (PTR)", "DKIM (selector)", ... */
+  name: string;
+  status: MailCheckStatus | string;
+  /** What was found, in a sentence. */
+  detail: string;
+  /** The DNS record found. */
+  record?: string;
+  /** A DNS record value to publish at fixDns, or (without fixDns) an instruction. */
+  fix?: string;
+  /** DNS name the fix record belongs at. */
+  fixDns?: string;
+}
+
+export interface MailDomainHealth {
+  domain: string;
+  checks: MailCheck[] | null;
+}
+
+/** GET /api/mail/health: this server's reputation and each sending domain's records. */
+export interface MailHealth {
+  publicIp?: string;
+  hostname: string;
+  delivery: MailDelivery | string;
+  server: MailCheck[] | null;
+  domains: MailDomainHealth[] | null;
+  checkedAt: string;
 }

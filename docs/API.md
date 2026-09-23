@@ -162,6 +162,17 @@ are the TXT record to publish.
 | GET | `/api/mail/queue/{id}/eml` | admin | | `message/rfc822` |
 | DELETE | `/api/mail/queue/{id}` | admin | | 204 |
 | POST | `/api/mail/test` | admin | `{to, from?}` | 202 `MailMessage` |
+| GET | `/api/mail/health?domain=…` | operator | | `MailHealth` — deliverability report (below) |
+
+`GET /api/mail/health` checks this server (public address — `mail.publicIp`
+or detected; HELO host name; reverse DNS, forward-confirmed; outbound
+port 25; IP blocklists) and each sending domain (the DKIM key domains,
+the allowed sender domains and every `domain` parameter): SPF evaluated
+for the public address, each DKIM key's published record, DMARC, MX and
+the domain blocklist. Each check is `{name, status: pass|warn|fail|info,
+detail, record?, fix?, fixDns?}`; with `fixDns`, `fix` is the record to
+publish there. Only DNS lookups are made, plus one connection to a
+public mail server that is closed after its greeting.
 
 Events: `mail.failed` (a message could not be delivered) and `mail.error`
 (the server cannot listen).

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/parthh37/nodehoster/internal/mail"
@@ -82,6 +83,20 @@ func (a *API) mailTest(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "mail.test", in.To, "")
 	writeJSON(w, http.StatusAccepted, m)
+}
+
+// mailHealth runs the deliverability checks for the configured sending
+// domains and any ?domain= given. It takes a few seconds: DNS lookups,
+// blocklist queries and a connection to a public mail server.
+func (a *API) mailHealth(w http.ResponseWriter, r *http.Request) {
+	domains := r.URL.Query()["domain"]
+	for _, d := range domains {
+		if len(d) > 253 || strings.ContainsAny(d, " /@:") {
+			a.fail(w, &model.ValidationError{Field: "domain", Message: "not a domain name"})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, a.c.Mail.Health(r.Context(), domains))
 }
 
 func mailErr(err error) error {

@@ -13,7 +13,8 @@ import (
 	. "github.com/tailscale/walk/declarative"
 )
 
-// ---- SMTP E-mail, like the IIS 6 SMTP virtual server node
+// ---- SMTP E-mail: the page of NodeHoster's own, built-in SMTP server (it
+// does not use the Windows SMTP service)
 
 type mailPage struct {
 	page
@@ -81,6 +82,7 @@ func (s *mailPage) actionsPane(m *manager) []Widget {
 		heading("SMTP E-mail"),
 		link(nil, "Properties…", func() { mailPropertiesDialog(m) }),
 		link(&s.test, "Send test e-mail…", func() { s.sendTest(m) }),
+		link(nil, "Check deliverability…", func() { mailHealthDialog(m) }),
 		link(nil, "Refresh", func() { m.refresh(true) }),
 		heading("Queue"),
 		link(&s.showAll, "Show all messages", func() { s.setFilter(m, "") }),

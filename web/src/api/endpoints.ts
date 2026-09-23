@@ -13,6 +13,7 @@ import type {
   Deployment,
   LogLine,
   LogType,
+  MailHealth,
   MailMessage,
   MailStatus,
   MailTest,
@@ -158,6 +159,13 @@ export const mailApi = {
   remove: (id: string) => http.del(`/api/mail/queue/${enc(id)}`),
   emlUrl: (id: string) => `/api/mail/queue/${enc(id)}/eml`,
   test: (body: MailTest) => http.post<MailMessage>('/api/mail/test', body),
+  /** Deliverability checks for the configured sending domains plus `domains`; takes up to ~25 s. */
+  health: (domains: string[] = [], signal?: AbortSignal) => {
+    const sp = new URLSearchParams();
+    for (const d of domains) sp.append('domain', d);
+    const q = sp.toString();
+    return http.get<MailHealth>(`/api/mail/health${q ? `?${q}` : ''}`, { signal });
+  },
 };
 
 export const rewriteApi = {

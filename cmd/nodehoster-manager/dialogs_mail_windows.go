@@ -11,8 +11,8 @@ import (
 	. "github.com/tailscale/walk/declarative"
 )
 
-// mailPropertiesDialog edits settings.mail, laid out like the property
-// sheet of an IIS 6 SMTP virtual server.
+// mailPropertiesDialog edits settings.mail: the properties of NodeHoster's
+// built-in SMTP server.
 func mailPropertiesDialog(m *manager) {
 	var ms model.MailSettings
 	if err := m.getSettingsSection("mail", &ms); err != nil {
@@ -24,7 +24,7 @@ func mailPropertiesDialog(m *manager) {
 
 	// General
 	var enabled, requireAuth, skipVerify, pickup *walk.CheckBox
-	var listenIP, hostname, shHost, shUser, shPass *walk.LineEdit
+	var listenIP, hostname, publicIP, shHost, shUser, shPass *walk.LineEdit
 	var port, maxMB, maxRcpt, shPort, expire, keepFailed *walk.NumberEdit
 	var allowIPs, senderDomains, dkimRecord *walk.TextEdit
 	var cert, delivery, security *walk.ComboBox
@@ -121,6 +121,8 @@ func mailPropertiesDialog(m *manager) {
 					Label{Text: "IP address:"}, LineEdit{AssignTo: &listenIP, Text: ms.ListenIP, CueBanner: "(All unassigned)"},
 					Label{Text: "TCP port:"}, NumberEdit{AssignTo: &port, Value: float64(ms.Port), MinValue: 1, MaxValue: 65535},
 					Label{Text: "Fully-qualified domain name:"}, LineEdit{AssignTo: &hostname, Text: ms.Hostname, CueBanner: "(this computer's name) e.g. mail.example.com"},
+					Label{Text: "Public IP address:"}, LineEdit{AssignTo: &publicIP, Text: ms.PublicIP, CueBanner: "(detect)"},
+					Label{}, Label{Text: "Needed when the server is behind NAT: the address receivers see mail coming from.", TextColor: colorMuted},
 				}},
 				Label{Text: "The name is used in the SMTP greeting and in Received headers. Use one that resolves to this server, and whose reverse DNS matches, or mail may be treated as spam.", TextColor: colorMuted},
 				VSpacer{},
@@ -226,6 +228,10 @@ func mailPropertiesDialog(m *manager) {
 		}
 		in.Port = int(port.Value())
 		in.Hostname = strings.TrimSpace(hostname.Text())
+		in.PublicIP = strings.TrimSpace(publicIP.Text())
+		if in.PublicIP != "" && net.ParseIP(in.PublicIP) == nil {
+			return invalid(dlg, "Enter the public IP address mail leaves from, or leave it empty to detect it.")
+		}
 
 		in.AllowIPs = lines(allowIPs.Text())
 		if in.AllowIPs == nil {
