@@ -41,7 +41,7 @@ func (a *API) site(w http.ResponseWriter, r *http.Request) *model.Site {
 
 func (a *API) listSites(w http.ResponseWriter, r *http.Request) {
 	out := []siteView{}
-	for _, s := range a.c.Sites() {
+	for _, s := range visibleSites(access(r), a.c.Sites()) {
 		out = append(out, a.view(s))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -439,6 +439,12 @@ func (a *API) deploymentLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	depID := filepath.Base(chi.URLParam(r, "dep"))
+	// Live output is keyed by deployment alone: make sure it is this
+	// site's, or a user of one site could follow another site's deploy.
+	if dep, err := a.c.Store.GetDeployment(r.Context(), depID); err != nil || dep.SiteID != s.ID {
+		writeErr(w, http.StatusNotFound, "log not found")
+		return
+	}
 	lines, done, cancel, running := a.c.Deploy.Subscribe(depID)
 	defer cancel()
 	stream := newSSE(w)

@@ -57,9 +57,10 @@ export function LevelBadge({ level }: { level: string }) {
 
 export function RoleBadge({ role }: { role: string }) {
   const tone: Tone = role === 'admin' ? 'accent' : role === 'operator' ? 'blue' : 'gray';
+  // "sites": allowed on selected sites only, with a role per site.
   return (
-    <Badge tone={tone} className="capitalize">
-      {role}
+    <Badge tone={tone} className={role === 'sites' ? undefined : 'capitalize'}>
+      {role === 'sites' ? 'Selected sites' : role}
     </Badge>
   );
 }

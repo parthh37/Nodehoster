@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, MoreHorizontal, Pencil, Plus, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
-import { usersApi } from '@/api/endpoints';
+import { sitesApi, usersApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
-import type { Role, User } from '@/api/types';
+import type { Role, SiteGrant, SiteRole, User } from '@/api/types';
 import { useMe } from '@/hooks/useAuth';
 import { Button, IconButton } from '@/components/Button';
 import { Card, EmptyState, Loading, PageHeader } from '@/components/Layout';
@@ -13,18 +13,95 @@ import { Badge } from '@/components/Badge';
 import { RoleBadge } from '@/components/StatusBadges';
 import { Dialog } from '@/components/Dialog';
 import { ErrorBox, Field, FormErrorBanner, FormErrors } from '@/components/Field';
-import { Input } from '@/components/Input';
+import { Input, Select } from '@/components/Input';
 import { Radio, Switch } from '@/components/Switch';
 import { Menu } from '@/components/Menu';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { formatDate, relativeTime } from '@/lib/format';
+import { describeSiteAccess, setGrant } from '@/lib/access';
 
-const ROLES: { value: Role; label: string; description: string }[] = [
+type ServerRole = Exclude<Role, 'sites'>;
+
+const ROLES: { value: ServerRole; label: string; description: string }[] = [
   { value: 'admin', label: 'Administrator', description: 'Everything, including settings, users and secrets.' },
   { value: 'operator', label: 'Operator', description: 'Start, stop, restart and deploy sites.' },
   { value: 'viewer', label: 'Viewer', description: 'Read-only access.' },
 ];
+
+type Scope = 'server' | 'sites';
+
+const SCOPES: { value: Scope; label: string; description: string }[] = [
+  { value: 'server', label: 'All sites', description: 'A role on the whole server.' },
+  { value: 'sites', label: 'Selected sites', description: 'Chosen sites only; nothing server-wide.' },
+];
+
+const GRANT_OPTIONS = [
+  { value: '', label: 'No access' },
+  { value: 'viewer', label: 'Viewer' },
+  { value: 'operator', label: 'Operator' },
+];
+
+/** The role, scope and grants a user dialog edits. */
+interface AccessDraft {
+  scope: Scope;
+  role: ServerRole;
+  grants: SiteGrant[];
+}
+
+const draftOf = (u?: User): AccessDraft =>
+  u?.role === 'sites'
+    ? { scope: 'sites', role: 'viewer', grants: u.sites ?? [] }
+    : { scope: 'server', role: (u?.role as ServerRole | undefined) ?? 'operator', grants: [] };
+
+const accessBody = (d: AccessDraft): { role: Role; sites?: SiteGrant[] } =>
+  d.scope === 'sites' ? { role: 'sites', sites: d.grants } : { role: d.role };
+
+/**
+ * Site access, as IIS Manager permissions: a role on the whole server, or
+ * viewer/operator on selected sites. Changing a site's configuration always
+ * needs a server administrator.
+ */
+function AccessEditor({ value, onChange, disabled }: { value: AccessDraft; onChange: (d: AccessDraft) => void; disabled?: boolean }) {
+  const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000 });
+  const list = [...(sites.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const roleOn = (id: string) => value.grants.find((g) => g.siteId === id)?.role ?? '';
+  return (
+    <fieldset disabled={disabled} className="space-y-4">
+      <Field label="Site access" path="role">
+        <Radio value={value.scope} onChange={(scope) => onChange({ ...value, scope })} options={SCOPES} className="flex-col" />
+      </Field>
+      {value.scope === 'server' ? (
+        <Field label="Role">
+          <Radio value={value.role} onChange={(role) => onChange({ ...value, role })} options={ROLES} className="flex-col" />
+        </Field>
+      ) : (
+        <Field label="Sites" path="sites" prefix hint="Operators can start, stop, restart and deploy; viewers can only look. Site settings stay with administrators.">
+          {sites.isError ? (
+            <ErrorBox>{errorMessage(sites.error)}</ErrorBox>
+          ) : list.length === 0 ? (
+            <p className="text-[13px] text-zinc-500">{sites.isPending ? 'Loading sites…' : 'There are no sites yet.'}</p>
+          ) : (
+            <div className="max-h-64 divide-y divide-zinc-200 overflow-y-auto rounded-md border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+              {list.map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                  <span className="min-w-0 truncate text-[13px] font-medium">{s.name}</span>
+                  <Select
+                    className="w-36 shrink-0"
+                    value={roleOn(s.id)}
+                    options={GRANT_OPTIONS}
+                    onChange={(r) => onChange({ ...value, grants: setGrant(value.grants, s.id, (r || null) as SiteRole | null) })}
+                    aria-label={`Access to ${s.name}`}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </Field>
+      )}
+    </fieldset>
+  );
+}
 
 export function UsersPage() {
   const q = useQuery({ queryKey: qk.users, queryFn: usersApi.list });
@@ -47,6 +124,8 @@ export function UsersPage() {
 
   const users = [...(q.data ?? [])].sort((a, b) => a.username.localeCompare(b.username));
   const myId = me.data?.user.id;
+  const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000 });
+  const siteName = (id: string) => sites.data?.find((s) => s.id === id)?.name;
 
   return (
     <div>
@@ -71,6 +150,7 @@ export function UsersPage() {
               <tr>
                 <Th>User name</Th>
                 <Th>Role</Th>
+                <Th>Site access</Th>
                 <Th>2FA</Th>
                 <Th>Status</Th>
                 <Th>Last sign-in</Th>
@@ -88,6 +168,7 @@ export function UsersPage() {
                   <Td>
                     <RoleBadge role={u.role} />
                   </Td>
+                  <Td className="text-zinc-500">{describeSiteAccess(u, siteName)}</Td>
                   <Td>{u.totpEnabled ? <Badge tone="green"><ShieldCheck className="h-3 w-3" /> on</Badge> : <span className="text-xs text-zinc-400">off</span>}</Td>
                   <Td>{u.disabled ? <Badge tone="red">disabled</Badge> : <Badge tone="green">active</Badge>}</Td>
                   <Td className="text-zinc-500" title={u.lastLogin ? new Date(u.lastLogin).toLocaleString() : undefined}>
@@ -98,7 +179,7 @@ export function UsersPage() {
                     <Menu
                       trigger={(p) => <IconButton label="Actions" icon={<MoreHorizontal className="h-4 w-4" />} {...p} />}
                       items={[
-                        { label: 'Edit role & status', icon: <Pencil />, onSelect: () => setEditing(u) },
+                        { label: 'Edit access & status', icon: <Pencil />, onSelect: () => setEditing(u) },
                         { label: 'Reset password', icon: <KeyRound />, onSelect: () => setResetting(u) },
                         'separator',
                         {
@@ -137,18 +218,18 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
   const toast = useToast();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<Role>('operator');
+  const [access, setAccess] = useState<AccessDraft>(draftOf());
   useEffect(() => {
     if (open) {
       setUsername('');
       setPassword('');
-      setRole('operator');
+      setAccess(draftOf());
       m.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   const m = useMutation({
-    mutationFn: () => usersApi.create({ username: username.trim(), password, role }),
+    mutationFn: () => usersApi.create({ username: username.trim(), password, ...accessBody(access) }),
     onSuccess: (u) => {
       toast.success(`User ${u.username} created`, 'They will be asked to choose a new password at first sign-in.');
       void qc.invalidateQueries({ queryKey: qk.users });
@@ -179,9 +260,7 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
           <Field label="Initial password" path="password" hint="Share it securely.">
             <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
           </Field>
-          <Field label="Role" path="role">
-            <Radio value={role} onChange={setRole} options={ROLES} className="flex-col" />
-          </Field>
+          <AccessEditor value={access} onChange={setAccess} />
         </div>
       </FormErrors>
     </Dialog>
@@ -191,18 +270,19 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
 function EditUserDialog({ user, isSelf, onClose }: { user: User | null; isSelf: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const [role, setRole] = useState<Role>('viewer');
+  const [access, setAccess] = useState<AccessDraft>(draftOf());
   const [disabled, setDisabled] = useState(false);
   useEffect(() => {
     if (user) {
-      setRole(user.role);
+      setAccess(draftOf(user));
       setDisabled(user.disabled);
     }
     m.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
   const m = useMutation({
-    mutationFn: () => usersApi.update(user!.id, { role, disabled }),
+    // Your own access is not sent: an administrator cannot lock themselves out.
+    mutationFn: () => usersApi.update(user!.id, isSelf ? { disabled } : { ...accessBody(access), disabled }),
     onSuccess: () => {
       toast.success('User updated');
       void qc.invalidateQueries({ queryKey: qk.users });
@@ -227,11 +307,8 @@ function EditUserDialog({ user, isSelf, onClose }: { user: User | null; isSelf: 
       <FormErrors error={m.error}>
         <div className="space-y-4">
           <FormErrorBanner />
-          <Field label="Role" path="role" hint={isSelf ? 'You cannot change your own role.' : undefined}>
-            <fieldset disabled={isSelf}>
-              <Radio value={role} onChange={setRole} options={ROLES} className="flex-col" />
-            </fieldset>
-          </Field>
+          {isSelf && <p className="text-xs text-zinc-500">You cannot change your own access.</p>}
+          <AccessEditor value={access} onChange={setAccess} disabled={isSelf} />
           <Switch
             checked={disabled}
             onChange={setDisabled}

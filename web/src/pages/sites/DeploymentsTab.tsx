@@ -20,7 +20,7 @@ import { Badge } from '@/components/Badge';
 import { StateBadge } from '@/components/StatusBadges';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
-import { usePermissions } from '@/hooks/useAuth';
+import { useSitePermissions } from '@/hooks/useAuth';
 import { useNow } from '@/hooks/useNow';
 import { durationBetween, formatDateTime, relativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -102,7 +102,7 @@ function DeployStatusBadge({ status }: { status: string }) {
 const sourceLabel: Record<string, string> = { zip: 'Upload', git: 'Git', webhook: 'Webhook', rollback: 'Rollback' };
 
 export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; savedSite: Site; dirty: boolean }) {
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();

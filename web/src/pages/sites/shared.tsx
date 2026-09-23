@@ -4,7 +4,7 @@ import { IconButton, Button } from '@/components/Button';
 import { bindingHref, bindingLabel } from '@/lib/bindings';
 import { cn } from '@/lib/cn';
 import { useSiteActions } from '@/hooks/useSiteActions';
-import { usePermissions } from '@/hooks/useAuth';
+import { useSitePermissions } from '@/hooks/useAuth';
 
 export function BindingLink({ b, className }: { b: Binding; className?: string }) {
   const href = bindingHref(b);
@@ -37,7 +37,7 @@ const canStop = (s: SiteState | undefined) => !!s && s !== 'stopped';
 /** Row-level icon actions for the sites table. */
 export function SiteRowActions({ site, state }: { site: SiteView; state: SiteState | undefined }) {
   const { run, pending } = useSiteActions();
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   if (!canOperate) return null;
   const busy = pending?.id === site.id;
   return (
@@ -63,7 +63,7 @@ export function SiteRowActions({ site, state }: { site: SiteView; state: SiteSta
 /** Header action buttons for the site detail page. */
 export function SiteHeaderActions({ site, state }: { site: SiteView; state: SiteState | undefined }) {
   const { run, pending } = useSiteActions();
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   const busy = pending?.id === site.id ? pending.action : undefined;
   const browse = (site.bindings ?? []).map((b) => bindingHref(b)).find(Boolean);
   return (

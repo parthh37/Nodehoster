@@ -51,6 +51,12 @@ const nav: NavItem[] = [
   { to: '/events', label: 'Events', icon: Activity },
 ];
 
+// A user allowed on selected sites only sees their sites and their events.
+const siteNav: NavItem[] = [
+  { to: '/sites', label: 'Sites', icon: Boxes },
+  { to: '/events', label: 'Events', icon: Activity },
+];
+
 const adminNav: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: Settings, admin: true },
   { to: '/users', label: 'Users', icon: Users, admin: true },
@@ -93,9 +99,9 @@ function Shell() {
 }
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { isAdmin } = usePermissions();
+  const { isAdmin, siteScoped } = usePermissions();
   const info = useQuery({ queryKey: qk.serverInfo, queryFn: serverApi.info, staleTime: 30_000 });
-  const items = isAdmin ? [...nav, ...adminNav] : nav;
+  const items = siteScoped ? siteNav : isAdmin ? [...nav, ...adminNav] : nav;
 
   const content = (
     <div className="flex h-full flex-col">

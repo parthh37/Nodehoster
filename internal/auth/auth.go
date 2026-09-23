@@ -318,12 +318,20 @@ func (s *Service) TOTPDisable(ctx context.Context, u *store.UserRecord, code str
 // ---- API tokens
 
 func (s *Service) CreateToken(ctx context.Context, userID, name string, expiresDays int) (string, *model.APIToken, error) {
+	return s.CreateRestrictedToken(ctx, userID, name, expiresDays, "", nil)
+}
+
+// CreateRestrictedToken creates a token limited to a maximum role and/or
+// to some sites (nil: every site the owner can access). The caller checks
+// that the restriction is within the owner's access; enforcement always
+// intersects it with the owner's access at the time of each request.
+func (s *Service) CreateRestrictedToken(ctx context.Context, userID, name string, expiresDays int, role model.Role, siteIDs []string) (string, *model.APIToken, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", nil, errors.New("give the token a name")
 	}
 	raw := "nh_" + randomString(32)
-	t := &model.APIToken{ID: uuid.NewString(), UserID: userID, Name: name, Prefix: raw[:10], Hash: sha(raw), CreatedAt: time.Now()}
+	t := &model.APIToken{ID: uuid.NewString(), UserID: userID, Name: name, Prefix: raw[:10], Hash: sha(raw), CreatedAt: time.Now(), Role: role, SiteIDs: siteIDs}
 	if expiresDays > 0 {
 		exp := time.Now().AddDate(0, 0, expiresDays)
 		t.ExpiresAt = &exp
@@ -333,29 +341,37 @@ func (s *Service) CreateToken(ctx context.Context, userID, name string, expiresD
 
 // TokenUser resolves a bearer token.
 func (s *Service) TokenUser(ctx context.Context, raw string) (*store.UserRecord, error) {
+	u, _, err := s.Token(ctx, raw)
+	return u, err
+}
+
+// Token resolves a bearer token to its owner and the token itself, whose
+// restriction applies on top of the owner's access (Access.Restrict).
+func (s *Service) Token(ctx context.Context, raw string) (*store.UserRecord, *model.APIToken, error) {
 	if !strings.HasPrefix(raw, "nh_") {
-		return nil, store.ErrNotFound
+		return nil, nil, store.ErrNotFound
 	}
 	t, err := s.store.TokenByHash(ctx, sha(raw))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
-		return nil, errors.New("token expired")
+		return nil, nil, errors.New("token expired")
 	}
 	u, err := s.store.GetUser(ctx, t.UserID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if u.Disabled {
-		return nil, ErrDisabled
+		return nil, nil, ErrDisabled
 	}
 	go s.store.TouchToken(context.Background(), t.ID)
-	return u, nil
+	return u, t, nil
 }
 
-// Allowed reports whether a role may perform an action class.
+// Allowed reports whether a server-wide role may perform an action class.
+// The site-scoped role "sites" is allowed nothing: its rights are in the
+// grants (see Access).
 func Allowed(role model.Role, need model.Role) bool {
-	rank := map[model.Role]int{model.RoleViewer: 1, model.RoleOperator: 2, model.RoleAdmin: 3}
-	return rank[role] >= rank[need]
+	return rank(need) > 0 && rank(role) >= rank(need)
 }

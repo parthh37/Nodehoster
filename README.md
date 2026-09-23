@@ -73,6 +73,7 @@ IIS Manager, with a status icon in the notification area.
 - **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
+- **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
 - Backup & restore of the whole configuration

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -60,6 +61,7 @@ func (a *API) localIdentity(next http.Handler) http.Handler {
 		// The audit log shows where a change came from; a pipe has no
 		// client address.
 		r.RemoteAddr = "local"
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
+		ctx := withAccess(context.WithValue(r.Context(), ctxUser, u), auth.Access{Role: model.RoleAdmin})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

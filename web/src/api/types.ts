@@ -568,12 +568,32 @@ export interface AdminSettings {
 
 // ---------------------------------------------------------------- users & audit
 
-export type Role = 'admin' | 'operator' | 'viewer';
+/** A server-wide role, or `sites` for a user allowed on selected sites only. */
+export type Role = 'admin' | 'operator' | 'viewer' | 'sites';
+
+/** The role a site-scoped user has on one site (never admin). */
+export type SiteRole = 'viewer' | 'operator';
+
+export interface SiteGrant {
+  siteId: string;
+  role: SiteRole;
+}
+
+/**
+ * What the signed-in caller may do: a server-wide role (which covers every
+ * site), or role `sites` with per-site grants.
+ */
+export interface Access {
+  role: Role;
+  sites?: SiteGrant[];
+}
 
 export interface User {
   id: string;
   username: string;
   role: Role;
+  /** Grants of a site-scoped user (role `sites`). */
+  sites?: SiteGrant[];
   totpEnabled: boolean;
   disabled: boolean;
   lastLogin?: string | null;
@@ -583,6 +603,8 @@ export interface User {
 export interface Me {
   user: User;
   mustChangePassword: boolean;
+  /** Effective access (the user's, narrowed by the API token if any). */
+  access?: Access;
 }
 
 export interface APIToken {
@@ -590,6 +612,10 @@ export interface APIToken {
   userId: string;
   name: string;
   prefix: string;
+  /** Maximum role; empty = the owner's. */
+  role?: Role | '';
+  /** Sites the token is restricted to; null = every site the owner can access. */
+  siteIds?: string[] | null;
   expiresAt?: string | null;
   lastUsed?: string | null;
   createdAt: string;

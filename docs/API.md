@@ -15,7 +15,8 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
   `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
-  403 when not permitted.
+  403 when not permitted. A user is either server-wide (one of those roles, on
+  the server and every site) or site-scoped; see [Permissions](#permissions).
 
 ## Auth
 
@@ -23,11 +24,55 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 |---|---|---|---|
 | POST | `/api/auth/login` | `{username, password, totp?}` | `{user}`; 401 `{error, totpRequired: true}` when a TOTP code is needed |
 | POST | `/api/auth/logout` | | 204 |
-| GET | `/api/auth/me` | | `{user, mustChangePassword}` |
+| GET | `/api/auth/me` | | `{user, mustChangePassword, access}` (`access`: the effective `{role, sites?}`, narrowed by the token when called with one) |
 | POST | `/api/auth/password` | `{current, new}` | 204 |
 | POST | `/api/auth/totp/setup` | | `{secret, url}` (otpauth:// URL for a QR code) |
 | POST | `/api/auth/totp/enable` | `{code}` | 204 |
 | POST | `/api/auth/totp/disable` | `{code}` | 204 |
+
+## Permissions
+
+Like IIS Manager permissions, a user either has a role on the whole server
+or is allowed on selected sites only:
+
+- **Server-wide**: `role` is `admin`, `operator` or `viewer`, and applies to
+  the server and to every site.
+- **Site-scoped**: `role` is `"sites"` and `sites` lists the grants,
+  `[{siteId, role}]` with role `viewer` or `operator`, each site once. There
+  is no site-level administrator: a site's configuration (application folder,
+  run-as account, bindings, environment) could take over the server or
+  another site's host names, so `PUT`/`DELETE /api/sites/{id}`, creating
+  sites and everything server-wide need a server `admin`.
+
+Validation (422): grants only with role `sites` and at least one of them;
+each on an existing site; `admin` is not a grant role. Grants use site IDs:
+renaming a site keeps them, deleting it removes them (from users and from
+restricted tokens). Changing a user's role or grants is audited
+(`user.update`, detail `access <before> -> <after>`) and applies to their
+sessions, tokens and open `/api/stream` connections at once.
+
+What a site-scoped caller gets:
+
+| Endpoints | Result |
+|---|---|
+| `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
+| `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
+| `GET /api/server/info` | only `version`, `commit` and `hostname` |
+| `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| everything else (certificates, Node.js install, settings, mail, users, audit, backup, rewrite import, server metrics) | 403 |
+| `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
+
+**Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
+token's maximum role, not above the caller's) and `siteIds` (sites the caller
+can access; empty = not restricted to sites). A token restricted to sites is
+enforced exactly like a site-scoped user, with its owner's role on each
+listed site (at most `operator`, so `role: "admin"` is refused with
+`siteIds`). The effective access is always the intersection of the token's
+restriction and its owner's current access: downgrading the user, or removing
+a grant, downgrades the token too. A restricted token cannot use the account
+endpoints (`/api/auth/password`, `/api/auth/totp/*`, `/api/tokens`): 403.
+
+The desktop manager's local pipe always acts as `admin`.
 
 ## Server
 
@@ -112,12 +157,12 @@ Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 | POST | `/api/settings/webhooks/test` | `WebhookTarget` | 204 |
 | GET | `/api/settings/admin` | | `{listen, tls: "selfsigned"\|"certificate"\|"none", certificateId, restartRequired}` |
 | PUT | `/api/settings/admin` | same | same (takes effect after service restart) |
-| GET | `/api/users` | | `User[]` |
-| POST | `/api/users` | `{username, password, role}` | `User` |
-| PUT | `/api/users/{id}` | `{role?, disabled?, password?, resetTotp?}` | `User` (`resetTotp: true` turns two-factor off, for a lost authenticator; ends the user's sessions) |
+| GET | `/api/users` | | `User[]` (`sites` set for site-scoped users) |
+| POST | `/api/users` | `{username, password, role, sites?}` | `User` (`role: "sites"` with `sites: [{siteId, role}]` for a site-scoped user) |
+| PUT | `/api/users/{id}` | `{role?, sites?, disabled?, password?, resetTotp?}` | `User` (`sites` replaces the grants; a server-wide `role` drops them; `resetTotp: true` turns two-factor off, for a lost authenticator; ends the user's sessions) |
 | DELETE | `/api/users/{id}` | | 204 |
-| GET | `/api/tokens` | | `APIToken[]` (own) |
-| POST | `/api/tokens` | `{name, expiresDays?}` | `{token: "nh_…", info: APIToken}` (token shown once) |
+| GET | `/api/tokens` | | `APIToken[]` (own; `role` = maximum role or omitted, `siteIds` = sites or `null` for unrestricted) |
+| POST | `/api/tokens` | `{name, expiresDays?, role?, siteIds?}` | `{token: "nh_…", info: APIToken}` (token shown once; see [Permissions](#permissions) for `role`/`siteIds`) |
 | DELETE | `/api/tokens/{id}` | | 204 |
 
 ## URL rewrite and MIME types
@@ -181,6 +226,8 @@ Events: `mail.failed` (a message could not be delivered) and `mail.error`
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes
 `nodehoster_requests_total{site,code}`, `nodehoster_instance_memory_bytes`, etc.
+A site-scoped (or site-restricted) token sees only its sites and no
+certificate metrics.
 
 ## Local endpoints (desktop manager)
 

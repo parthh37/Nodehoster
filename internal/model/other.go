@@ -112,30 +112,58 @@ const (
 	RoleAdmin    Role = "admin"    // everything
 	RoleOperator Role = "operator" // start/stop/deploy, no settings, users or secrets
 	RoleViewer   Role = "viewer"   // read-only
+	// RoleSites makes a user site-scoped, like an IIS Manager user granted
+	// permission on individual sites: they have no rights on the server
+	// itself, only the role of each grant in User.Sites on that site. A
+	// separate role value (rather than, say, "viewer" plus grants) makes
+	// every server-wide check fail closed for them.
+	RoleSites Role = "sites"
 )
 
+// SiteGrant gives a site-scoped user a role on one site. It is viewer or
+// operator, never admin: a site's configuration (application folder, the
+// account it runs as, bindings, environment) can take over the server or
+// other sites' host names, so editing it stays with server administrators.
+type SiteGrant struct {
+	SiteID string `json:"siteId"`
+	Role   Role   `json:"role"` // viewer | operator
+}
+
 type User struct {
-	ID           string     `json:"id"`
-	Username     string     `json:"username"`
-	Role         Role       `json:"role"`
-	PasswordHash string     `json:"-"`
-	TOTPSecret   string     `json:"-"`
-	TOTPEnabled  bool       `json:"totpEnabled"`
-	Disabled     bool       `json:"disabled"`
-	LastLogin    *time.Time `json:"lastLogin,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Role     Role   `json:"role"`
+	// Sites are the grants of a site-scoped user (Role "sites"); always
+	// empty for everyone else. Grants are by site ID, so renaming a site
+	// keeps them; deleting it removes them.
+	Sites        []SiteGrant `json:"sites,omitempty"`
+	PasswordHash string      `json:"-"`
+	TOTPSecret   string      `json:"-"`
+	TOTPEnabled  bool        `json:"totpEnabled"`
+	Disabled     bool        `json:"disabled"`
+	LastLogin    *time.Time  `json:"lastLogin,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
 }
 
 type APIToken struct {
-	ID        string     `json:"id"`
-	UserID    string     `json:"userId"`
-	Name      string     `json:"name"`
-	Prefix    string     `json:"prefix"` // first characters, for identification
-	Hash      string     `json:"-"`
+	ID     string `json:"id"`
+	UserID string `json:"userId"`
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"` // first characters, for identification
+	Hash   string `json:"-"`
+	// Role and SiteIDs restrict the token to part of its owner's access,
+	// e.g. a CI token that can only deploy one site. The token never has
+	// more than its owner has now: the effective access is the
+	// intersection, so downgrading the user downgrades their tokens.
+	Role      Role       `json:"role,omitempty"` // "" = the owner's role
+	SiteIDs   []string   `json:"siteIds"`        // nil (JSON null) = every site the owner can access
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 	LastUsed  *time.Time `json:"lastUsed,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
 }
+
+// Restricted reports whether the token has less than its owner's access.
+func (t *APIToken) Restricted() bool { return t.Role != "" || t.SiteIDs != nil }
 
 type AuditEntry struct {
 	ID     int64     `json:"id"`

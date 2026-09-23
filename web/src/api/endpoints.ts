@@ -28,6 +28,7 @@ import type {
   ServerInfo,
   Settings,
   Site,
+  SiteGrant,
   SiteStatus,
   SiteView,
   TOTPSetup,
@@ -136,16 +137,21 @@ export const settingsApi = {
 
 export const usersApi = {
   list: () => http.get<User[]>('/api/users'),
-  create: (body: { username: string; password: string; role: Role }) => http.post<User>('/api/users', body),
-  update: (id: string, body: { role?: Role; disabled?: boolean; password?: string }) =>
+  create: (body: { username: string; password: string; role: Role; sites?: SiteGrant[] }) => http.post<User>('/api/users', body),
+  update: (id: string, body: { role?: Role; sites?: SiteGrant[]; disabled?: boolean; password?: string }) =>
     http.put<User>(`/api/users/${enc(id)}`, body),
   remove: (id: string) => http.del(`/api/users/${enc(id)}`),
 };
 
 export const tokensApi = {
   list: () => http.get<APIToken[]>('/api/tokens'),
-  create: (name: string, expiresDays?: number) =>
-    http.post<CreatedToken>('/api/tokens', expiresDays ? { name, expiresDays } : { name }),
+  create: (name: string, expiresDays?: number, restrict?: { role?: Role | ''; siteIds?: string[] }) =>
+    http.post<CreatedToken>('/api/tokens', {
+      name,
+      ...(expiresDays ? { expiresDays } : {}),
+      ...(restrict?.role ? { role: restrict.role } : {}),
+      ...(restrict?.siteIds?.length ? { siteIds: restrict.siteIds } : {}),
+    }),
   revoke: (id: string) => http.del(`/api/tokens/${enc(id)}`),
 };
 

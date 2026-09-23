@@ -2,7 +2,10 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -51,9 +54,11 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// me also returns the effective access (the user's, narrowed by the
+// token if one is used), which is what the console adapts its pages to.
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.User, "mustChangePassword": u.MustChange})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.User, "mustChangePassword": u.MustChange, "access": access(r)})
 }
 
 func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -131,8 +136,10 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name        string `json:"name"`
-		ExpiresDays int    `json:"expiresDays"`
+		Name        string     `json:"name"`
+		ExpiresDays int        `json:"expiresDays"`
+		Role        model.Role `json:"role"`    // optional maximum role
+		SiteIDs     []string   `json:"siteIds"` // optional; empty = not restricted to sites
 	}
 	if err := decode(r, &in); err != nil {
 		a.fail(w, err)
@@ -144,13 +151,76 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "change your password first")
 		return
 	}
-	raw, t, err := a.c.Auth.CreateToken(r.Context(), user(r).ID, in.Name, in.ExpiresDays)
+	role, siteIDs, err := a.tokenRestriction(r, in.Role, in.SiteIDs)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	a.audit(r, "token.create", in.Name, "")
+	raw, t, err := a.c.Auth.CreateRestrictedToken(r.Context(), user(r).ID, in.Name, in.ExpiresDays, role, siteIDs)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	a.audit(r, "token.create", in.Name, a.describeTokenRestriction(t))
 	writeJSON(w, http.StatusCreated, map[string]any{"token": raw, "info": t})
+}
+
+// tokenRestriction validates a token's optional restriction against what
+// the caller may do: the role no higher than theirs, the sites among
+// theirs. A role equal to the caller's is kept: it still caps the token if
+// the user is promoted later.
+func (a *API) tokenRestriction(r *http.Request, role model.Role, siteIDs []string) (model.Role, []string, error) {
+	acc := access(r)
+	switch role {
+	case "", model.RoleViewer, model.RoleOperator, model.RoleAdmin:
+	default:
+		return "", nil, &model.ValidationError{Field: "role", Message: "viewer, operator or admin (or empty for your own role)"}
+	}
+	if role != "" && auth.Weaker(acc.Highest(), role) {
+		return "", nil, &model.ValidationError{Field: "role", Message: "a token cannot have more rights than you have"}
+	}
+	if len(siteIDs) == 0 {
+		return role, nil, nil
+	}
+	if role == model.RoleAdmin {
+		return "", nil, &model.ValidationError{Field: "role", Message: "a token restricted to sites is at most operator: site configuration needs a server administrator"}
+	}
+	ids := make([]string, 0, len(siteIDs))
+	for i, id := range siteIDs {
+		if _, err := a.c.Site(id); err != nil || !acc.CanSee(id) {
+			return "", nil, &model.ValidationError{Field: fmt.Sprintf("siteIds[%d]", i), Message: "no such site"}
+		}
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return role, ids, nil
+}
+
+// describeTokenRestriction is the audit detail of a new token.
+func (a *API) describeTokenRestriction(t *model.APIToken) string {
+	var parts []string
+	if t.Role != "" {
+		parts = append(parts, "role "+string(t.Role))
+	}
+	if t.SiteIDs != nil {
+		parts = append(parts, "sites "+strings.Join(a.siteNames(t.SiteIDs), ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// siteNames names sites by ID for audit details; a deleted site shows as
+// its ID.
+func (a *API) siteNames(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if s, err := a.c.Site(id); err == nil {
+			out = append(out, s.Name)
+		} else {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (a *API) deleteToken(w http.ResponseWriter, r *http.Request) {
@@ -177,15 +247,30 @@ func (a *API) listUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func validRole(r model.Role) bool {
-	return r == model.RoleAdmin || r == model.RoleOperator || r == model.RoleViewer
+func (a *API) siteExists(id string) bool {
+	_, err := a.c.Site(id)
+	return err == nil
+}
+
+// describeAccess is the audit detail of a user's access, naming the sites
+// of a site-scoped user and the role on each.
+func (a *API) describeAccess(u *model.User) string {
+	if u.Role != model.RoleSites {
+		return string(u.Role) + " (all sites)"
+	}
+	parts := make([]string, 0, len(u.Sites))
+	for _, g := range u.Sites {
+		parts = append(parts, a.siteNames([]string{g.SiteID})[0]+": "+string(g.Role))
+	}
+	return "sites: " + strings.Join(parts, ", ")
 }
 
 func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Username string     `json:"username"`
-		Password string     `json:"password"`
-		Role     model.Role `json:"role"`
+		Username string            `json:"username"`
+		Password string            `json:"password"`
+		Role     model.Role        `json:"role"`
+		Sites    []model.SiteGrant `json:"sites"`
 	}
 	if err := decode(r, &in); err != nil {
 		a.fail(w, err)
@@ -195,8 +280,8 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, &model.ValidationError{Field: "username", Message: "2-64 characters"})
 		return
 	}
-	if !validRole(in.Role) {
-		a.fail(w, &model.ValidationError{Field: "role", Message: "admin, operator or viewer"})
+	if err := auth.CheckUserAccess(in.Role, in.Sites, a.siteExists); err != nil {
+		a.fail(w, err)
 		return
 	}
 	hash, err := auth.HashPassword(in.Password)
@@ -204,12 +289,12 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, &model.ValidationError{Field: "password", Message: err.Error()})
 		return
 	}
-	u := &store.UserRecord{User: model.User{ID: uuid.NewString(), Username: in.Username, Role: in.Role, PasswordHash: hash, CreatedAt: time.Now()}, MustChange: true}
+	u := &store.UserRecord{User: model.User{ID: uuid.NewString(), Username: in.Username, Role: in.Role, Sites: in.Sites, PasswordHash: hash, CreatedAt: time.Now()}, MustChange: true}
 	if err := a.c.Store.PutUser(r.Context(), u); err != nil {
 		a.fail(w, &model.ValidationError{Field: "username", Message: err.Error()})
 		return
 	}
-	a.audit(r, "user.create", in.Username, string(in.Role))
+	a.audit(r, "user.create", in.Username, a.describeAccess(&u.User))
 	writeJSON(w, http.StatusCreated, u.User)
 }
 
@@ -233,9 +318,12 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Role     *model.Role `json:"role"`
-		Disabled *bool       `json:"disabled"`
-		Password *string     `json:"password"`
+		Role *model.Role `json:"role"`
+		// Sites replaces the grants of a site-scoped user. Leaving it out
+		// keeps them (when the role stays "sites").
+		Sites    *[]model.SiteGrant `json:"sites"`
+		Disabled *bool              `json:"disabled"`
+		Password *string            `json:"password"`
 		// ResetTOTP turns two-factor authentication off, for a user who
 		// lost their authenticator. They can enroll again after signing in.
 		ResetTOTP bool `json:"resetTotp"`
@@ -244,16 +332,27 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	if in.Role != nil {
-		if !validRole(*in.Role) {
-			a.fail(w, &model.ValidationError{Field: "role", Message: "admin, operator or viewer"})
+	accessBefore := a.describeAccess(&u.User)
+	if in.Role != nil || in.Sites != nil {
+		role, sites := u.Role, u.Sites
+		if in.Role != nil {
+			role = *in.Role
+			if role != model.RoleSites {
+				sites = nil // a server-wide role replaces the grants
+			}
+		}
+		if in.Sites != nil {
+			sites = *in.Sites
+		}
+		if err := auth.CheckUserAccess(role, sites, a.siteExists); err != nil {
+			a.fail(w, err)
 			return
 		}
-		if *in.Role != model.RoleAdmin && u.Role == model.RoleAdmin && a.lastAdmin(r, id) {
+		if role != model.RoleAdmin && u.Role == model.RoleAdmin && a.lastAdmin(r, id) {
 			a.fail(w, errors.New("this is the last administrator"))
 			return
 		}
-		u.Role = *in.Role
+		u.Role, u.Sites = role, sites
 	}
 	if in.Disabled != nil {
 		if *in.Disabled && u.Role == model.RoleAdmin && a.lastAdmin(r, id) {
@@ -280,11 +379,14 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 	if u.Disabled || in.ResetTOTP || (in.Password != nil && *in.Password != "") {
 		a.c.Store.DeleteUserSessions(r.Context(), u.ID, "")
 	}
-	detail := ""
-	if in.ResetTOTP {
-		detail = "two-factor authentication reset"
+	var details []string
+	if after := a.describeAccess(&u.User); after != accessBefore {
+		details = append(details, "access "+accessBefore+" -> "+after)
 	}
-	a.audit(r, "user.update", u.Username, detail)
+	if in.ResetTOTP {
+		details = append(details, "two-factor authentication reset")
+	}
+	a.audit(r, "user.update", u.Username, strings.Join(details, "; "))
 	writeJSON(w, http.StatusOK, u.User)
 }
 

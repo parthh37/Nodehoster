@@ -43,7 +43,7 @@ func Handler(c *core.Core) http.Handler {
 	r.Use(securityHeaders)
 
 	r.Post("/hooks/deploy/{id}", a.webhookDeploy)
-	r.With(a.authenticate, a.require(model.RoleViewer)).Get("/metrics", a.prometheus)
+	r.With(a.authenticate, a.requireFiltered).Get("/metrics", a.prometheus)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Use(noCache)
@@ -53,13 +53,20 @@ func Handler(c *core.Core) http.Handler {
 			r.Use(csrf)
 			r.Post("/auth/logout", a.logout)
 			r.Get("/auth/me", a.me)
-			r.Post("/auth/password", a.changePassword)
-			r.Post("/auth/totp/setup", a.totpSetup)
-			r.Post("/auth/totp/enable", a.totpEnable)
-			r.Post("/auth/totp/disable", a.totpDisable)
-			r.Get("/tokens", a.listTokens)
-			r.Post("/tokens", a.createToken)
-			r.Delete("/tokens/{id}", a.deleteToken)
+			// Account endpoints act on the user, not on a site or the
+			// server, so a restricted token (say, CI's deploy-one-site
+			// token) may not use them: it could otherwise mint itself
+			// an unrestricted token or change the account's sign-in.
+			r.Group(func(r chi.Router) {
+				r.Use(unrestrictedToken)
+				r.Post("/auth/password", a.changePassword)
+				r.Post("/auth/totp/setup", a.totpSetup)
+				r.Post("/auth/totp/enable", a.totpEnable)
+				r.Post("/auth/totp/disable", a.totpDisable)
+				r.Get("/tokens", a.listTokens)
+				r.Post("/tokens", a.createToken)
+				r.Delete("/tokens/{id}", a.deleteToken)
+			})
 
 			a.routes(r)
 		})
@@ -74,14 +81,34 @@ func Handler(c *core.Core) http.Handler {
 // routes registers every endpoint that is guarded by a role. Handler mounts
 // them behind session and token authentication; LocalHandler behind the
 // Windows identity of the local admin pipe.
+//
+// How to authorize a route (see access.go):
+//   - a route under /sites/{id} goes in a requireSite group: the caller needs
+//     that role on that site, which a site-scoped user (or a site-restricted
+//     token) gets from a grant and a server-wide user from their role. Sites
+//     they cannot see answer 404, as if they did not exist.
+//   - a server-wide route goes in a require group: site-scoped callers are
+//     always refused (403), whatever the role.
+//   - requireFiltered is for the few routes site-scoped callers need that are
+//     not under /sites/{id}: the handler must return only what canSeeSite
+//     allows (the sites list, events), or nothing specific to the server (a
+//     static catalog).
+//
+// Put a new route in the group matching the role it needs; the groups are
+// the whole authorization, handlers do no role checks of their own.
 func (a *API) routes(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(a.require(model.RoleViewer))
+		r.Use(a.requireFiltered)
 		r.Get("/server/info", a.serverInfo)
-		r.Get("/server/metrics", a.serverMetrics)
 		r.Get("/events", a.listEvents)
 		r.Get("/stream", a.stream)
 		r.Get("/sites", a.listSites)
+		r.Get("/node/versions", a.nodeVersions)
+		r.Get("/settings/dns-catalog", a.dnsCatalog)
+		r.Get("/mime/defaults", a.mimeDefaults)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(a.requireSite(model.RoleViewer))
 		r.Get("/sites/{id}", a.getSite)
 		r.Get("/sites/{id}/status", a.siteStatus)
 		r.Get("/sites/{id}/metrics", a.siteMetrics)
@@ -91,17 +118,9 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/deployments", a.listDeployments)
 		r.Get("/sites/{id}/deployments/{dep}/log", a.deploymentLog)
 		r.Get("/sites/{id}/deployments/{dep}/log/stream", a.deploymentLogStream)
-		r.Get("/certificates", a.listCerts)
-		r.Get("/certificates/{id}", a.getCert)
-		r.Get("/node/versions", a.nodeVersions)
-		r.Get("/node/available", a.nodeAvailable)
-		r.Get("/settings/dns-catalog", a.dnsCatalog)
-		r.Get("/mime/defaults", a.mimeDefaults)
-		r.Get("/mail/status", a.mailStatus)
-		r.Get("/mail/queue", a.mailQueue)
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(a.require(model.RoleOperator))
+		r.Use(a.requireSite(model.RoleOperator))
 		r.Post("/sites/{id}/start", a.siteAction("start"))
 		r.Post("/sites/{id}/stop", a.siteAction("stop"))
 		r.Post("/sites/{id}/restart", a.siteAction("restart"))
@@ -110,6 +129,25 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/deploy/zip", a.deployZip)
 		r.Post("/sites/{id}/deploy/git", a.deployGit)
 		r.Post("/sites/{id}/deployments/{dep}/activate", a.activateDeployment)
+	})
+	r.Group(func(r chi.Router) {
+		// A site's configuration is a server administrator's: no grant
+		// reaches admin (see model.SiteGrant).
+		r.Use(a.requireSite(model.RoleAdmin))
+		r.Put("/sites/{id}", a.updateSite)
+		r.Delete("/sites/{id}", a.deleteSite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(a.require(model.RoleViewer))
+		r.Get("/server/metrics", a.serverMetrics)
+		r.Get("/certificates", a.listCerts)
+		r.Get("/certificates/{id}", a.getCert)
+		r.Get("/node/available", a.nodeAvailable)
+		r.Get("/mail/status", a.mailStatus)
+		r.Get("/mail/queue", a.mailQueue)
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(a.require(model.RoleOperator))
 		r.Post("/certificates/{id}/renew", a.renewCert)
 		r.Get("/mail/health", a.mailHealth)
 		r.Post("/mail/queue/retry", a.mailRetryAll)
@@ -118,8 +156,6 @@ func (a *API) routes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleAdmin))
 		r.Post("/sites", a.createSite)
-		r.Put("/sites/{id}", a.updateSite)
-		r.Delete("/sites/{id}", a.deleteSite)
 		r.Post("/certificates/acme", a.requestCert)
 		r.Post("/certificates/import", a.importCert)
 		r.Post("/certificates/selfsigned", a.selfSignedCert)
@@ -204,11 +240,12 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var u *store.UserRecord
+		var tok *model.APIToken
 		var err error
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			u, err = a.c.Auth.TokenUser(ctx, strings.TrimPrefix(h, "Bearer "))
+			u, tok, err = a.c.Auth.Token(ctx, strings.TrimPrefix(h, "Bearer "))
 			if err == nil {
-				ctx = context.WithValue(ctx, ctxToken, true)
+				ctx = context.WithValue(ctx, ctxToken, tok)
 			}
 		} else if ck, cerr := r.Cookie(auth.SessionCookie); cerr == nil {
 			u, err = a.c.Auth.Session(ctx, ck.Value)
@@ -219,26 +256,12 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "not signed in")
 			return
 		}
+		// The access is worked out once per request, from the user as
+		// stored now, so a changed role or grant applies immediately to
+		// sessions and tokens alike.
+		ctx = withAccess(ctx, auth.UserAccess(&u.User).Restrict(tok))
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxUser, u)))
 	})
-}
-
-func (a *API) require(role model.Role) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			u := user(r)
-			if !auth.Allowed(u.Role, role) {
-				writeErr(w, http.StatusForbidden, "your role does not allow this")
-				return
-			}
-			// A user who must change their password can do nothing else.
-			if u.MustChange && r.Context().Value(ctxToken) == nil {
-				writeErr(w, http.StatusForbidden, "change your password first")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 func user(r *http.Request) *store.UserRecord {

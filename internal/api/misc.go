@@ -15,7 +15,13 @@ import (
 )
 
 func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.c.ServerInfo())
+	info := a.c.ServerInfo()
+	if access(r).SiteScoped() {
+		// What the console's frame shows; the rest (data folder,
+		// listeners, load, admin URL) is the server's business.
+		info = model.ServerInfo{Version: info.Version, Commit: info.Commit, Hostname: info.Hostname, Listeners: []string{}}
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 func (a *API) serverMetrics(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +35,20 @@ func (a *API) serverMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listEvents(w http.ResponseWriter, r *http.Request) {
-	list, err := a.c.Store.ListEvents(r.Context(), r.URL.Query().Get("siteId"), intParam(r, "limit", 100, 1000))
+	siteID, limit := r.URL.Query().Get("siteId"), intParam(r, "limit", 100, 1000)
+	var list []model.Event
+	var err error
+	switch acc := access(r); {
+	case !acc.SiteScoped():
+		list, err = a.c.Store.ListEvents(r.Context(), siteID, limit)
+	case siteID != "":
+		list = []model.Event{}
+		if acc.CanSee(siteID) {
+			list, err = a.c.Store.ListEvents(r.Context(), siteID, limit)
+		}
+	default:
+		list, err = a.c.Store.ListSiteEvents(r.Context(), acc.SiteIDs(), limit)
+	}
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -48,15 +67,17 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 // stream pushes every site's status every two seconds and events as they
-// happen, so the UI never has to poll.
+// happen, so the UI never has to poll. A site-scoped caller gets only their
+// sites' status and events.
 func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	events, cancel := a.c.Bus.Subscribe()
 	defer cancel()
+	acc := access(r)
 	s := newSSE(w)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 	sendStatus := func() error {
-		sites := a.c.Sites()
+		sites := visibleSites(acc, a.c.Sites())
 		out := make([]model.SiteStatus, 0, len(sites))
 		for _, site := range sites {
 			out = append(out, a.c.Status(site))
@@ -71,11 +92,15 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case e := <-events:
+			if !eventVisible(acc, e) {
+				continue
+			}
 			if s.send("event", e) != nil {
 				return
 			}
 		case <-tick.C:
-			if sendStatus() != nil {
+			var ok bool
+			if acc, ok = a.currentAccess(r); !ok || sendStatus() != nil {
 				return
 			}
 		}
@@ -265,7 +290,7 @@ func (a *API) prometheus(w http.ResponseWriter, r *http.Request) {
 	metric := func(name, help, typ string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
 	}
-	sites := a.c.Sites()
+	sites := visibleSites(access(r), a.c.Sites())
 	statuses := make([]model.SiteStatus, len(sites))
 	for i, s := range sites {
 		statuses[i] = a.c.Status(s)
@@ -309,6 +334,11 @@ func (a *API) prometheus(w http.ResponseWriter, r *http.Request) {
 		for _, in := range statuses[i].Instances {
 			fmt.Fprintf(&b, "nodehoster_instance_restarts_total{%s,instance=\"%d\"} %d\n", label(s), in.Index, in.Restarts)
 		}
+	}
+	if access(r).SiteScoped() {
+		// Certificates are server-wide.
+		io.WriteString(w, b.String())
+		return
 	}
 	metric("nodehoster_certificate_expiry_seconds", "Seconds until a certificate expires", "gauge")
 	if list, err := a.c.Store.ListCertificates(r.Context()); err == nil {

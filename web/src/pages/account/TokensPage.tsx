@@ -1,21 +1,24 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
-import { tokensApi } from '@/api/endpoints';
+import { sitesApi, tokensApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
-import type { CreatedToken } from '@/api/types';
+import type { CreatedToken, Role } from '@/api/types';
 import { Button, IconButton } from '@/components/Button';
 import { Card, Callout, EmptyState, Loading, Mono, PageHeader } from '@/components/Layout';
 import { Table, TBody, Td, Th, THead, Tr } from '@/components/Table';
 import { Dialog } from '@/components/Dialog';
-import { ErrorBox, Field } from '@/components/Field';
+import { ErrorBox, Field, FormErrorBanner, FormErrors } from '@/components/Field';
+import { Checkbox, Switch } from '@/components/Switch';
 import { Input, Select } from '@/components/Input';
 import { CopyField } from '@/components/CopyButton';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { daysUntil, formatDate, relativeTime } from '@/lib/format';
 import { Badge } from '@/components/Badge';
+import { usePermissions } from '@/hooks/useAuth';
+import { describeTokenRestriction, tokenRoleChoices } from '@/lib/access';
 
 export function TokensPage() {
   const q = useQuery({ queryKey: qk.tokens, queryFn: tokensApi.list });
@@ -34,6 +37,8 @@ export function TokensPage() {
   });
 
   const tokens = q.data ?? [];
+  const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000 });
+  const siteName = (id: string) => sites.data?.find((s) => s.id === id)?.name;
 
   return (
     <div>
@@ -42,7 +47,7 @@ export function TokensPage() {
         icon={<KeyRound className="h-4 w-4" />}
         description={
           <>
-            Personal tokens for automation and CI. Send them as <Mono>Authorization: Bearer nh_…</Mono>. Tokens act with your role.
+            Personal tokens for automation and CI. Send them as <Mono>Authorization: Bearer nh_…</Mono>. Tokens act with your access, or less if you restrict them.
           </>
         }
         actions={
@@ -75,6 +80,7 @@ export function TokensPage() {
               <tr>
                 <Th>Name</Th>
                 <Th>Token</Th>
+                <Th>Access</Th>
                 <Th>Created</Th>
                 <Th>Last used</Th>
                 <Th>Expires</Th>
@@ -90,6 +96,7 @@ export function TokensPage() {
                     <Td>
                       <Mono className="text-zinc-500">{t.prefix}…</Mono>
                     </Td>
+                    <Td className="text-zinc-500">{describeTokenRestriction(t, siteName)}</Td>
                     <Td className="text-zinc-500">{formatDate(t.createdAt)}</Td>
                     <Td className="text-zinc-500">{t.lastUsed ? relativeTime(t.lastUsed) : 'Never'}</Td>
                     <Td>
@@ -134,8 +141,16 @@ function CreateTokenDialog({ open, onClose }: { open: boolean; onClose: () => vo
   const [name, setName] = useState('');
   const [days, setDays] = useState('90');
   const [created, setCreated] = useState<CreatedToken | null>(null);
+  const { access } = usePermissions();
+  const [restrict, setRestrict] = useState(false);
+  const [role, setRole] = useState<Role | ''>('');
+  const [siteIds, setSiteIds] = useState<string[]>([]);
+  // The sites list holds exactly the sites you can access.
+  const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000, enabled: open && restrict });
+  const roleChoices = tokenRoleChoices(access, siteIds.length > 0);
   const m = useMutation({
-    mutationFn: () => tokensApi.create(name.trim(), days === '0' ? undefined : Number(days)),
+    mutationFn: () =>
+      tokensApi.create(name.trim(), days === '0' ? undefined : Number(days), restrict ? { role: roleChoices.includes(role as Role) ? role : '', siteIds } : undefined),
     onSuccess: (t) => {
       setCreated(t);
       void qc.invalidateQueries({ queryKey: qk.tokens });
@@ -145,6 +160,9 @@ function CreateTokenDialog({ open, onClose }: { open: boolean; onClose: () => vo
   const close = () => {
     setName('');
     setDays('90');
+    setRestrict(false);
+    setRole('');
+    setSiteIds([]);
     setCreated(null);
     m.reset();
     onClose();
@@ -189,25 +207,63 @@ function CreateTokenDialog({ open, onClose }: { open: boolean; onClose: () => vo
         </>
       }
     >
-      <div className="space-y-3">
-        {m.isError && <ErrorBox>{errorMessage(m.error)}</ErrorBox>}
-        <Field label="Name" hint="What will use it, e.g. “GitHub Actions deploy” or “Prometheus”.">
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
-        </Field>
-        <Field label="Expires">
-          <Select
-            value={days}
-            onChange={setDays}
-            options={[
-              { value: '7', label: 'In 7 days' },
-              { value: '30', label: 'In 30 days' },
-              { value: '90', label: 'In 90 days' },
-              { value: '365', label: 'In 1 year' },
-              { value: '0', label: 'Never' },
-            ]}
+      <FormErrors error={m.error}>
+        <div className="space-y-3">
+          <FormErrorBanner />
+          <Field label="Name" path="name" hint="What will use it, e.g. “GitHub Actions deploy” or “Prometheus”.">
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
+          </Field>
+          <Field label="Expires">
+            <Select
+              value={days}
+              onChange={setDays}
+              options={[
+                { value: '7', label: 'In 7 days' },
+                { value: '30', label: 'In 30 days' },
+                { value: '90', label: 'In 90 days' },
+                { value: '365', label: 'In 1 year' },
+                { value: '0', label: 'Never' },
+              ]}
+            />
+          </Field>
+          <Switch
+            checked={restrict}
+            onChange={setRestrict}
+            label="Restrict this token"
+            description="Give it less than your own access, e.g. a CI token that can only deploy one site. It never has more than you have."
           />
-        </Field>
-      </div>
+          {restrict && (
+            <>
+              <Field label="Maximum role" path="role">
+                <Select
+                  value={roleChoices.includes(role as Role) ? role : ''}
+                  onChange={(v) => setRole(v as Role | '')}
+                  options={[{ value: '', label: 'Same as mine' }, ...roleChoices.map((r) => ({ value: r, label: r[0].toUpperCase() + r.slice(1) }))]}
+                />
+              </Field>
+              <Field label="Sites" path="siteIds" prefix hint="None selected: every site you can access. With sites, the token can do nothing server-wide.">
+                {sites.isError ? (
+                  <ErrorBox>{errorMessage(sites.error)}</ErrorBox>
+                ) : (
+                  <div className="max-h-48 space-y-1.5 overflow-y-auto rounded-md border border-zinc-200 p-2.5 dark:border-zinc-800">
+                    {(sites.data ?? []).length === 0 && <p className="text-[13px] text-zinc-500">{sites.isPending ? 'Loading sites…' : 'There are no sites.'}</p>}
+                    {[...(sites.data ?? [])]
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((s) => (
+                        <Checkbox
+                          key={s.id}
+                          label={s.name}
+                          checked={siteIds.includes(s.id)}
+                          onChange={(on) => setSiteIds((ids) => (on ? [...ids, s.id] : ids.filter((x) => x !== s.id)))}
+                        />
+                      ))}
+                  </div>
+                )}
+              </Field>
+            </>
+          )}
+        </div>
+      </FormErrors>
     </Dialog>
   );
 }

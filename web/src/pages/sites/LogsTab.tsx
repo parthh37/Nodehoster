@@ -12,7 +12,7 @@ import { ErrorBox } from '@/components/Field';
 import { Checkbox } from '@/components/Switch';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
-import { usePermissions } from '@/hooks/useAuth';
+import { useSitePermissions } from '@/hooks/useAuth';
 import { formatTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -35,7 +35,7 @@ export function LogsTab({ site }: { site: SiteView }) {
   const pausedRef = useRef(false);
   const bufferRef = useRef<LogLine[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   const confirm = useConfirm();
   const toast = useToast();
 

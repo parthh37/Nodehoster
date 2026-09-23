@@ -217,7 +217,7 @@ type usersPage struct {
 
 func (s *usersPage) init(m *manager) *page {
 	s.title = func() string { return "Web console users" }
-	s.load = func() { loadInto(m, "/api/users", func(v []model.User) { s.users = v; s.redraw() }) }
+	s.load = func() { loadInto(m, "/api/users", func(v []model.User) { s.users = v; s.redraw(m) }) }
 	s.list.onSelect = s.enable
 	s.list.color = func(row, col int) (walk.Color, bool) {
 		if row < len(s.users) && s.users[row].Disabled {
@@ -230,7 +230,7 @@ func (s *usersPage) init(m *manager) *page {
 
 func (s *usersPage) content(m *manager) []Widget {
 	return []Widget{
-		s.list.view(nil, col("User name", 180), col("Role", 90), col("Two-factor", 90), col("Status", 90), col("Last sign-in", 160)),
+		s.list.view(nil, col("User name", 180), col("Role", 90), col("Site access", 160), col("Two-factor", 90), col("Status", 90), col("Last sign-in", 160)),
 		Label{Text: "These accounts sign in to the web console. The desktop manager needs none: Windows administrators use it directly.", TextColor: colorMuted},
 	}
 }
@@ -243,12 +243,12 @@ func (s *usersPage) actionsPane(m *manager) []Widget {
 		link(&s.resetPassword, "Reset password…", func() { s.setPassword(m) }),
 		link(&s.resetTOTP, "Reset two-factor…", func() { s.resetTwoFactor(m) }),
 		link(&s.toggle, "Disable", func() { s.toggleDisabled(m) }),
-		link(&s.role, "Change role…", func() { s.changeRole(m) }),
+		link(&s.role, "Role and site access…", func() { s.changeAccess(m) }),
 		link(&s.del, "Delete…", func() { s.remove(m) }),
 	}
 }
 
-func (s *usersPage) redraw() {
+func (s *usersPage) redraw(m *manager) {
 	keys := make([]string, len(s.users))
 	rows := make([][]string, len(s.users))
 	for i, u := range s.users {
@@ -261,7 +261,7 @@ func (s *usersPage) redraw() {
 			status = "Disabled"
 		}
 		keys[i] = u.ID
-		rows[i] = []string{u.Username, string(u.Role), map[bool]string{true: "On", false: "Off"}[u.TOTPEnabled], status, last}
+		rows[i] = []string{u.Username, string(u.Role), siteAccessLabel(m, u), map[bool]string{true: "On", false: "Off"}[u.TOTPEnabled], status, last}
 	}
 	s.list.set(keys, rows)
 	s.enable()
@@ -304,13 +304,13 @@ func (s *usersPage) add(m *manager) {
 	if !ok || strings.TrimSpace(name) == "" {
 		return
 	}
-	role, ok := choiceDialog(m.mw, "Add user", "Role of "+name+":", []string{"admin", "operator", "viewer"}, 2)
+	role, grants, ok := accessDialog(m, "Add user — access of "+name, model.RoleViewer, nil)
 	if !ok {
 		return
 	}
 	pw := randomPassword()
 	m.do("Adding "+name, func(ctx context.Context) error {
-		err := m.cl.Post(ctx, "/api/users", map[string]any{"username": strings.TrimSpace(name), "password": pw, "role": role}, nil)
+		err := m.cl.Post(ctx, "/api/users", map[string]any{"username": strings.TrimSpace(name), "password": pw, "role": role, "sites": grants}, nil)
 		if err == nil {
 			m.mw.Synchronize(func() {
 				showSecretDialog(m.mw, "User added", name+" signs in with this password once, then chooses their own:", pw)
@@ -345,20 +345,13 @@ func (s *usersPage) toggleDisabled(m *manager) {
 	}
 }
 
-func (s *usersPage) changeRole(m *manager) {
+func (s *usersPage) changeAccess(m *manager) {
 	u := s.current()
 	if u == nil {
 		return
 	}
-	roles := []string{"admin", "operator", "viewer"}
-	cur := 0
-	for i, r := range roles {
-		if string(u.Role) == r {
-			cur = i
-		}
-	}
-	if role, ok := choiceDialog(m.mw, "Change role", "Role of "+u.Username+":", roles, cur); ok {
-		s.put(m, u, "Changing the role", map[string]any{"role": role}, nil)
+	if role, grants, ok := accessDialog(m, "Role and site access — "+u.Username, u.Role, u.Sites); ok {
+		s.put(m, u, "Changing the access", map[string]any{"role": role, "sites": grants}, nil)
 	}
 }
 

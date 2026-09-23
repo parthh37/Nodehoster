@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -14,14 +15,15 @@ type UserRecord struct {
 	MustChange bool
 }
 
-const userCols = `id, username, role, password_hash, totp_secret, totp_enabled, disabled, must_change, last_login, created`
+const userCols = `id, username, role, password_hash, totp_secret, totp_enabled, disabled, must_change, last_login, created, sites`
 
 func scanUser(sc interface{ Scan(...any) error }) (*UserRecord, error) {
 	var u UserRecord
 	var role string
 	var lastLogin sql.NullInt64
 	var created int64
-	err := sc.Scan(&u.ID, &u.Username, &role, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.MustChange, &lastLogin, &created)
+	var sites sql.NullString
+	err := sc.Scan(&u.ID, &u.Username, &role, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.MustChange, &lastLogin, &created, &sites)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -29,6 +31,14 @@ func scanUser(sc interface{ Scan(...any) error }) (*UserRecord, error) {
 		return nil, err
 	}
 	u.Role = model.Role(role)
+	if u.Role == model.RoleSites {
+		u.Sites = []model.SiteGrant{}
+		if sites.Valid {
+			if err := json.Unmarshal([]byte(sites.String), &u.Sites); err != nil {
+				return nil, err
+			}
+		}
+	}
 	u.CreatedAt = fromMS(created)
 	if lastLogin.Valid {
 		t := fromMS(lastLogin.Int64)
@@ -72,12 +82,26 @@ func (s *Store) PutUser(ctx context.Context, u *UserRecord) error {
 	if u.LastLogin != nil {
 		lastLogin = ms(*u.LastLogin)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// Grants are stored only for a site-scoped user, so a role change away
+	// from "sites" cannot leave grants behind to resurface later.
+	var sites any
+	if u.Role == model.RoleSites {
+		grants := u.Sites
+		if grants == nil {
+			grants = []model.SiteGrant{}
+		}
+		data, err := json.Marshal(grants)
+		if err != nil {
+			return err
+		}
+		sites = string(data)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET username = excluded.username, role = excluded.role,
 		password_hash = excluded.password_hash, totp_secret = excluded.totp_secret,
 		totp_enabled = excluded.totp_enabled, disabled = excluded.disabled,
-		must_change = excluded.must_change, last_login = excluded.last_login`,
-		u.ID, u.Username, string(u.Role), u.PasswordHash, u.TOTPSecret, u.TOTPEnabled, u.Disabled, u.MustChange, lastLogin, ms(u.CreatedAt))
+		must_change = excluded.must_change, last_login = excluded.last_login, sites = excluded.sites`,
+		u.ID, u.Username, string(u.Role), u.PasswordHash, u.TOTPSecret, u.TOTPEnabled, u.Disabled, u.MustChange, lastLogin, ms(u.CreatedAt), sites)
 	if isUniqueViolation(err) {
 		return errors.New("username already exists")
 	}
@@ -138,8 +162,16 @@ func (s *Store) CreateToken(ctx context.Context, t *model.APIToken) error {
 	if t.ExpiresAt != nil {
 		exp = ms(*t.ExpiresAt)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO tokens (id, user_id, name, prefix, hash, expires, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.UserID, t.Name, t.Prefix, t.Hash, exp, ms(t.CreatedAt))
+	var siteIDs any // NULL: not restricted to sites
+	if t.SiteIDs != nil {
+		data, err := json.Marshal(t.SiteIDs)
+		if err != nil {
+			return err
+		}
+		siteIDs = string(data)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO tokens (id, user_id, name, prefix, hash, expires, created, role, site_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.UserID, t.Name, t.Prefix, t.Hash, exp, ms(t.CreatedAt), string(t.Role), siteIDs)
 	return err
 }
 
@@ -147,13 +179,26 @@ func scanToken(sc interface{ Scan(...any) error }) (*model.APIToken, error) {
 	var t model.APIToken
 	var exp, used sql.NullInt64
 	var created int64
-	if err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &t.Hash, &exp, &used, &created); err != nil {
+	var role string
+	var siteIDs sql.NullString
+	if err := sc.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &t.Hash, &exp, &used, &created, &role, &siteIDs); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	t.CreatedAt = fromMS(created)
+	t.Role = model.Role(role)
+	if siteIDs.Valid {
+		// Never nil once restricted: nil means "every site".
+		t.SiteIDs = []string{}
+		if err := json.Unmarshal([]byte(siteIDs.String), &t.SiteIDs); err != nil {
+			return nil, err
+		}
+		if t.SiteIDs == nil {
+			t.SiteIDs = []string{}
+		}
+	}
 	if exp.Valid {
 		v := fromMS(exp.Int64)
 		t.ExpiresAt = &v
@@ -165,7 +210,7 @@ func scanToken(sc interface{ Scan(...any) error }) (*model.APIToken, error) {
 	return &t, nil
 }
 
-const tokenCols = `id, user_id, name, prefix, hash, expires, last_used, created`
+const tokenCols = `id, user_id, name, prefix, hash, expires, last_used, created, role, site_ids`
 
 func (s *Store) ListTokens(ctx context.Context, userID string) ([]*model.APIToken, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+tokenCols+` FROM tokens WHERE user_id = ? ORDER BY created DESC`, userID)
