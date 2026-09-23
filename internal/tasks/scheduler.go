@@ -503,7 +503,6 @@ func (s *Scheduler) finish(r *run, status string, code *int, msg string) {
 	r.rec.Status, r.rec.FinishedAt, r.rec.ExitCode, r.rec.Error = status, &now, code, msg
 	rec := *r.rec
 	discard := r.discard
-	delete(s.runs, rec.ID)
 	var next *pending
 	taskGone := true
 	if ss := s.sites[rec.SiteID]; ss != nil {
@@ -532,6 +531,11 @@ func (s *Scheduler) finish(r *run, status string, code *int, msg string) {
 	if r.log != nil {
 		r.log.close() // after the record: a log viewer reads it when the log ends
 	}
+	// Only now is the run no longer in progress for Subscribe: a viewer
+	// told so reads the complete log and the final record.
+	s.mu.Lock()
+	delete(s.runs, rec.ID)
+	s.mu.Unlock()
 	if !discard {
 		name := r.site.Name
 		switch status {
@@ -637,15 +641,21 @@ func (s *Scheduler) Views(site *model.Site) ([]model.TaskView, error) {
 	return out, nil
 }
 
-// Subscribe follows the output of a run in progress. ok is false when it
-// is not in progress (read its log file instead).
-func (s *Scheduler) Subscribe(runID string) (lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
+// Subscribe follows the output of a run in progress: backlog is what it
+// wrote so far and lines what it writes next, each chunk in exactly one of
+// them (the backlog is read up to where the subscription starts, so a line
+// written in between is neither sent twice nor lost). ok is false when it
+// is not in progress: its log file is then complete and its record final.
+func (s *Scheduler) Subscribe(runID string) (backlog []byte, lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
 	s.mu.Lock()
-	r := s.runs[runID]
-	s.mu.Unlock()
-	if r == nil || r.log == nil {
-		return nil, nil, func() {}, false
+	var l *runLog
+	if r := s.runs[runID]; r != nil {
+		l = r.log
 	}
-	ch, unsub := r.log.subscribe()
-	return ch, r.log.done, unsub, true
+	s.mu.Unlock()
+	if l == nil {
+		return nil, nil, nil, func() {}, false
+	}
+	ch, offset, unsub := l.subscribe()
+	return readPrefix(l.path, offset), ch, l.done, unsub, true
 }

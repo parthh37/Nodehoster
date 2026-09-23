@@ -600,7 +600,7 @@ func TestDeployZipSucceeds(t *testing.T) {
 	if len(evs) == 0 || evs[0].Type != events.DeploySucceeded {
 		t.Errorf("events = %+v, want a deploy.succeeded event", evs)
 	}
-	if _, _, _, ok := h.d.Subscribe(dep.ID); ok {
+	if _, _, _, _, ok := h.d.Subscribe(dep.ID); ok {
 		t.Error("Subscribe reports a finished deployment as running")
 	}
 }
@@ -734,18 +734,11 @@ func TestDeployIsExclusivePerSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines, done, cancel, ok := h.d.Subscribe(first.ID)
+	history, lines, done, cancel, ok := h.d.Subscribe(first.ID)
 	if !ok {
 		t.Fatal("Subscribe: running deployment not found")
 	}
 	defer cancel()
-	// The stream is live only: what was written before Subscribe is in the
-	// log file. Read it after subscribing, as the API does, so no line
-	// falls in between.
-	history, err := h.d.Log(site.ID, first.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	second := writeZip(t, h.root, "2.zip", []zipEntry{{name: "b.txt"}})
 	if _, err := h.d.DeployZip(context.Background(), site, second, "u"); !errors.Is(err, ErrBusy) {
@@ -787,8 +780,8 @@ loop:
 		}
 		break
 	}
-	if all := string(history) + streamed.String(); !strings.Contains(all, "extracting archive") {
-		t.Errorf("log file and live stream missed early output: %q", all)
+	if all := string(history) + streamed.String(); strings.Count(all, "extracting archive") != 1 {
+		t.Errorf("backlog and live stream do not have the early output exactly once: %q", all)
 	}
 	// Activation waits on the gate, opened after Subscribe: its outcome
 	// must reach the stream.
@@ -1173,5 +1166,46 @@ func TestDeployGitWithoutTokenSetsNoAuthHeader(t *testing.T) {
 	}
 	if !strings.Contains(calls, "--branch\x00feature/x") {
 		t.Errorf("the requested branch was not cloned:\n%q", calls)
+	}
+}
+
+// TestLogSubscribeSplitsOutput: a viewer gets what was written before it
+// subscribed from the file and the rest live, each line once. The stream
+// used to subscribe and then read the whole file, so a line written in
+// between came twice (the console showed "extracting archive" twice).
+func TestLogSubscribeSplitsOutput(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "dep.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &depLog{f: f, path: path, subs: map[chan string]struct{}{}, done: make(chan struct{})}
+	defer f.Close()
+	l.printf("before")
+	ch, offset, cancel := l.subscribe()
+	defer cancel()
+	// Written after subscribing and before the file is read: the window.
+	l.printf("extracting archive")
+	backlog := string(readPrefix(path, offset))
+	if !strings.HasSuffix(backlog, "before\n") || strings.Contains(backlog, "extracting") {
+		t.Fatalf("backlog = %q, want the line written before subscribing only", backlog)
+	}
+	select {
+	case live := <-ch:
+		if !strings.HasSuffix(live, "extracting archive\n") {
+			t.Fatalf("live = %q", live)
+		}
+	default:
+		t.Fatal("the line written after subscribing was not sent live")
+	}
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected live output %q", extra)
+	default:
+	}
+	// The file itself has everything, for viewers of the finished log.
+	if data, _ := os.ReadFile(path); strings.Count(string(data), "\n") != 2 {
+		t.Fatalf("log file = %q", data)
 	}
 }

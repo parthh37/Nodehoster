@@ -549,3 +549,36 @@ func TestRunLogIsCapped(t *testing.T) {
 		t.Fatalf("log is %d bytes; tail %q", len(data), data[max(0, len(data)-120):])
 	}
 }
+
+// TestRunLogSubscribeSplitsOutput: a log viewer gets what was written
+// before it subscribed from the file and the rest live, each line once (a
+// line written between subscribing and reading the file used to come
+// twice).
+func TestRunLogSubscribeSplitsOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	l, err := openRunLog(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.printf("started")
+	ch, offset, cancel := l.subscribe()
+	defer cancel()
+	l.Write([]byte("output\n")) // after subscribing, before the file is read
+	if backlog := string(readPrefix(path, offset)); !strings.HasSuffix(backlog, "started\n") || strings.Contains(backlog, "output") {
+		t.Fatalf("backlog = %q, want the line written before subscribing only", backlog)
+	}
+	select {
+	case live := <-ch:
+		if live != "output\n" {
+			t.Fatalf("live = %q", live)
+		}
+	default:
+		t.Fatal("the output written after subscribing was not sent live")
+	}
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected live output %q", extra)
+	default:
+	}
+}

@@ -153,13 +153,16 @@ func (a *API) runLogStream(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		return
 	}
-	// Subscribe before reading what was written so far: a line may come
-	// twice, but none is lost.
-	lines, done, cancel, running := a.c.Tasks.Subscribe(run.ID)
+	// What was written so far, then the live output: the backlog ends
+	// exactly where the live lines begin, so none is sent twice or lost.
+	backlog, lines, done, cancel, running := a.c.Tasks.Subscribe(run.ID)
 	defer cancel()
+	if !running && run.LogPath != "" {
+		backlog, _ = os.ReadFile(run.LogPath)
+	}
 	stream := newSSE(w)
-	if data, err := os.ReadFile(run.LogPath); run.LogPath != "" && err == nil && len(data) > 0 {
-		stream.send("log", string(data))
+	if len(backlog) > 0 {
+		stream.send("log", string(backlog))
 	}
 	finish := func() {
 		if rec, err := a.c.Store.GetTaskRun(r.Context(), run.ID); err == nil {

@@ -445,12 +445,17 @@ func (a *API) deploymentLogStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "log not found")
 		return
 	}
-	lines, done, cancel, running := a.c.Deploy.Subscribe(depID)
+	// Send what has been written so far, then follow. The backlog ends
+	// exactly where the live lines begin, or a line written while this
+	// request starts would be sent twice.
+	backlog, lines, done, cancel, running := a.c.Deploy.Subscribe(depID)
 	defer cancel()
+	if !running {
+		backlog, _ = a.c.Deploy.Log(s.ID, depID)
+	}
 	stream := newSSE(w)
-	// Send what has been written so far, then follow.
-	if data, err := a.c.Deploy.Log(s.ID, depID); err == nil && len(data) > 0 {
-		stream.send("log", string(data))
+	if len(backlog) > 0 {
+		stream.send("log", string(backlog))
 	}
 	finish := func() {
 		if dep, err := a.c.Store.GetDeployment(r.Context(), depID); err == nil {

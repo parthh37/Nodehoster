@@ -60,16 +60,19 @@ func New(opts Options) *Deployer {
 
 // depLog is a deployment's output: written to a file and streamed live.
 type depLog struct {
-	mu   sync.Mutex
-	f    *os.File
-	subs map[chan string]struct{}
-	done chan struct{}
+	mu      sync.Mutex
+	f       *os.File
+	path    string
+	written int64 // bytes in the file so far
+	subs    map[chan string]struct{}
+	done    chan struct{}
 }
 
 func (l *depLog) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n, err := l.f.Write(p)
+	l.written += int64(n)
 	s := string(p)
 	for ch := range l.subs {
 		select {
@@ -93,24 +96,49 @@ func (d *Deployer) Log(siteID, depID string) ([]byte, error) {
 	return os.ReadFile(d.logPath(siteID, depID))
 }
 
-// Subscribe streams a running deployment's output. The done channel closes
-// when it finishes. It returns ok=false when the deployment is not running.
-func (d *Deployer) Subscribe(depID string) (lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
+// subscribe adds a live subscriber and returns how many bytes of the file
+// were written before it: those are not sent to it, everything after is.
+func (l *depLog) subscribe() (ch chan string, offset int64, cancel func()) {
+	ch = make(chan string, 256)
+	l.mu.Lock()
+	l.subs[ch] = struct{}{}
+	offset = l.written
+	l.mu.Unlock()
+	return ch, offset, func() {
+		l.mu.Lock()
+		delete(l.subs, ch)
+		l.mu.Unlock()
+	}
+}
+
+// Subscribe follows a running deployment: backlog is its output so far
+// and lines what it writes next, each chunk in exactly one of them (the
+// backlog is read up to where the subscription starts, so a line written
+// in between is neither sent twice nor lost). The done channel closes
+// when it finishes. It returns ok=false when the deployment is not
+// running: its log file (Log) is then complete.
+func (d *Deployer) Subscribe(depID string) (backlog []byte, lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
 	d.mu.Lock()
 	l := d.logs[depID]
 	d.mu.Unlock()
 	if l == nil {
-		return nil, nil, func() {}, false
+		return nil, nil, nil, func() {}, false
 	}
-	ch := make(chan string, 256)
-	l.mu.Lock()
-	l.subs[ch] = struct{}{}
-	l.mu.Unlock()
-	return ch, l.done, func() {
-		l.mu.Lock()
-		delete(l.subs, ch)
-		l.mu.Unlock()
-	}, true
+	ch, offset, cancel := l.subscribe()
+	return readPrefix(l.path, offset), ch, l.done, cancel, true
+}
+
+// readPrefix reads the first n bytes of a file. The file only grows, so
+// they do not change while it is being written to.
+func readPrefix(path string, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, n)
+	m, _ := io.ReadFull(f, buf)
+	return buf[:m]
 }
 
 func newReleaseID() string {
@@ -141,7 +169,7 @@ func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user str
 		d.finish(site.ID, id)
 		return nil, nil, err
 	}
-	l := &depLog{f: f, subs: map[chan string]struct{}{}, done: make(chan struct{})}
+	l := &depLog{f: f, path: lp, subs: map[chan string]struct{}{}, done: make(chan struct{})}
 	d.mu.Lock()
 	d.logs[id] = l
 	d.mu.Unlock()

@@ -448,7 +448,7 @@ func (e *env) waitDeployment(siteID, depID string, auth []opt) model.Deployment 
 		expect(e.t, rec, http.StatusOK)
 		for _, d := range decodeJSON[[]model.Deployment](e.t, rec) {
 			if d.ID == depID && d.Status != "running" {
-				_, _, cancel, running := e.c.Deploy.Subscribe(depID)
+				_, _, _, cancel, running := e.c.Deploy.Subscribe(depID)
 				cancel()
 				if !running {
 					time.Sleep(20 * time.Millisecond) // log file closes right after

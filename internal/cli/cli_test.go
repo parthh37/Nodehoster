@@ -298,7 +298,7 @@ func TestDeployReleasesRollback(t *testing.T) {
 	s.run("rollback", "shop").expect(t, ExitError) // no release yet
 
 	r := s.run("deploy", "shop", "--zip", v1).expect(t, ExitOK)
-	if !strings.Contains(r.stdout, "extracting archive") || !strings.Contains(r.stdout, "succeeded.") {
+	if strings.Count(r.stdout, "extracting archive") != 1 || !strings.Contains(r.stdout, "succeeded.") {
 		t.Fatalf("deploy output:\n%s", r.stdout)
 	}
 	// With --json the log goes to stderr and stdout is the deployment.
