@@ -25,6 +25,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/core"
+	"github.com/parthh37/nodehoster/internal/localapi/localserver"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -213,18 +214,25 @@ func run(dataDir string, stop <-chan struct{}, isService bool) error {
 		}
 	}
 
+	// A web console that cannot start (its port is taken, its certificate
+	// is gone) is reported, not fatal: the sites keep running and the
+	// desktop manager, over the local pipe, can fix the console settings.
 	admin, err := adminServer(c)
 	if err != nil {
-		c.Shutdown()
-		return fmt.Errorf("admin console: %w", err)
+		c.AdminError = err.Error()
+		log.Error("the web console is not available; use NodeHoster Manager to change its settings", "err", err)
 	}
+	local := localserver.Serve(c)
 	c.Start()
 
 	<-stop
 	log.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	admin.Shutdown(ctx)
-	cancel()
+	if admin != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		admin.Shutdown(ctx)
+		cancel()
+	}
+	local.Close()
 	c.Shutdown()
 	log.Info("stopped")
 	return nil
@@ -251,6 +259,11 @@ func adminServer(c *core.Core) (*http.Server, error) {
 		go srv.Serve(ln)
 	case "certificate":
 		id := cfg.CertificateID
+		if c.Certs.Get(id) == nil {
+			// It listens, but every handshake will fail until the
+			// certificate is back or the console setting is changed.
+			c.AdminError = "the web console's certificate is not available; browsers cannot connect"
+		}
 		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if cert := c.Certs.Get(id); cert != nil {
 				return cert, nil
@@ -273,6 +286,7 @@ func adminServer(c *core.Core) (*http.Server, error) {
 	if cfg.TLS == "none" {
 		scheme = "http"
 	}
-	c.Log.Info("admin console listening", "url", fmt.Sprintf("%s://%s", scheme, cfg.Listen))
+	c.AdminURL = fmt.Sprintf("%s://%s", scheme, cfg.Listen)
+	c.Log.Info("admin console listening", "url", c.AdminURL)
 	return srv, nil
 }

@@ -4,9 +4,12 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -168,25 +171,58 @@ func Stop() error {
 	return waitState(s, svc.Stopped, 90*time.Second)
 }
 
+// Status returns the service state: running, stopped, starting, stopping,
+// paused or "not installed". It asks only for the right to query status,
+// which the SCM grants to interactive users, so unelevated processes such
+// as the notification-area icon can call it.
 func Status() (string, error) {
-	m, err := mgr.Connect()
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {
 		return "", err
 	}
-	defer m.Disconnect()
-	s, err := m.OpenService(Name)
-	if err != nil {
+	defer windows.CloseServiceHandle(m)
+	name, _ := windows.UTF16PtrFromString(Name)
+	h, err := windows.OpenService(m, name, windows.SERVICE_QUERY_STATUS)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return "not installed", nil
 	}
-	defer s.Close()
-	st, err := s.Query()
 	if err != nil {
+		return "", err
+	}
+	defer windows.CloseServiceHandle(h)
+	var st windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(h, &st); err != nil {
 		return "", err
 	}
 	return map[svc.State]string{
 		svc.Stopped: "stopped", svc.StartPending: "starting", svc.StopPending: "stopping",
-		svc.Running: "running", svc.Paused: "paused",
-	}[st.State], nil
+		svc.Running: "running", svc.Paused: "paused", svc.ContinuePending: "starting", svc.PausePending: "stopping",
+	}[svc.State(st.CurrentState)], nil
+}
+
+// ProcessID returns the process ID of the running service, or 0 when it
+// is not running. Like Status, it needs only the right to query status.
+func ProcessID() (uint32, error) {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseServiceHandle(m)
+	name, _ := windows.UTF16PtrFromString(Name)
+	h, err := windows.OpenService(m, name, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseServiceHandle(h)
+	var st windows.SERVICE_STATUS_PROCESS
+	var needed uint32
+	if err := windows.QueryServiceStatusEx(h, windows.SC_STATUS_PROCESS_INFO, (*byte)(unsafe.Pointer(&st)), uint32(unsafe.Sizeof(st)), &needed); err != nil {
+		return 0, err
+	}
+	if st.CurrentState != windows.SERVICE_RUNNING {
+		return 0, nil
+	}
+	return st.ProcessId, nil
 }
 
 func waitState(s *mgr.Service, want svc.State, timeout time.Duration) error {

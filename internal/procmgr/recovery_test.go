@@ -45,7 +45,7 @@ func newRecoveryManager(t *testing.T) (m *Manager, app string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	settings := func() model.Settings { return model.DefaultSettings() }
+	settings := testSettings
 	m, err = New(Options{
 		Log: log, Bus: events.New(st, log, settings, func(string) string { return "t" }),
 		SitesDir: filepath.Join(dir, "sites"), LogsDir: filepath.Join(dir, "logs"), RunDir: filepath.Join(dir, "run"),

@@ -114,7 +114,7 @@ Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 | PUT | `/api/settings/admin` | same | same (takes effect after service restart) |
 | GET | `/api/users` | | `User[]` |
 | POST | `/api/users` | `{username, password, role}` | `User` |
-| PUT | `/api/users/{id}` | `{role?, disabled?, password?}` | `User` |
+| PUT | `/api/users/{id}` | `{role?, disabled?, password?, resetTotp?}` | `User` (`resetTotp: true` turns two-factor off, for a lost authenticator; ends the user's sessions) |
 | DELETE | `/api/users/{id}` | | 204 |
 | GET | `/api/tokens` | | `APIToken[]` (own) |
 | POST | `/api/tokens` | `{name, expiresDays?}` | `{token: "nh_…", info: APIToken}` (token shown once) |
@@ -124,3 +124,32 @@ Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes
 `nodehoster_requests_total{site,code}`, `nodehoster_instance_memory_bytes`, etc.
+
+## Local endpoints (desktop manager)
+
+The server also listens on two local endpoints that do not depend on the
+admin listener, its certificate or any NodeHoster account. They are how
+NodeHoster Manager (`nodehoster-manager.exe`) works when the web console
+does not. HTTP/1.1 over a named pipe on Windows, over a Unix socket in the
+data directory elsewhere (`admin.sock`, `status.sock`).
+
+**`\\.\pipe\NodeHoster.Admin`**: the API above, without authentication:
+the pipe's security descriptor admits only `SYSTEM` and `BUILTIN\Administrators`
+(so the client must run elevated). Requests act with the `admin` role and
+are audited as `DOMAIN\user (desktop)` from `local`. Not served here: the
+web UI, `/api/auth/*`, `/api/tokens`, webhooks and `/metrics`. One extra
+endpoint: `GET /api/local/whoami` → `{account}`. Clients should check that the
+process serving the pipe is elevated or LocalSystem before sending secrets
+(`internal/localapi` does), since any user can create the pipe while the
+service is stopped.
+
+**`\\.\pipe\NodeHoster.Status`**: read-only, also open to interactive users
+(for the notification-area icon):
+
+| Method | Path | Response |
+|---|---|---|
+| GET | `/status` | `{version, startedAt, adminUrl?, adminError?, sites: [{id, name, type, autoStart, state, message?, instances, ready}]}` |
+| GET | `/status/stream` | **Server-Sent Events**: `event: summary` (as `/status`) every 3 s; `event: notice` `{time, level, type, site, message}` for crashes, rapid-fail, failed health checks and deployments, certificate problems and unreachable upstreams |
+
+`adminError` is set when the web console could not start (its port is in
+use, or its certificate is missing): the server keeps running without it.

@@ -41,7 +41,7 @@ func TestLifecycle(t *testing.T) {
 	}
 	defer st.Close()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	settings := func() model.Settings { return model.DefaultSettings() }
+	settings := testSettings
 	bus := events.New(st, log, settings, func(string) string { return "test" })
 	m, err := New(Options{
 		Log: log, Bus: bus, SitesDir: filepath.Join(dir, "sites"), LogsDir: filepath.Join(dir, "logs"),
@@ -199,7 +199,7 @@ func TestRestartAfterRapidFail(t *testing.T) {
 	}
 	defer st.Close()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	settings := func() model.Settings { return model.DefaultSettings() }
+	settings := testSettings
 	m, err := New(Options{
 		Log: log, Bus: events.New(st, log, settings, func(string) string { return "t" }),
 		SitesDir: filepath.Join(dir, "sites"), LogsDir: filepath.Join(dir, "logs"), RunDir: filepath.Join(dir, "run"),
@@ -232,4 +232,15 @@ func TestRestartAfterRapidFail(t *testing.T) {
 		t.Fatalf("state %s, %d backends after restart", s.State, len(m.Backends("s1")))
 	}
 	m.Stop("s1")
+}
+
+// testSettings are the defaults with instance ports below every OS's
+// ephemeral range (Linux starts at 32768). The default range, 41000-48999,
+// is inside Linux's: while go test runs packages in parallel, another
+// package's sockets can take a port between the allocator's check and the
+// test app's listen, and the app exits with EADDRINUSE.
+func testSettings() model.Settings {
+	s := model.DefaultSettings()
+	s.PortRangeStart, s.PortRangeEnd = 21000, 21999
+	return s
 }
