@@ -138,6 +138,12 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	// Token requests skip the forced password change (so automation keeps
+	// working after an admin reset); minting one must not be a way around it.
+	if user(r).MustChange {
+		writeErr(w, http.StatusForbidden, "change your password first")
+		return
+	}
 	raw, t, err := a.c.Auth.CreateToken(r.Context(), user(r).ID, in.Name, in.ExpiresDays)
 	if err != nil {
 		a.fail(w, err)

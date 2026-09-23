@@ -172,6 +172,7 @@ func (d *Deployer) DeployZip(ctx context.Context, site *model.Site, zipPath, use
 		os.Remove(zipPath)
 		return nil, err
 	}
+	snapshot := *dep // the worker keeps updating dep; callers get it as started
 	go d.run(site, dep, l, func() error {
 		defer os.Remove(zipPath)
 		l.printf("extracting archive")
@@ -182,7 +183,7 @@ func (d *Deployer) DeployZip(ctx context.Context, site *model.Site, zipPath, use
 		l.printf("extracted %d files", n)
 		return nil
 	})
-	return dep, nil
+	return &snapshot, nil
 }
 
 // DeployGit clones the configured repository.
@@ -203,6 +204,7 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 		return nil, err
 	}
 	token := d.opts.Box.MustUnseal(g.Token)
+	snapshot := *dep // the worker keeps updating dep; callers get it as started
 	go d.run(site, dep, l, func() error {
 		args := []string{"clone", "--depth", "1", "--single-branch"}
 		if branch != "" {
@@ -231,7 +233,7 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 		os.RemoveAll(filepath.Join(dep.ReleaseDir, ".git"))
 		return nil
 	})
-	return dep, nil
+	return &snapshot, nil
 }
 
 func redact(repo string) string {

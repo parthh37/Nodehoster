@@ -3,6 +3,7 @@
 package secrets
 
 import (
+	"errors"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -24,6 +25,9 @@ func protect(data []byte) ([]byte, error) {
 }
 
 func unprotect(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, errors.New("the master key file is empty")
+	}
 	in := windows.DataBlob{Size: uint32(len(data)), Data: &data[0]}
 	var out windows.DataBlob
 	err := windows.CryptUnprotectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out)

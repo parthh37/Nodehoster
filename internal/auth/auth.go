@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -39,25 +40,51 @@ var (
 )
 
 // totpValid checks a code against a sealed secret, failing closed when the
-// secret cannot be decrypted: an empty key would make codes predictable.
-func (s *Service) totpValid(sealed, code string) (bool, error) {
+// secret cannot be decrypted: an empty key would make codes predictable. A
+// code is accepted in the previous, current or next 30-second step, and at
+// most once: a step at or before the user's last accepted one is refused
+// (RFC 6238 section 5.2), so an observed code cannot be replayed.
+func (s *Service) totpValid(userID, sealed, code string) (bool, error) {
 	secret, err := s.box.Unseal(sealed)
 	if err != nil || secret == "" {
 		return false, ErrTOTPBroken
 	}
-	return totp.Validate(strings.ReplaceAll(code, " ", ""), secret), nil
+	code = strings.ReplaceAll(code, " ", "")
+	now := time.Now()
+	for _, skew := range []time.Duration{-1, 0, 1} {
+		at := now.Add(skew * totpPeriod)
+		want, err := totp.GenerateCode(secret, at)
+		if err != nil {
+			return false, nil
+		}
+		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) != 1 {
+			continue
+		}
+		step := at.Unix() / int64(totpPeriod/time.Second)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if step <= s.totpLastStep[userID] {
+			return false, nil
+		}
+		s.totpLastStep[userID] = step
+		return true, nil
+	}
+	return false, nil
 }
+
+const totpPeriod = 30 * time.Second
 
 type Service struct {
 	store *store.Store
 	box   *secrets.Box
 
-	mu       sync.Mutex
-	failures map[string][]time.Time // ip|username -> recent failures
+	mu           sync.Mutex
+	failures     map[string][]time.Time // ip|username -> recent failures
+	totpLastStep map[string]int64       // user ID -> last accepted TOTP time step
 }
 
 func New(st *store.Store, box *secrets.Box) *Service {
-	return &Service{store: st, box: box, failures: map[string][]time.Time{}}
+	return &Service{store: st, box: box, failures: map[string][]time.Time{}, totpLastStep: map[string]int64{}}
 }
 
 func HashPassword(pw string) (string, error) {
@@ -169,7 +196,7 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 		if code == "" {
 			return nil, "", ErrTOTPRequired
 		}
-		ok, err := s.totpValid(u.TOTPSecret, code)
+		ok, err := s.totpValid(u.ID, u.TOTPSecret, code)
 		if err != nil {
 			return nil, "", err
 		}
@@ -266,7 +293,7 @@ func (s *Service) TOTPEnable(ctx context.Context, u *store.UserRecord, code stri
 	if u.TOTPSecret == "" {
 		return errors.New("start two-factor setup first")
 	}
-	if ok, err := s.totpValid(u.TOTPSecret, code); err != nil {
+	if ok, err := s.totpValid(u.ID, u.TOTPSecret, code); err != nil {
 		return err
 	} else if !ok {
 		return ErrTOTPInvalid
@@ -279,7 +306,7 @@ func (s *Service) TOTPDisable(ctx context.Context, u *store.UserRecord, code str
 	if !u.TOTPEnabled {
 		return nil
 	}
-	if ok, err := s.totpValid(u.TOTPSecret, code); err != nil {
+	if ok, err := s.totpValid(u.ID, u.TOTPSecret, code); err != nil {
 		return err
 	} else if !ok {
 		return ErrTOTPInvalid
