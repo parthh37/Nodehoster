@@ -212,6 +212,24 @@ jobs:
             $login = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType "application/json" -Body $body -SessionVariable s http://127.0.0.1:18484/api/auth/login
             if ($login.StatusCode -ne 200) { throw "login failed" }
 
+            # The data directory is closed to other local users (the runner
+            # is an elevated administrator, so only SYSTEM and
+            # Administrators appear): SIDs, not names, which are localized.
+            $allowed = "S-1-5-18", "S-1-5-32-544"
+            foreach ($f in "nodehoster.db", "initial-admin-password.txt", "master.key", "logs\nodehoster.log") {
+              $acl = Get-Acl (Join-Path $data $f)
+              foreach ($r in $acl.Access) {
+                $sid = $r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+                if ($allowed -notcontains $sid) { throw "$f is accessible to $($r.IdentityReference) ($($r.FileSystemRights))" }
+              }
+            }
+            if (-not (Get-Acl $data).AreAccessRulesProtected) { throw "the data directory inherits permissions from its parent" }
+            $users = 0
+            foreach ($r in (Get-Acl (Join-Path $data "node")).Access) {
+              if ($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq "S-1-5-32-545") { $users = $users -bor [int]$r.FileSystemRights }
+            }
+            if (-not ($users -band 1) -or ($users -band 2)) { throw "node\ must be readable, not writable, by local users (rights 0x$('{0:x}' -f $users))" }
+
             # The desktop manager's pipes (the runner is an elevated
             # administrator): the admin pipe answers without a login and
             # names the caller; the status pipe serves the summary.

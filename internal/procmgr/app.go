@@ -746,7 +746,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	cmd.Stdout, cmd.Stderr = outW, errW
 	cmd.WaitDelay = 5 * time.Second // do not hang on grandchildren holding the pipes
 
-	cleanup, err := prepare(cmd, n.RunAs, a.m.opts.Unseal(n.RunAs.Password))
+	cleanup, err := prepare(cmd, n.RunAs, a.m.opts.Unseal(n.RunAs.Password), filepath.Join(a.m.opts.SitesDir, a.id))
 	defer cleanup()
 	if err != nil {
 		a.m.ports.release(port)
