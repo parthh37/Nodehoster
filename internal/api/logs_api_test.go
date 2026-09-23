@@ -224,3 +224,26 @@ func TestServerLogSearch(t *testing.T) {
 	}
 	expect(t, e.do(http.MethodGet, "/api/server/logs/search?level=loud", nil, admin...), http.StatusUnprocessableEntity)
 }
+
+// TestSiteLogClear: clearing works whether or not the site has written a
+// log file yet (a site that never ran has none).
+func TestSiteLogClear(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	site := e.createSite(admin, redirectSite("quiet", 0))
+	sink := e.c.Procs.Logs(site.ID)
+	if _, err := os.Stat(sink.Path()); !os.IsNotExist(err) {
+		t.Fatalf("a new site has a log file: %v", err)
+	}
+	expect(t, e.do(http.MethodPost, "/api/sites/"+site.ID+"/logs/clear", nil, admin...), http.StatusNoContent)
+
+	sink.Write(model.LogLine{Time: time.Now(), Stream: "stdout", Text: "hello"})
+	expect(t, e.do(http.MethodPost, "/api/sites/"+site.ID+"/logs/clear", nil, admin...), http.StatusNoContent)
+	if st, err := os.Stat(sink.Path()); err != nil || st.Size() != 0 {
+		t.Fatalf("log file after clear: %v %v", st, err)
+	}
+	if n := len(sink.Recent(0)); n != 0 {
+		t.Fatalf("%d recent lines after clear", n)
+	}
+}

@@ -1,7 +1,9 @@
 package procmgr
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -94,6 +96,8 @@ func (s *LogSink) Subscribe() (<-chan model.LogLine, func()) {
 	}
 }
 
+// Clear empties the recent lines and the current log file. A site that
+// never wrote anything has no file yet: it is already clear.
 func (s *LogSink) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,7 +106,10 @@ func (s *LogSink) Clear() error {
 	if err := s.file.Close(); err != nil {
 		return err
 	}
-	return os.Truncate(s.file.Filename, 0)
+	if err := os.Truncate(s.file.Filename, 0); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (s *LogSink) Path() string { return s.file.Filename }

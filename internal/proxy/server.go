@@ -43,7 +43,7 @@ type Deps struct {
 	AffinityKey []byte
 	// Bans is automatic IP banning; nil in tests that do not need it.
 	Bans *ipban.Manager
-	Ship     *logship.Shipper // access log shipping; may be nil
+	Ship *logship.Shipper // access log shipping; may be nil
 }
 
 type route struct {
