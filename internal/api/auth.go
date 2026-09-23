@@ -25,6 +25,10 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	if sso := a.c.Settings().SSO; !sso.PasswordAllowed() {
+		writeErr(w, http.StatusForbidden, "password sign-in is turned off; sign in with single sign-on")
+		return
+	}
 	u, token, err := a.c.Auth.Login(r.Context(), in.Username, in.Password, in.TOTP, clientIP(r), r.UserAgent())
 	switch {
 	case errors.Is(err, auth.ErrTOTPRequired):
@@ -38,10 +42,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "totpRequired": errors.Is(err, auth.ErrTOTPInvalid)})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: auth.SessionCookie, Value: token, Path: "/", HttpOnly: true,
-		Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: int(auth.SessionTTL.Seconds()),
-	})
+	setSessionCookie(w, r, token)
 	a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: u.Username, IP: clientIP(r), Action: "login", Target: u.Username})
 	writeJSON(w, http.StatusOK, map[string]any{"user": u.User, "mustChangePassword": u.MustChange})
 }
@@ -271,6 +272,9 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		Password string            `json:"password"`
 		Role     model.Role        `json:"role"`
 		Sites    []model.SiteGrant `json:"sites"`
+		// SSO creates a user who signs in only with single sign-on: no
+		// password, so none to hand over or to be forced to change.
+		SSO bool `json:"sso"`
 	}
 	if err := decode(r, &in); err != nil {
 		a.fail(w, err)
@@ -284,17 +288,26 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	hash, err := auth.HashPassword(in.Password)
-	if err != nil {
-		a.fail(w, &model.ValidationError{Field: "password", Message: err.Error()})
-		return
+	u := &store.UserRecord{User: model.User{ID: uuid.NewString(), Username: in.Username, Role: in.Role, Sites: in.Sites, CreatedAt: time.Now()}, MustChange: true}
+	if in.SSO {
+		u.SSO, u.MustChange = true, false
+	} else {
+		hash, err := auth.HashPassword(in.Password)
+		if err != nil {
+			a.fail(w, &model.ValidationError{Field: "password", Message: err.Error()})
+			return
+		}
+		u.PasswordHash = hash
 	}
-	u := &store.UserRecord{User: model.User{ID: uuid.NewString(), Username: in.Username, Role: in.Role, Sites: in.Sites, PasswordHash: hash, CreatedAt: time.Now()}, MustChange: true}
 	if err := a.c.Store.PutUser(r.Context(), u); err != nil {
 		a.fail(w, &model.ValidationError{Field: "username", Message: err.Error()})
 		return
 	}
-	a.audit(r, "user.create", in.Username, a.describeAccess(&u.User))
+	detail := a.describeAccess(&u.User)
+	if u.SSO {
+		detail += "; single sign-on only"
+	}
+	a.audit(r, "user.create", in.Username, detail)
 	writeJSON(w, http.StatusCreated, u.User)
 }
 
@@ -368,6 +381,7 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.PasswordHash, u.MustChange = hash, id != user(r).ID
+		u.SSO = false // with a password, an SSO-created user is an ordinary one
 	}
 	if in.ResetTOTP {
 		u.TOTPEnabled, u.TOTPSecret = false, ""

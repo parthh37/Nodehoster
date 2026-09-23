@@ -145,6 +145,7 @@ func (s *Service) ResetPassword(ctx context.Context, username string) (string, e
 	}
 	u.PasswordHash, u.MustChange, u.Disabled = string(hash), true, false
 	u.TOTPEnabled, u.TOTPSecret = false, ""
+	u.SSO = false // a password makes an SSO-created user an ordinary one
 	if err := s.store.PutUser(ctx, u); err != nil {
 		return "", err
 	}
@@ -185,6 +186,13 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 		s.fail(key)
 		return nil, "", ErrInvalid
 	}
+	if u.PasswordHash == "" {
+		// A user created by single sign-on has no password. Spend the
+		// same time as a wrong one, so the answer does not tell them apart.
+		bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
+		s.fail(key)
+		return nil, "", ErrInvalid
+	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		s.fail(key)
 		return nil, "", ErrInvalid
@@ -209,14 +217,24 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 	delete(s.failures, key)
 	s.mu.Unlock()
 
+	token, err := s.newSession(ctx, u, ip, ua)
+	if err != nil {
+		return nil, "", err
+	}
+	return u, token, nil
+}
+
+// newSession creates a session for a user who just signed in (with a
+// password or single sign-on) and records the sign-in time.
+func (s *Service) newSession(ctx context.Context, u *store.UserRecord, ip, ua string) (string, error) {
 	token := randomString(32)
 	if err := s.store.CreateSession(ctx, sha(token), u.ID, ip, ua, time.Now().Add(SessionTTL)); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	now := time.Now()
 	u.LastLogin = &now
 	s.store.PutUser(ctx, u)
-	return u, token, nil
+	return token, nil
 }
 
 var dummyHash = sync.OnceValue(func() []byte {
@@ -249,6 +267,9 @@ func (s *Service) Logout(ctx context.Context, token string) {
 
 // ChangePassword verifies the current password and ends other sessions.
 func (s *Service) ChangePassword(ctx context.Context, u *store.UserRecord, current, next, keepToken string) error {
+	if u.PasswordHash == "" {
+		return errors.New("this account signs in with single sign-on and has no password; an administrator can set one")
+	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(current)) != nil {
 		return errors.New("current password is incorrect")
 	}

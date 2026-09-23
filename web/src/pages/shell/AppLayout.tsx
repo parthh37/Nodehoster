@@ -259,7 +259,7 @@ function UserMenu() {
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="truncate text-[13px] font-medium text-zinc-900 dark:text-zinc-100">{user.username}</p>
-                <p className="text-2xs text-zinc-500">{user.totpEnabled ? '2FA enabled' : '2FA not enabled'}</p>
+                <p className="text-2xs text-zinc-500">{user.sso ? 'Single sign-on' : user.totpEnabled ? '2FA enabled' : '2FA not enabled'}</p>
               </div>
               <RoleBadge role={user.role} />
             </div>
@@ -279,8 +279,14 @@ function UserMenu() {
           </button>
         )}
         items={[
-          { label: 'Change password', icon: <Lock />, onSelect: () => setPwOpen(true) },
-          { label: 'Two-factor authentication', icon: <ShieldCheck />, onSelect: () => setTfaOpen(true) },
+          // A user created by single sign-on has no password, and the
+          // identity provider does their multi-factor authentication.
+          ...(user?.sso
+            ? []
+            : [
+                { label: 'Change password', icon: <Lock />, onSelect: () => setPwOpen(true) },
+                { label: 'Two-factor authentication', icon: <ShieldCheck />, onSelect: () => setTfaOpen(true) },
+              ]),
           { label: 'API tokens', icon: <KeyRound />, onSelect: () => navigate('/account/tokens') },
           'separator',
           { label: 'Sign out', icon: <LogOut />, onSelect: () => void logout() },

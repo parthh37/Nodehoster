@@ -24,4 +24,6 @@ export const qk = {
   mailHealthAll: ['mail-health'] as const,
   mailHealth: (domains: string[]) => ['mail-health', ...domains] as const,
   mimeDefaults: ['mime', 'defaults'] as const,
+  authMethods: ['auth', 'methods'] as const,
+  ssoCallbackUrl: ['settings', 'sso', 'callback-url'] as const,
 };

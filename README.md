@@ -74,6 +74,7 @@ IIS Manager, with a status icon in the notification area.
 - Web console (React) with live status over Server-Sent Events
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
+- **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
 - Backup & restore of the whole configuration
@@ -151,7 +152,8 @@ about crashes, rapid-fail protection, failed deployments and certificates.
 ```
 nodehoster run                     run in the foreground
 nodehoster service install|uninstall|start|stop|status
-nodehoster reset-password [user]   recover access
+nodehoster reset-password [user]   recover access (also turns password sign-in back on
+                                   if single sign-on turned it off)
 nodehoster version
 nodehoster --data D:\NodeHoster run   use another data directory
 ```

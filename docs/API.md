@@ -12,7 +12,7 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 - **Errors**: non-2xx responses have body `{ "error": "message", "field": "bindings[0].host" }`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
-  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`) are returned as
+  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
   403 when not permitted. A user is either server-wide (one of those roles, on
@@ -29,6 +29,52 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 | POST | `/api/auth/totp/setup` | | `{secret, url}` (otpauth:// URL for a QR code) |
 | POST | `/api/auth/totp/enable` | `{code}` | 204 |
 | POST | `/api/auth/totp/disable` | `{code}` | 204 |
+| GET | `/api/auth/methods` | | `{password, sso, ssoLabel?}`: how the login page offers sign-in (public) |
+| GET | `/api/auth/oidc/start?next=/path` | | 302 to the identity provider (browser navigation, public; see [Single sign-on](#single-sign-on)) |
+| GET | `/api/auth/oidc/callback` | | the provider's redirect back: 303 into the console with the session cookie, or to `/login?sso_error=<code>` |
+
+`POST /api/auth/login` answers 403 when single sign-on turned password
+sign-in off. A user created by single sign-on has no password: password
+sign-in fails for them and `POST /api/auth/password` is refused.
+
+### Single sign-on
+
+`Settings.sso` (`SSOSettings`) configures sign-in with OpenID Connect:
+Microsoft Entra ID (issuer `https://login.microsoftonline.com/<tenant ID>/v2.0`;
+`common`/`organizations` are refused) or any other provider.
+
+| Field | |
+|---|---|
+| `enabled` | adds the sign-in button |
+| `label` | button text; empty = "Sign in with Microsoft" for Entra ID, else "Sign in with SSO" |
+| `issuer` | `https://` (plain HTTP only to this computer); discovery at `<issuer>/.well-known/openid-configuration` |
+| `clientId`, `clientSecret` | the app registration; the secret is sealed and masked |
+| `scopes` | requested besides `openid profile email` |
+| `usernameClaim` | default `preferred_username`; when missing, `preferred_username`, `upn`, `email` (not an `email` with `email_verified: false`) |
+| `disablePassword` | refuses password sign-in while `enabled` (break-glass: NodeHoster Manager, and `nodehoster reset-password`, which turns it back on) |
+| `autoCreate` | create unknown users (default off: only existing users, matched case-insensitively) |
+| `defaultRole` | role of created users when no rule matches (and of existing users, with a mapping); `""` = refuse |
+| `roleClaim`, `roleMap` | `[{value, role}]`: with both set, the role is worked out at every SSO sign-in; the first rule whose value (case-insensitive) is in the claim wins; else a site-scoped user keeps their grants; else `defaultRole`; else refused. Rules give server roles only (`admin`, `operator`, `viewer`); the last enabled administrator is never demoted |
+
+The flow is the authorization code flow with PKCE (S256), `state` and
+`nonce`. They and the PKCE verifier stay on the server (in memory, 10
+minutes, single use); the browser gets an HttpOnly, SameSite=Lax cookie
+`nh_sso_<state prefix>` whose hash is stored with them, so a callback only
+completes in the browser that started it. The ID token must be signed with
+RS256/384/512, PS256/384/512 or ES256/384/512 by a key in the provider's
+JWKS (cached; refetched when a token names an unknown key ID), with `iss`
+the discovered issuer, `aud` containing `clientId` (and `azp` equal to it
+when there are several audiences), `exp`/`iat` within 2 minutes of skew and
+the flow's `nonce`. The session is the same as a password sign-in's; local
+two-factor authentication is skipped (MFA is the provider's).
+
+`next` must be a path on the console (`/sites/x`); anything else becomes
+`/`. Failures are audited as `login.failed` with detail `sso: <reason>`
+and counted with the password sign-in's throttle (five per address in 15
+minutes); success is audited as `login` with detail `method: sso`, plus
+`user.create` / `user.update` when provisioning created the user or changed
+their role. `sso_error` codes: `off`, `locked`, `busy`, `provider`, `state`,
+`idp`, `token`, `claims`, `unknown_user`, `no_role`, `disabled`, `error`.
 
 ## Permissions
 
@@ -157,9 +203,11 @@ Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 | POST | `/api/settings/webhooks/test` | `WebhookTarget` | 204 |
 | GET | `/api/settings/admin` | | `{listen, tls: "selfsigned"\|"certificate"\|"none", certificateId, restartRequired}` |
 | PUT | `/api/settings/admin` | same | same (takes effect after service restart) |
+| GET | `/api/settings/sso/callback-url` | | `{redirectUrl}`: the redirect URI to register at the provider, from the console's address as the browser reached it (`X-Forwarded-Proto`/`-Host` are honored from this computer and `proxy.trustedProxies`) |
+| POST | `/api/settings/sso/test` | `SSOSettings` (may be unsaved) | `{ok, issuer, authorizationEndpoint, tokenEndpoint, jwksUri, keys, redirectUrl, problems: []}`: fetches discovery and the signing keys |
 | GET | `/api/users` | | `User[]` (`sites` set for site-scoped users) |
-| POST | `/api/users` | `{username, password, role, sites?}` | `User` (`role: "sites"` with `sites: [{siteId, role}]` for a site-scoped user) |
-| PUT | `/api/users/{id}` | `{role?, sites?, disabled?, password?, resetTotp?}` | `User` (`sites` replaces the grants; a server-wide `role` drops them; `resetTotp: true` turns two-factor off, for a lost authenticator; ends the user's sessions) |
+| POST | `/api/users` | `{username, password, role, sites?, sso?}` | `User` (`role: "sites"` with `sites: [{siteId, role}]` for a site-scoped user; `sso: true` creates a single-sign-on-only user without a password) |
+| PUT | `/api/users/{id}` | `{role?, sites?, disabled?, password?, resetTotp?}` | `User` (`sites` replaces the grants; a server-wide `role` drops them; `resetTotp: true` turns two-factor off, for a lost authenticator; a `password` makes an SSO user (`sso: true`) an ordinary one; ends the user's sessions) |
 | DELETE | `/api/users/{id}` | | 204 |
 | GET | `/api/tokens` | | `APIToken[]` (own; `role` = maximum role or omitted, `siteIds` = sites or `null` for unrestricted) |
 | POST | `/api/tokens` | `{name, expiresDays?, role?, siteIds?}` | `{token: "nh_…", info: APIToken}` (token shown once; see [Permissions](#permissions) for `role`/`siteIds`) |

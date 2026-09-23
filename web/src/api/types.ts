@@ -536,6 +536,49 @@ export interface Settings {
   certExpiryWarnDays: number;
   mime: MimeSettings;
   mail: MailSettings;
+  sso: SSOSettings;
+}
+
+/** Single sign-on to the console with OpenID Connect (Entra ID and others). */
+export interface SSOSettings {
+  enabled: boolean;
+  /** Sign-in button text; empty = "Sign in with Microsoft" for Entra ID, else "Sign in with SSO". */
+  label?: string;
+  issuer: string;
+  clientId: string;
+  /** Secret: "__SECRET__" when set. */
+  clientSecret: string;
+  /** Requested besides openid, profile and email. */
+  scopes: string[] | null;
+  usernameClaim: string;
+  disablePassword: boolean;
+  autoCreate: boolean;
+  defaultRole?: Role | '';
+  roleClaim?: string;
+  roleMap: SSORoleRule[] | null;
+}
+
+export interface SSORoleRule {
+  value: string;
+  role: Role;
+}
+
+/** How users sign in (public, for the login page). */
+export interface AuthMethods {
+  password: boolean;
+  sso: boolean;
+  ssoLabel?: string;
+}
+
+export interface SSOTestResult {
+  ok: boolean;
+  issuer?: string;
+  authorizationEndpoint?: string;
+  tokenEndpoint?: string;
+  jwksUri?: string;
+  keys: number;
+  redirectUrl: string;
+  problems: string[];
 }
 
 /** Server-wide MIME types, added to or overriding the built-in table. */
@@ -598,6 +641,8 @@ export interface User {
   disabled: boolean;
   lastLogin?: string | null;
   createdAt: string;
+  /** Created by a single sign-on: no password until an administrator sets one. */
+  sso?: boolean;
 }
 
 export interface Me {

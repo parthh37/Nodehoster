@@ -19,6 +19,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/deploy"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/oidc"
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/webui"
 )
@@ -26,6 +27,7 @@ import (
 type API struct {
 	c   *core.Core
 	log *slog.Logger
+	sso *oidc.RP // single sign-on: provider cache and sign-ins in progress
 }
 
 type ctxKey int
@@ -37,7 +39,7 @@ const (
 
 // Handler builds the admin HTTP handler: API, webhooks, metrics and the UI.
 func Handler(c *core.Core) http.Handler {
-	a := &API{c: c, log: c.Log}
+	a := &API{c: c, log: c.Log, sso: oidc.NewRP()}
 	r := chi.NewRouter()
 	r.Use(a.recoverer)
 	r.Use(securityHeaders)
@@ -48,6 +50,10 @@ func Handler(c *core.Core) http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Use(noCache)
 		r.Post("/auth/login", a.login)
+		// Single sign-on (sso.go): browser navigations, unauthenticated.
+		r.Get("/auth/methods", a.authMethods)
+		r.Get("/auth/oidc/start", a.oidcStart)
+		r.Get("/auth/oidc/callback", a.oidcCallback)
 		r.Group(func(r chi.Router) {
 			r.Use(a.authenticate)
 			r.Use(csrf)
@@ -173,6 +179,8 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/mail/test", a.mailTest)
 		r.Get("/settings/admin", a.getAdminSettings)
 		r.Put("/settings/admin", a.putAdminSettings)
+		r.Get("/settings/sso/callback-url", a.ssoCallbackURL)
+		r.Post("/settings/sso/test", a.ssoTest)
 		r.Get("/users", a.listUsers)
 		r.Post("/users", a.createUser)
 		r.Put("/users/{id}", a.updateUser)

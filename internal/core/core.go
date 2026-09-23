@@ -256,6 +256,9 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
 		return cur, err
 	}
+	if err := c.prepareSSO(&in.SSO, cur.SSO); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -317,6 +320,7 @@ func (c *Core) MaskedSettings() model.Settings {
 			m.DKIM[i].PrivateKey = secrets.Mask
 		}
 	}
+	maskSSO(&s.SSO)
 	return s
 }
 

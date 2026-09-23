@@ -103,6 +103,8 @@ var migrations = []string{
 	`ALTER TABLE users ADD COLUMN sites TEXT;
 	ALTER TABLE tokens ADD COLUMN role TEXT NOT NULL DEFAULT '';
 	ALTER TABLE tokens ADD COLUMN site_ids TEXT;`,
+	// Single sign-on: users.sso marks a user created by an SSO sign-in.
+	`ALTER TABLE users ADD COLUMN sso INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func Open(path string) (*Store, error) {

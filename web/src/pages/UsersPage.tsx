@@ -164,6 +164,11 @@ export function UsersPage() {
                   <Td className="font-medium">
                     {u.username}
                     {u.id === myId && <span className="ml-2 text-xs font-normal text-zinc-500">(you)</span>}
+                    {u.sso && (
+                      <Badge tone="blue" className="ml-2" title="Created by single sign-on: signs in with the identity provider and has no password">
+                        SSO
+                      </Badge>
+                    )}
                   </Td>
                   <Td>
                     <RoleBadge role={u.role} />
@@ -180,7 +185,7 @@ export function UsersPage() {
                       trigger={(p) => <IconButton label="Actions" icon={<MoreHorizontal className="h-4 w-4" />} {...p} />}
                       items={[
                         { label: 'Edit access & status', icon: <Pencil />, onSelect: () => setEditing(u) },
-                        { label: 'Reset password', icon: <KeyRound />, onSelect: () => setResetting(u) },
+                        { label: u.sso ? 'Set a password' : 'Reset password', icon: <KeyRound />, onSelect: () => setResetting(u) },
                         'separator',
                         {
                           label: 'Delete',
@@ -218,20 +223,25 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
   const toast = useToast();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [ssoOnly, setSsoOnly] = useState(false);
   const [access, setAccess] = useState<AccessDraft>(draftOf());
   useEffect(() => {
     if (open) {
       setUsername('');
       setPassword('');
+      setSsoOnly(false);
       setAccess(draftOf());
       m.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   const m = useMutation({
-    mutationFn: () => usersApi.create({ username: username.trim(), password, ...accessBody(access) }),
+    mutationFn: () => usersApi.create({ username: username.trim(), ...(ssoOnly ? { sso: true } : { password }), ...accessBody(access) }),
     onSuccess: (u) => {
-      toast.success(`User ${u.username} created`, 'They will be asked to choose a new password at first sign-in.');
+      toast.success(
+        `User ${u.username} created`,
+        u.sso ? 'They sign in with single sign-on.' : 'They will be asked to choose a new password at first sign-in.',
+      );
       void qc.invalidateQueries({ queryKey: qk.users });
       onClose();
     },
@@ -241,11 +251,11 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
       open={open}
       onClose={onClose}
       title="New user"
-      onSubmit={() => username.trim() && password && m.mutate()}
+      onSubmit={() => username.trim() && (password || ssoOnly) && m.mutate()}
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" icon={<Plus className="h-3.5 w-3.5" />} disabled={!username.trim() || !password} loading={m.isPending}>
+          <Button type="submit" variant="primary" icon={<Plus className="h-3.5 w-3.5" />} disabled={!username.trim() || (!password && !ssoOnly)} loading={m.isPending}>
             Create user
           </Button>
         </>
@@ -254,12 +264,20 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
       <FormErrors error={m.error}>
         <div className="space-y-4">
           <FormErrorBanner />
-          <Field label="User name" path="username">
+          <Field label="User name" path="username" hint={ssoOnly ? 'As the identity provider sends it, e.g. jane@contoso.com.' : undefined}>
             <Input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" spellCheck={false} />
           </Field>
-          <Field label="Initial password" path="password" hint="Share it securely.">
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
-          </Field>
+          <Switch
+            checked={ssoOnly}
+            onChange={setSsoOnly}
+            label="Single sign-on only"
+            description="No password: the user signs in with the identity provider (Settings → Single sign-on)."
+          />
+          {!ssoOnly && (
+            <Field label="Initial password" path="password" hint="Share it securely.">
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+            </Field>
+          )}
           <AccessEditor value={access} onChange={setAccess} />
         </div>
       </FormErrors>
@@ -345,8 +363,12 @@ function ResetPasswordDialog({ user, onClose }: { user: User | null; onClose: ()
       open={!!user}
       onClose={onClose}
       size="sm"
-      title={`Reset password for ${user?.username ?? ''}`}
-      description="The user will have to choose a new password at next sign-in."
+      title={`${user?.sso ? 'Set a password' : 'Reset password'} for ${user?.username ?? ''}`}
+      description={
+        user?.sso
+          ? 'This user was created by single sign-on and has no password. With one, they can also sign in with a password (and must change it first).'
+          : 'The user will have to choose a new password at next sign-in.'
+      }
       onSubmit={() => password && !mismatch && m.mutate()}
       footer={
         <>

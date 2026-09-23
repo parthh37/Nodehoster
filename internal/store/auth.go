@@ -15,7 +15,7 @@ type UserRecord struct {
 	MustChange bool
 }
 
-const userCols = `id, username, role, password_hash, totp_secret, totp_enabled, disabled, must_change, last_login, created, sites`
+const userCols = `id, username, role, password_hash, totp_secret, totp_enabled, disabled, must_change, last_login, created, sites, sso`
 
 func scanUser(sc interface{ Scan(...any) error }) (*UserRecord, error) {
 	var u UserRecord
@@ -23,7 +23,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*UserRecord, error) {
 	var lastLogin sql.NullInt64
 	var created int64
 	var sites sql.NullString
-	err := sc.Scan(&u.ID, &u.Username, &role, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.MustChange, &lastLogin, &created, &sites)
+	err := sc.Scan(&u.ID, &u.Username, &role, &u.PasswordHash, &u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.MustChange, &lastLogin, &created, &sites, &u.SSO)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -96,12 +96,13 @@ func (s *Store) PutUser(ctx context.Context, u *UserRecord) error {
 		}
 		sites = string(data)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users (`+userCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET username = excluded.username, role = excluded.role,
 		password_hash = excluded.password_hash, totp_secret = excluded.totp_secret,
 		totp_enabled = excluded.totp_enabled, disabled = excluded.disabled,
-		must_change = excluded.must_change, last_login = excluded.last_login, sites = excluded.sites`,
-		u.ID, u.Username, string(u.Role), u.PasswordHash, u.TOTPSecret, u.TOTPEnabled, u.Disabled, u.MustChange, lastLogin, ms(u.CreatedAt), sites)
+		must_change = excluded.must_change, last_login = excluded.last_login, sites = excluded.sites,
+		sso = excluded.sso`,
+		u.ID, u.Username, string(u.Role), u.PasswordHash, u.TOTPSecret, u.TOTPEnabled, u.Disabled, u.MustChange, lastLogin, ms(u.CreatedAt), sites, u.SSO)
 	if isUniqueViolation(err) {
 		return errors.New("username already exists")
 	}

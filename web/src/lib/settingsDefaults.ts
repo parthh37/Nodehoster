@@ -1,7 +1,7 @@
 // Client-side mirror of the server's settings defaults (model.MailSettings.ApplyDefaults
 // and friends) so forms bind safely to settings saved by older versions.
 
-import type { MailSettings, MimeSettings, Settings } from '@/api/types';
+import type { MailSettings, MimeSettings, Settings, SSOSettings } from '@/api/types';
 
 export function defaultMail(): MailSettings {
   return {
@@ -52,6 +52,25 @@ export function normalizeMime(m: Partial<MimeSettings> | null | undefined): Mime
   return { types: m?.types ?? [], unknownTypes: m?.unknownTypes || 'serve' };
 }
 
+/** Single sign-on settings as the server fills them (model.SSOSettings.Normalize). */
+export function normalizeSSO(s: Partial<SSOSettings> | null | undefined): SSOSettings {
+  const v = s ?? {};
+  return {
+    enabled: !!v.enabled,
+    label: v.label ?? '',
+    issuer: v.issuer ?? '',
+    clientId: v.clientId ?? '',
+    clientSecret: v.clientSecret ?? '',
+    scopes: v.scopes ?? [],
+    usernameClaim: v.usernameClaim || 'preferred_username',
+    disablePassword: !!v.disablePassword,
+    autoCreate: !!v.autoCreate,
+    defaultRole: v.defaultRole ?? '',
+    roleClaim: v.roleClaim ?? '',
+    roleMap: (v.roleMap ?? []).map((r) => ({ ...r })),
+  };
+}
+
 /** Null slices and missing sections become empty values so the settings forms can bind. */
 export function normalizeSettings(s: Settings): Settings {
   return {
@@ -61,6 +80,7 @@ export function normalizeSettings(s: Settings): Settings {
     proxy: { ...s.proxy, trustedProxies: s.proxy?.trustedProxies ?? [] },
     mime: normalizeMime(s.mime),
     mail: normalizeMail(s.mail),
+    sso: normalizeSSO(s.sso),
   };
 }
 

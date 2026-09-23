@@ -8,6 +8,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/oidc"
 	"github.com/parthh37/nodehoster/internal/store"
 )
 
@@ -32,7 +33,7 @@ func WithLocalUser(ctx context.Context, account string) context.Context {
 // Account endpoints (password, 2FA, API tokens) are not served: a Windows
 // administrator is not a NodeHoster user.
 func LocalHandler(c *core.Core) http.Handler {
-	a := &API{c: c, log: c.Log}
+	a := &API{c: c, log: c.Log, sso: oidc.NewRP()}
 	r := chi.NewRouter()
 	r.Use(a.recoverer)
 	r.Route("/api", func(r chi.Router) {

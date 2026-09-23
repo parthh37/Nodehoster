@@ -260,6 +260,9 @@ func (s *usersPage) redraw(m *manager) {
 		if u.Disabled {
 			status = "Disabled"
 		}
+		if u.SSO {
+			status += " (single sign-on)" // no password until one is set here
+		}
 		keys[i] = u.ID
 		rows[i] = []string{u.Username, string(u.Role), siteAccessLabel(m, u), map[bool]string{true: "On", false: "Off"}[u.TOTPEnabled], status, last}
 	}

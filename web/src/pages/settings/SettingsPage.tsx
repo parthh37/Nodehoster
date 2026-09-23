@@ -16,8 +16,9 @@ import { normalizeSettings } from '@/lib/settingsDefaults';
 import { AcmeTab, DnsTab, NotificationsTab, ProcessTab, TlsTab } from './SettingsTabs';
 import { AdminConsoleTab, BackupTab } from './AdminTabs';
 import { MimeTab } from './MimeTab';
+import { SsoTab } from './SsoTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'process' | 'admin' | 'backup';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'process' | 'admin' | 'sso' | 'backup';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
@@ -27,10 +28,11 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'mime', label: 'MIME types' },
   { key: 'process', label: 'Process & logs' },
   { key: 'admin', label: 'Admin console' },
+  { key: 'sso', label: 'Single sign-on' },
   { key: 'backup', label: 'Backup & restore' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'process'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'process', 'sso'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -39,6 +41,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('webhooks')) return 'notifications';
   if (field.startsWith('tls') || field.startsWith('proxy')) return 'tls';
   if (field.startsWith('mime')) return 'mime';
+  if (field.startsWith('sso')) return 'sso';
   return 'process';
 }
 
@@ -119,6 +122,7 @@ export function SettingsPage() {
         {props && tab === 'tls' && <TlsTab {...props} />}
         {props && tab === 'mime' && <MimeTab {...props} />}
         {props && tab === 'process' && <ProcessTab {...props} />}
+        {props && tab === 'sso' && <SsoTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
       {tab === 'backup' && <BackupTab />}

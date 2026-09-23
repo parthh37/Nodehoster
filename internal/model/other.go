@@ -96,6 +96,7 @@ type Settings struct {
 	CertExpiryWarnDays int             `json:"certExpiryWarnDays"`
 	Mime               MimeSettings    `json:"mime"`
 	Mail               MailSettings    `json:"mail"`
+	SSO                SSOSettings     `json:"sso"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the
@@ -143,6 +144,10 @@ type User struct {
 	Disabled     bool        `json:"disabled"`
 	LastLogin    *time.Time  `json:"lastLogin,omitempty"`
 	CreatedAt    time.Time   `json:"createdAt"`
+	// SSO marks a user created by a single sign-on. They have no password
+	// (so cannot sign in with one) until an administrator sets one, which
+	// makes them an ordinary user.
+	SSO bool `json:"sso,omitempty"`
 }
 
 type APIToken struct {

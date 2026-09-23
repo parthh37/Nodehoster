@@ -6,6 +6,7 @@ import type {
   AdminSettings,
   APIToken,
   AuditEntry,
+  AuthMethods,
   AvailableNode,
   CertificateView,
   CreatedToken,
@@ -31,6 +32,8 @@ import type {
   SiteGrant,
   SiteStatus,
   SiteView,
+  SSOSettings,
+  SSOTestResult,
   TOTPSetup,
   User,
   WebhookTarget,
@@ -47,6 +50,9 @@ export const authApi = {
   totpSetup: () => http.post<TOTPSetup>('/api/auth/totp/setup'),
   totpEnable: (code: string) => http.post('/api/auth/totp/enable', { code }),
   totpDisable: (code: string) => http.post('/api/auth/totp/disable', { code }),
+  methods: () => http.get<AuthMethods>('/api/auth/methods', { noAuthRedirect: true }),
+  /** A browser navigation (not fetch): the server redirects to the identity provider. */
+  ssoStartUrl: (next?: string) => `/api/auth/oidc/start${qs({ next: next && next !== '/' ? next : undefined })}`,
 };
 
 export const serverApi = {
@@ -133,11 +139,14 @@ export const settingsApi = {
   testWebhook: (w: WebhookTarget) => http.post('/api/settings/webhooks/test', w),
   getAdmin: () => http.get<AdminSettings>('/api/settings/admin'),
   putAdmin: (a: AdminSettings) => http.put<AdminSettings>('/api/settings/admin', a),
+  ssoCallbackUrl: () => http.get<{ redirectUrl: string }>('/api/settings/sso/callback-url'),
+  ssoTest: (s: SSOSettings) => http.post<SSOTestResult>('/api/settings/sso/test', s),
 };
 
 export const usersApi = {
   list: () => http.get<User[]>('/api/users'),
-  create: (body: { username: string; password: string; role: Role; sites?: SiteGrant[] }) => http.post<User>('/api/users', body),
+  /** sso: signs in with single sign-on only (no password). */
+  create: (body: { username: string; password?: string; sso?: boolean; role: Role; sites?: SiteGrant[] }) => http.post<User>('/api/users', body),
   update: (id: string, body: { role?: Role; sites?: SiteGrant[]; disabled?: boolean; password?: string }) =>
     http.put<User>(`/api/users/${enc(id)}`, body),
   remove: (id: string) => http.del(`/api/users/${enc(id)}`),

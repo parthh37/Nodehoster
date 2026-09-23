@@ -25,7 +25,9 @@ import (
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/core"
+	"github.com/parthh37/nodehoster/internal/localapi"
 	"github.com/parthh37/nodehoster/internal/localapi/localserver"
+	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -43,7 +45,9 @@ Commands:
   service uninstall        Stop and remove the Windows service
   service start|stop       Start or stop the Windows service
   service status           Show the service state
-  reset-password [user]    Set a new random password (default user: admin)
+  reset-password [user]    Set a new random password (default user: admin);
+                           also turns password sign-in back on if single
+                           sign-on turned it off
   version                  Print the version
 
 The data directory defaults to %s
@@ -160,7 +164,49 @@ func resetPassword(dataDir, name string) error {
 		return err
 	}
 	fmt.Printf("New password for %s: %s\nYou will be asked to change it at the next sign-in.\n", name, pw)
+	switch on, err := allowPasswordSignIn(dataDir, st); {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "Password sign-in is turned off by the single sign-on settings and could not be turned back on: %v\n", err)
+	case on:
+		fmt.Println("Password sign-in was turned off by the single sign-on settings; it is on again.")
+	}
 	return nil
+}
+
+// allowPasswordSignIn turns password sign-in back on when single sign-on
+// turned it off, since the new password would be useless otherwise: this
+// is the break-glass for an identity provider that is down or
+// misconfigured. The running service caches its settings, so it is asked
+// over the admin pipe; when it is not running, the stored settings are
+// changed directly.
+func allowPasswordSignIn(dataDir string, st *store.Store) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var cur model.Settings
+	if err := st.GetDoc(ctx, "settings", &cur); err != nil {
+		return false, nil // never saved: password sign-in is on
+	}
+	if cur.SSO.PasswordAllowed() {
+		return false, nil
+	}
+	cl := localapi.Connect(localapi.Admin, dataDir)
+	// The settings document is sent back as it came (secrets masked),
+	// so that fields this build does not know survive.
+	var doc map[string]any
+	err := cl.Get(ctx, "/api/settings", &doc)
+	if errors.Is(err, localapi.ErrNotRunning) {
+		cur.SSO.DisablePassword = false
+		return true, st.PutDoc(ctx, "settings", cur)
+	}
+	if err != nil {
+		return false, err
+	}
+	sso, _ := doc["sso"].(map[string]any)
+	if sso == nil {
+		return false, errors.New("the service's settings have no single sign-on section")
+	}
+	sso["disablePassword"] = false
+	return true, cl.Put(ctx, "/api/settings", doc, nil)
 }
 
 func newLogger(paths config.Paths, level string, interactive bool) *slog.Logger {
