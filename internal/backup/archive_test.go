@@ -100,6 +100,32 @@ func TestEncryptionRejectsWrongPassphraseAndDamage(t *testing.T) {
 	}
 }
 
+// scrypt parameters come from the header before it can be authenticated:
+// only those NodeHoster writes are accepted, so a planted archive cannot
+// make a restore allocate gigabytes (128·N·r bytes; r = 255, N = 2^20 is
+// ~34 GB). Checked with a small N, so that nothing large is allocated.
+func TestEncryptionRejectsCostlyParameters(t *testing.T) {
+	t.Parallel()
+	enc := encrypt(t, []byte("payload"), "right")
+	for _, tc := range []struct {
+		name string
+		i    int
+		v    byte
+	}{
+		{"r = 255", 10, 255},
+		{"r = 16", 10, 16},
+		{"p = 16", 11, 16},
+		{"p = 2", 11, 2},
+		{"log2 N = 21", 9, 21},
+	} {
+		bad := bytes.Clone(enc)
+		bad[tc.i] = tc.v
+		if _, err := decrypt(bad, "right"); err == nil || !strings.Contains(err.Error(), "unsupported encryption parameters") {
+			t.Errorf("%s: err = %v", tc.name, err)
+		}
+	}
+}
+
 // buildArchive writes a small archive and returns its path.
 func buildArchive(t *testing.T, dir string, files map[string]string) string {
 	t.Helper()

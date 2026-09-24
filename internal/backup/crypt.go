@@ -32,7 +32,9 @@ const (
 	headerSize   = 8 + 4 + 16 + 7 + 4 + 1
 	chunkSize    = 64 << 10
 	defaultLogN  = 15 // scrypt N = 32768, r = 8, p = 1: ~32 MB and ~0.1 s
-	maxLogN      = 20
+	maxLogN      = 20 // 1 GiB with r = 8: room to raise the cost later
+	scryptR      = 8
+	scryptP      = 1
 	saltSize     = 16
 	noncePrefLen = 7
 )
@@ -65,7 +67,7 @@ func NewEncrypter(w io.Writer, passphrase string) (io.WriteCloser, error) {
 	}
 	h := make([]byte, headerSize)
 	copy(h, cryptMagic)
-	h[8], h[9], h[10], h[11] = 1, ScryptLogN, 8, 1
+	h[8], h[9], h[10], h[11] = 1, ScryptLogN, scryptR, scryptP
 	if _, err := rand.Read(h[12 : 12+saltSize+noncePrefLen]); err != nil {
 		return nil, err
 	}
@@ -146,7 +148,11 @@ func NewDecrypter(r io.Reader, passphrase string) (io.Reader, error) {
 	if _, err := io.ReadFull(r, h); err != nil || !bytes.Equal(h[:8], []byte(cryptMagic)) {
 		return nil, ErrNotEncrypted
 	}
-	if h[8] != 1 || h[9] == 0 || h[9] > maxLogN || h[10] == 0 || h[11] == 0 || h[11] > 16 {
+	// The header is only authenticated once the key is derived, so the
+	// parameters are checked first: scrypt needs 128·N·r bytes, and a
+	// planted archive with r = 255 would make a restore allocate ~34 GB.
+	// NodeHoster always writes r = 8 and p = 1; only N may vary.
+	if h[8] != 1 || h[9] == 0 || h[9] > maxLogN || h[10] != scryptR || h[11] != scryptP {
 		return nil, fmt.Errorf("unsupported encryption parameters")
 	}
 	if binary.BigEndian.Uint32(h[35:39]) != chunkSize {

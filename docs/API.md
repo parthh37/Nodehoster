@@ -563,7 +563,8 @@ secrets and keys stay sealed with this server's DPAPI-protected master key,
 so the archive only restores on this machine. With one, the archive is a
 zip of a public `manifest.json` and `payload.enc`: the archive above,
 encrypted with AES-256-GCM in 64 KiB chunks under a scrypt-derived key (salt
-and parameters in its header), holding `key.pem` in place of the sealed
+and parameters in its header; r = 8, p = 1 and N up to 2^20 are accepted, at
+most 1 GiB of memory), holding `key.pem` in place of the sealed
 key and `secrets.json` (every secret in plain text) so another server
 re-seals them with its own key. S3 uploads are single requests (archives up
 to 5 GiB); Azure uses blocks above 64 MiB.
