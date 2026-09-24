@@ -121,13 +121,15 @@ func (e *env) waitSwap(opts []opt, siteID string) model.SwapResult {
 // staging on its own host name, swaps it in through the API and back,
 // all through the real proxy and Node.js processes.
 func TestSlotsEndToEnd(t *testing.T) {
+	// Before the environment: removed after Shutdown stopped the processes
+	// running from it (Windows cannot delete files in use).
+	root := t.TempDir()
 	e := slotEnv(t)
 	admin := e.adminSession()
 	e.user("ops", model.RoleOperator, false)
 	ops := session(e.login("ops"))
 	e.user("watcher", model.RoleViewer, false)
 	viewer := session(e.login("watcher"))
-	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "server.js"), []byte(slotServer("v0")), 0o644)
 	port := freePort(t)
 	body := slotSiteBody(root, port)
@@ -243,9 +245,11 @@ func TestSlotsEndToEnd(t *testing.T) {
 // not swapped; production keeps running untouched, the slot goes back to
 // its own settings, and slot.swap_failed is reported.
 func TestSwapWarmupFailure(t *testing.T) {
+	// Before the environment: removed after Shutdown stopped the processes
+	// running from it (Windows cannot delete files in use).
+	root := t.TempDir()
 	e := slotEnv(t)
 	admin := e.adminSession()
-	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "server.js"), []byte(slotServer("v0")), 0o644)
 	port := freePort(t)
 	body := slotSiteBody(root, port)
@@ -279,9 +283,11 @@ func TestSwapWarmupFailure(t *testing.T) {
 // deployments, rollbacks and start/stop/recycle are refused with 409, and
 // a second swap too.
 func TestSwapExclusive(t *testing.T) {
+	// Before the environment: removed after Shutdown stopped the processes
+	// running from it (Windows cannot delete files in use).
+	root := t.TempDir()
 	e := slotEnv(t)
 	admin := e.adminSession()
-	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "server.js"), []byte(slotServer("v0")), 0o644)
 	port := freePort(t)
 	body := slotSiteBody(root, port)
