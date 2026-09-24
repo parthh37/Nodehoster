@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { Binding } from '@/api/types';
 import {
   branchPatternError,
   canHavePreviews,
+  clientCertPreviewError,
   defaultPreviewConfig,
   describePreview,
   exampleHost,
@@ -10,6 +12,8 @@ import {
   hostPatternError,
   matchBranch,
   previewConfigOf,
+  previewStateLabel,
+  requiresClientCert,
   slugBranch,
 } from './previews';
 
@@ -105,5 +109,32 @@ describe('preview settings', () => {
   it('describes a preview', () => {
     expect(describePreview({ kind: 'pr', number: 42, branch: 'fix' })).toBe('#42 fix');
     expect(describePreview({ kind: 'branch', branch: 'feature/x' })).toBe('branch feature/x');
+    expect(previewStateLabel('awaiting-approval')).toBe('awaiting approval');
+    expect(previewStateLabel('ready')).toBe('ready');
+  });
+  it('holds forks for approval and keeps secrets out by default', () => {
+    const d = defaultPreviewConfig();
+    expect(d.requireApproval).toBe('forks');
+    expect(d.inheritSecrets).toBe(false);
+  });
+});
+
+describe('client certificates', () => {
+  const https = (clientCert: Binding['clientCert'], slot = '') => ({ id: 'b', protocol: 'https', ip: '', port: 443, host: 'a.example.com', clientCert, slot });
+  const cfg = { ...defaultPreviewConfig(), enabled: true };
+  it('knows when the site requires one', () => {
+    expect(requiresClientCert({ bindings: [https({ mode: 'require' })] })).toBe(true);
+    expect(requiresClientCert({ bindings: [https({ mode: 'accept' })] })).toBe(false);
+    expect(requiresClientCert({ bindings: [https({ mode: 'accept', requirePaths: ['/admin'] })] })).toBe(true);
+    expect(requiresClientCert({ bindings: [https({ mode: 'require' }, 'staging')] })).toBe(false);
+    expect(requiresClientCert({ bindings: [https(null)] })).toBe(false);
+  });
+  it('refuses open http previews of such a site, as the server does', () => {
+    const site = { bindings: [https({ mode: 'require' })] };
+    expect(clientCertPreviewError(site, cfg)).toContain('client certificates');
+    expect(clientCertPreviewError(site, { ...cfg, protocol: 'https' })).toBeNull();
+    expect(clientCertPreviewError(site, { ...cfg, allowIps: ['10.0.0.0/8'] })).toBeNull();
+    expect(clientCertPreviewError(site, { ...cfg, basicAuth: { enabled: true, realm: 'P', users: [] } })).toBeNull();
+    expect(clientCertPreviewError({ bindings: [] }, cfg)).toBeNull();
   });
 });

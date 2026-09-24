@@ -1572,6 +1572,9 @@ export interface SwapPreview {
 
 export type PreviewCertMode = 'auto' | 'certificate' | 'wildcard';
 
+/** PreviewConfig.requireApproval: pull requests from forks, or all of them. */
+export type PreviewApproval = 'forks' | 'all';
+
 /** deploy.previews of a git-deployed node or static site. */
 export interface PreviewConfig {
   enabled: boolean;
@@ -1580,8 +1583,12 @@ export interface PreviewConfig {
   pullRequests: boolean;
   /** Globs of branches whose pushes get a preview ("feature/*", "release/**"). */
   branches?: string[];
-  /** Build pull requests from forks (untrusted code). */
+  /** Build pull requests from forks (untrusted code), each push once approved. */
   allowForks: boolean;
+  /** Which pull requests wait for an operator's approval before they are built; default forks. */
+  requireApproval?: PreviewApproval | '';
+  /** Same-repository previews get the site's secrets, secret-store variables and slot settings (never forks). */
+  inheritSecrets?: boolean;
   /** Beyond it, the least recently pushed preview is evicted. */
   maxPreviews: number;
   /** Days without a push before a preview is deleted; 0 = never. */
@@ -1621,9 +1628,14 @@ export interface PreviewInfo {
   url: string;
   lastPush: string;
   ready?: boolean;
+  /** commit waits for an operator's approval; nothing of it was fetched. */
+  awaitingApproval?: boolean;
+  /** The commit last approved (only it is deployed) and who approved it. */
+  approvedCommit?: string;
+  approvedBy?: string;
 }
 
-export type PreviewState = 'pending' | 'deploying' | 'ready' | 'failed' | 'deleting';
+export type PreviewState = 'pending' | 'awaiting-approval' | 'deploying' | 'ready' | 'failed' | 'deleting';
 
 /** GET /sites/{id}/previews */
 export interface PreviewView {
