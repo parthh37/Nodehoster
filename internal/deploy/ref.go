@@ -25,6 +25,10 @@ const fetchTimeout = 10 * time.Minute
 // fetches just that commit into an empty repository (git clone can only
 // take branches and tags). done, if set, is called with the finished
 // deployment once it has succeeded or failed.
+//
+// The git token (deploy.git.token, or tokenFrom read from its secret
+// store) is only given to git, in its environment: never to the build or
+// the application.
 func (d *Deployer) DeployRef(ctx context.Context, site *model.Site, ref, source, user string, done func(*model.Deployment)) (*model.Deployment, error) {
 	g := site.Deploy.Git
 	if g.Repo == "" {
@@ -45,6 +49,15 @@ func (d *Deployer) DeployRef(ctx context.Context, site *model.Site, ref, source,
 	snapshot := *dep // the worker keeps updating dep; callers get it as started
 	go func() {
 		d.run(site, dep, l, func() error {
+			if g.TokenFrom != nil {
+				// As in DeployGit: read at each deployment.
+				l.printf("reading the token from secret store %q", g.TokenFrom.Store)
+				t, err := d.secretToken(site, *g.TokenFrom)
+				if err != nil {
+					return err
+				}
+				token = t
+			}
 			env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			if token != "" {
 				// As in DeployGit: the token never reaches the arguments

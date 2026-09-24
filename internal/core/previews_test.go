@@ -613,3 +613,57 @@ func TestPreviewQueueCoalesces(t *testing.T) {
 		t.Error("queued after shutdown")
 	}
 }
+
+// TestPreviewStatusTokenFromStore: with the git token in a secret store,
+// the commit status is reported with it.
+func TestPreviewStatusTokenFromStore(t *testing.T) {
+	vault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Vault-Token") == "tok" && r.URL.Path == "/v1/secret/data/git" {
+			w.Write([]byte(`{"data":{"data":{"TOKEN":"store-token"}}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"errors":[]}`))
+	}))
+	defer vault.Close()
+	var mu sync.Mutex
+	var auth []string
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/statuses/") {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer host.Close()
+	c := testCore(t)
+	set := c.Settings()
+	set.SecretStores = []model.SecretStore{{Name: "vault", Type: model.SecretStoreVault, URL: vault.URL, Vault: &model.VaultStore{Token: "tok"}}}
+	if _, err := c.UpdateSettings(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+	parent := previewParentSite(t, c, host.URL+"/org/app.git", freeTCPPort(t), func(s *model.Site) {
+		s.Deploy.Git.TokenFrom = &model.SecretRef{Store: "vault", Ref: "git#TOKEN"}
+		s.Deploy.Previews.ReportStatus = true
+	})
+	ev := prEvent(preview.ActionDeploy, 5, "topic")
+	ev.Provider, ev.Commit = preview.Gitea, "0123456789abcdef0123456789abcdef01234567"
+	c.PreviewWebhook(parent, ev)
+	c.idleForTest(t)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(auth) != 2 {
+		t.Fatalf("%d statuses reported", len(auth))
+	}
+	for _, a := range auth {
+		if a != "token store-token" {
+			t.Errorf("Authorization = %q", a)
+		}
+	}
+}
+

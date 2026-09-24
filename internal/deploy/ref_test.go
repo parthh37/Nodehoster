@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -139,5 +140,53 @@ func TestDeployRefRefusesBadRefs(t *testing.T) {
 	nogit := h.staticSite(t, "nogit", nil)
 	if _, err := h.d.DeployRef(context.Background(), nogit, "refs/heads/x", "preview", "u", nil); err == nil || !strings.Contains(err.Error(), "no git repository") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// TestDeployRefTokenFromSecretStore: a preview of a private repository
+// whose token is held in a secret store fetches with that token, read at
+// the deployment, as DeployGit does.
+func TestDeployRefTokenFromSecretStore(t *testing.T) {
+	// Not parallel: it changes PATH to put a fake git first.
+	const token = "store-held-token-for-ref-51ad"
+	h := newHarness(t)
+	record := installFakeGit(t)
+	var asked []model.SecretRef
+	h.d.opts.SecretToken = func(_ *model.Site, ref model.SecretRef) (string, error) {
+		asked = append(asked, ref)
+		return token, nil
+	}
+	ref := model.SecretRef{Store: "vault", Ref: "git#TOKEN"}
+	site := h.staticSite(t, "private", func(s *model.Site) {
+		s.Deploy.Git = model.GitSource{Repo: "https://git.example.invalid/org/app.git", Branch: "fix/login", TokenFrom: &ref}
+	})
+	dep, err := h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "preview", "webhook", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.wait(t, dep); got.Status != "succeeded" {
+		t.Fatalf("status = %s (%s)", got.Status, got.Message)
+	}
+	if len(asked) != 1 || asked[0] != ref {
+		t.Errorf("secret store asked for %v", asked)
+	}
+	_, env := gitCalls(t, record)
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	if env["GIT_CONFIG_VALUE_0"] != "Authorization: Basic "+basic {
+		t.Errorf("git environment = %v: the store's token was not used", env)
+	}
+	log, _ := h.d.Log(site.ID, dep.ID)
+	if strings.Contains(string(log), token) {
+		t.Errorf("the token is in the log:\n%s", log)
+	}
+
+	// A store that cannot be read fails the deployment before git runs.
+	h.d.opts.SecretToken = func(*model.Site, model.SecretRef) (string, error) { return "", errors.New("vault is sealed") }
+	dep, err = h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "preview", "webhook", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.wait(t, dep); got.Status != "failed" || !strings.Contains(got.Message, "vault is sealed") {
+		t.Errorf("deployment = %s (%s)", got.Status, got.Message)
 	}
 }

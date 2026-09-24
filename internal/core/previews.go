@@ -16,6 +16,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/preview"
 	"github.com/parthh37/nodehoster/internal/secrets"
+	"github.com/parthh37/nodehoster/internal/secretstore"
 	"github.com/parthh37/nodehoster/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -748,8 +749,16 @@ func (c *Core) reportPreview(ctx context.Context, parent *model.Site, info model
 		sealed = parent.Deploy.Git.Token
 	}
 	token, err := c.Box.Unseal(sealed)
+	if err == nil && token == "" && cfg.StatusToken == "" && parent.Deploy.Git.TokenFrom != nil {
+		// The git token, held in a secret store.
+		ref := *parent.Deploy.Git.TokenFrom
+		var vals map[model.SecretRef]string
+		if vals, err = c.Secrets.Resolve(c.secretsCtx(), []model.SecretRef{ref}, secretstore.ResolveOptions{SiteID: parent.ID}); err == nil {
+			token = vals[ref]
+		}
+	}
 	if err != nil || token == "" {
-		c.Log.Warn("preview status not reported: no usable token; set one in the site's preview settings", "site", parent.Name)
+		c.Log.Warn("preview status not reported: no usable token; set one in the site's preview settings", "site", parent.Name, "err", err)
 		return
 	}
 	st := preview.Status{Commit: commit, State: state, Description: desc}
