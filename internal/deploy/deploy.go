@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -401,6 +402,14 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		}
 		env = append(env, "TEMP="+tmp, "TMP="+tmp, "TMPDIR="+tmp)
 		l.printf("commands run as %s", ra.Username)
+	} else if strings.TrimSpace(site.Deploy.InstallCommand+site.Deploy.BuildCommand) != "" {
+		// Static sites have no run-as setting: their builds always run as
+		// the service (README, "Who runs the install and build commands").
+		why := "the site has no run-as account"
+		if site.Type == model.SiteStatic {
+			why = "static sites have no run-as account"
+		}
+		l.printf("commands run as the NodeHoster service (%s)", why)
 	}
 	env, python, err := d.prepareVenv(ctx, site, workDir, env, l)
 	if err != nil {
@@ -496,59 +505,150 @@ func prependPath(env []string, dir string) []string {
 // linkShared makes each shared path point into the site's shared folder, so
 // files like .env and folders like uploads survive deployments. On the first
 // deployment, content shipped in the release seeds the shared copy.
+//
+// The service does this, in folders a site's run-as account can change:
+// it has Modify access to the site's folder, shared\ included. Had the
+// account put a junction or link where a shared path (or a folder on the
+// way to it) is, the service would create files and folders, or move the
+// release's files, wherever that points. So every step goes through the site's
+// folder opened as an os.Root, which never leaves it (on Windows each
+// name is opened with OBJ_DONT_REPARSE, and a junction, whose target is
+// absolute, counts as leaving), and a link or junction found on the way is
+// refused rather than followed within the folder.
 func (d *Deployer) linkShared(site *model.Site, release string, l *depLog) error {
 	if len(site.Deploy.SharedPaths) == 0 {
 		return nil
 	}
-	shared := model.SharedDir(d.opts.SitesDir, site.ID)
+	siteDir := filepath.Join(d.opts.SitesDir, site.ID)
+	relRelease, err := filepath.Rel(siteDir, release)
+	if err != nil || !filepath.IsLocal(relRelease) {
+		return fmt.Errorf("release %s is not in the site's folder", release)
+	}
+	root, err := os.OpenRoot(siteDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for _, p := range site.Deploy.SharedPaths {
 		p = filepath.Clean(filepath.FromSlash(strings.TrimSpace(p)))
-		if p == "." || filepath.IsAbs(p) || strings.HasPrefix(p, "..") {
+		if p == "." || !filepath.IsLocal(p) || strings.HasPrefix(p, "..") {
 			return fmt.Errorf("shared path %q must be relative to the application", p)
 		}
-		src := filepath.Join(shared, p)
-		dst := filepath.Join(release, p)
-		if _, err := os.Stat(src); os.IsNotExist(err) {
-			os.MkdirAll(filepath.Dir(src), 0o750)
-			if _, err := os.Stat(dst); err == nil {
-				if err := os.Rename(dst, src); err != nil {
-					return err
-				}
-				l.printf("shared: seeded %s from this release", p)
-			} else if strings.Contains(filepath.Base(p), ".") {
-				os.WriteFile(src, nil, 0o640) // looks like a file
-			} else {
-				os.MkdirAll(src, 0o750)
-			}
+		if err := linkSharedPath(root, siteDir, relRelease, p, l); err != nil {
+			return fmt.Errorf("shared path %s: %w", filepath.ToSlash(p), err)
 		}
-		os.RemoveAll(dst)
-		os.MkdirAll(filepath.Dir(dst), 0o750)
-		if err := link(src, dst); err != nil {
-			return fmt.Errorf("link shared path %s: %w", p, err)
-		}
-		l.printf("shared: %s", p)
 	}
 	return nil
 }
 
-func link(src, dst string) error {
-	if err := os.Symlink(src, dst); err == nil {
+// linkSharedPath links the shared path p of a release; root is the site's
+// folder, and release the release's folder in it.
+func linkSharedPath(root *os.Root, siteDir, release, p string, l *depLog) error {
+	src := filepath.Join("shared", p)
+	dst := filepath.Join(release, p)
+	if err := realFolders(root, src); err != nil {
+		return err
+	}
+	if err := realFolders(root, dst); err != nil {
+		return err
+	}
+	fi, err := root.Lstat(src)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := root.MkdirAll(filepath.Dir(src), 0o750); err != nil {
+			return err
+		}
+		// A link shipped in the release is not what seeds the shared copy.
+		if fi, err := root.Lstat(dst); err == nil && (fi.Mode().IsRegular() || fi.IsDir()) {
+			if err := root.Rename(dst, src); err != nil {
+				return err
+			}
+			l.printf("shared: seeded %s from this release", p)
+		} else if strings.Contains(filepath.Base(p), ".") { // looks like a file
+			// O_EXCL: what appeared there since is not written through.
+			f, err := root.OpenFile(src, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+			if err != nil {
+				return err
+			}
+			f.Close()
+		} else if err := root.Mkdir(src, 0o750); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case !fi.Mode().IsRegular() && !fi.IsDir():
+		return notFollowed(src)
+	}
+	if err := root.RemoveAll(dst); err != nil {
+		return err
+	}
+	if err := root.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		return err
+	}
+	if err := link(root, siteDir, src, dst); err != nil {
+		return fmt.Errorf("link: %w", err)
+	}
+	l.printf("shared: %s", p)
+	return nil
+}
+
+// realFolders checks that the folders on the way to name, in root, that
+// exist are folders, not links or junctions (which Lstat reports as
+// irregular files on Windows).
+func realFolders(root *os.Root, name string) error {
+	parts := strings.Split(filepath.Dir(name), string(filepath.Separator))
+	for i := range parts { // from the top: what is below a link is not looked up
+		dir := filepath.Join(parts[:i+1]...)
+		if dir == "." {
+			return nil
+		}
+		fi, err := root.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			return notFollowed(dir)
+		}
+	}
+	return nil
+}
+
+func notFollowed(name string) error {
+	return fmt.Errorf("%s in the site's folder is a link, junction or other special file, which deployments do not follow: replace it with a plain file or folder", filepath.ToSlash(name))
+}
+
+// link makes dst point at src, both in root (the site's folder at
+// siteDir): a symbolic link, made by handle in root and relative, so that
+// it resolves in the site's folder wherever that is; else, on Windows,
+// where making one takes a privilege that the service has but a developer
+// running NodeHoster unelevated may not, a junction for a folder, or a
+// copy of a file.
+func link(root *os.Root, siteDir, src, dst string) error {
+	target, err := filepath.Rel(filepath.Dir(dst), src)
+	if err != nil {
+		return err
+	}
+	if err := root.Symlink(target, dst); err == nil {
 		return nil
 	}
-	st, err := os.Stat(src)
+	st, err := root.Stat(src)
 	if err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" && st.IsDir() {
-		// Directory junctions need no special privilege.
-		return exec.Command("cmd", "/d", "/c", "mklink", "/J", dst, src).Run()
+		// Directory junctions need no special privilege. mklink goes by
+		// path, which the checks above leave as the service's own.
+		return exec.Command("cmd", "/d", "/c", "mklink", "/J", filepath.Join(siteDir, dst), filepath.Join(siteDir, src)).Run()
 	}
 	// Last resort for files: copy.
-	data, err := os.ReadFile(src)
+	data, err := root.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, st.Mode())
+	return root.WriteFile(dst, data, st.Mode())
 }
 
 // Activate switches a site to an existing release (rollback).
