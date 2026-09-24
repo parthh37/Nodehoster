@@ -7,26 +7,34 @@ import (
 	"github.com/tailscale/win"
 )
 
-// The manager's look: a light grey window with white cards and lists,
-// Segoe UI with semibold headings, an icon on every command, and colored
-// bars for what needs attention, in the style of current Windows tools.
+// The manager's look, in the style of Windows 11 tools and matching the
+// web console (its teal accent and slate greys): a light grey window whose
+// title bar is the same grey, a navigation tree like File Explorer's, white
+// cards and lists, commands drawn as rows that highlight under the
+// pointer, Segoe UI with semibold headings, and colored bars for what
+// needs attention.
 
 var (
-	colorOK      = walk.RGB(0x16, 0x7c, 0x3a)
-	colorWarning = walk.RGB(0x9a, 0x5b, 0x00)
-	colorError   = walk.RGB(0xc4, 0x2b, 0x1c)
-	colorMuted   = walk.RGB(0x5f, 0x6b, 0x7a)
-	colorAccent  = walk.RGB(0x0f, 0x76, 0x6e)
-	colorSurface = walk.RGB(0xf3, 0xf4, 0xf6) // the window
-	colorCard    = walk.RGB(0xff, 0xff, 0xff)
-	colorBorder  = walk.RGB(0xdc, 0xe0, 0xe5)
-	colorTrack   = walk.RGB(0xe5, 0xe7, 0xeb) // a meter's empty part
+	colorOK       = walk.RGB(0x16, 0x7c, 0x3a)
+	colorWarning  = walk.RGB(0x9a, 0x5b, 0x00)
+	colorError    = walk.RGB(0xc4, 0x2b, 0x1c)
+	colorText     = walk.RGB(0x1f, 0x29, 0x37)
+	colorMuted    = walk.RGB(0x5f, 0x6b, 0x7a)
+	colorDisabled = walk.RGB(0xa0, 0xa7, 0xb1)
+	colorAccent   = walk.RGB(0x0f, 0x76, 0x6e)
+	colorSurface  = walk.RGB(0xf3, 0xf4, 0xf6) // the window
+	colorCard     = walk.RGB(0xff, 0xff, 0xff)
+	colorBorder   = walk.RGB(0xe1, 0xe4, 0xe8)
+	colorHover    = walk.RGB(0xe5, 0xe8, 0xeb) // a row under the pointer
+	colorPressed  = walk.RGB(0xd9, 0xdd, 0xe2)
+	colorTrack    = walk.RGB(0xe5, 0xe7, 0xeb) // a meter's empty part
 )
 
 var (
-	fontTitle   = Font{Family: "Segoe UI Semibold", PointSize: 15}
+	fontTitle   = Font{Family: "Segoe UI Semibold", PointSize: 16}
+	fontPane    = Font{Family: "Segoe UI Semibold", PointSize: 11} // a pane's title
 	fontHeading = Font{Family: "Segoe UI Semibold", PointSize: 9}
-	fontValue   = Font{Family: "Segoe UI Semibold", PointSize: 12}
+	fontValue   = Font{Family: "Segoe UI Semibold", PointSize: 14}
 	fontMono    = Font{Family: "Consolas", PointSize: 9}
 )
 
@@ -121,11 +129,9 @@ type command struct {
 	actions []**walk.Action
 }
 
-// commandView is a command in a pane (row, image, link) or as a button.
+// commandView is a command in a pane (a row) or as a button.
 type commandView struct {
-	row    *walk.Composite
-	image  *walk.ImageView
-	link   *walk.LinkLabel
+	row    *actionRow
 	button *walk.PushButton
 }
 
@@ -152,19 +158,15 @@ func syncCommands() {
 			}
 		}
 		for _, v := range c.views {
-			if v.link != nil {
-				v.link.SetEnabled(c.enabled)
-			}
-			if v.image != nil {
-				v.image.SetImage(c.currentIcon())
-			}
 			if v.button != nil {
 				v.button.SetEnabled(c.enabled)
 				v.button.SetImage(c.currentIcon())
 				setVisible(v.button, c.visible)
 			}
-			if v.row != nil {
-				setVisible(v.row, c.visible)
+			if v.row != nil && v.row.cw != nil {
+				v.row.init()
+				v.row.update()
+				setVisible(v.row.cw, c.visible)
 			}
 		}
 	}
@@ -192,28 +194,11 @@ func (c *command) currentIcon() walk.Image {
 
 func linkText(text string) string { return "<a>" + text + "</a>" }
 
-// paneRow declares the command as a line of an actions pane.
+// paneRow declares the command as a row of an actions pane.
 func (c *command) paneRow() Widget {
-	v := &commandView{}
+	v := &commandView{row: &actionRow{cmd: c, bg: colorSurface}}
 	c.views = append(c.views, v)
-	im := iconView(&v.image, "")
-	im.Image = c.currentIcon()
-	im.OnMouseUp = func(x, y int, b walk.MouseButton) {
-		if b == walk.LeftButton {
-			c.trigger()
-		}
-	}
-	return Composite{
-		AssignTo: &v.row,
-		Visible:  c.visible,
-		Layout:   HBox{MarginsZero: true, Spacing: 7, Alignment: AlignHNearVCenter},
-		Children: []Widget{
-			im,
-			LinkLabel{AssignTo: &v.link, Text: linkText(c.text), Enabled: c.enabled,
-				OnLinkActivated: func(*walk.LinkLabelLink) { c.trigger() }},
-			HSpacer{},
-		},
-	}
+	return v.row.widget()
 }
 
 // menuItem declares the command as an item of a menu or tool bar.
@@ -251,11 +236,8 @@ func (c *command) setEnabled(on bool) {
 	}
 	c.enabled = on
 	for _, v := range c.views {
-		if v.link != nil {
-			v.link.SetEnabled(on)
-		}
-		if v.image != nil {
-			v.image.SetImage(c.currentIcon())
+		if v.row != nil {
+			v.row.update()
 		}
 		if v.button != nil {
 			v.button.SetEnabled(on)
@@ -276,8 +258,8 @@ func (c *command) setText(text string) {
 	}
 	c.text = text
 	for _, v := range c.views {
-		if v.link != nil {
-			v.link.SetText(linkText(text))
+		if v.row != nil {
+			v.row.update()
 		}
 		if v.button != nil {
 			v.button.SetText(text)
@@ -296,8 +278,8 @@ func (c *command) setIcon(name string) {
 	}
 	c.icon = name
 	for _, v := range c.views {
-		if v.image != nil {
-			v.image.SetImage(c.currentIcon())
+		if v.row != nil {
+			v.row.update()
 		}
 		if v.button != nil {
 			v.button.SetImage(c.currentIcon())
@@ -316,8 +298,8 @@ func (c *command) setVisible(on bool) {
 	}
 	c.visible = on
 	for _, v := range c.views {
-		if v.row != nil {
-			setVisible(v.row, on)
+		if v.row != nil && v.row.cw != nil {
+			setVisible(v.row.cw, on)
 		}
 		if v.button != nil {
 			setVisible(v.button, on)
@@ -338,9 +320,9 @@ func pane(items ...any) []Widget {
 		switch v := it.(type) {
 		case string:
 			if len(w) > 0 {
-				w = append(w, VSpacer{Size: 6})
+				w = append(w, VSpacer{Size: 10})
 			}
-			w = append(w, heading(v))
+			w = append(w, Composite{Layout: HBox{Margins: Margins{Left: 10}}, Children: []Widget{heading(v), HSpacer{}}})
 		case *command:
 			w = append(w, v.paneRow())
 		case []*command:
@@ -383,6 +365,14 @@ var barColors = map[barKind]walk.Color{
 	barError:   walk.RGB(0xfd, 0xe9, 0xe9),
 }
 
+// barStripes color the edge of a bar, like Windows 11's InfoBar.
+var barStripes = map[barKind]walk.Color{
+	barInfo:    walk.RGB(0x25, 0x63, 0xeb),
+	barOK:      colorOK,
+	barWarning: walk.RGB(0xd9, 0x77, 0x06),
+	barError:   colorError,
+}
+
 var barIcons = map[barKind]string{
 	barInfo:    desktop.IconInfo,
 	barOK:      desktop.IconOK,
@@ -393,12 +383,13 @@ var barIcons = map[barKind]string{
 // infoBar is a colored message across a page, with an icon and an
 // optional link that fixes the problem ("Start the service").
 type infoBar struct {
-	box   *walk.Composite
-	image *walk.ImageView
-	text  *walk.TextLabel
-	link  *walk.LinkLabel
-	act   func()
-	kind  barKind
+	box    *walk.Composite
+	stripe *walk.Composite
+	image  *walk.ImageView
+	text   *walk.TextLabel
+	link   *walk.LinkLabel
+	act    func()
+	kind   barKind
 }
 
 func (b *infoBar) widget() Widget {
@@ -406,15 +397,29 @@ func (b *infoBar) widget() Widget {
 		AssignTo:   &b.box,
 		Visible:    false,
 		Background: SolidColorBrush{Color: barColors[barInfo]},
-		Layout:     HBox{Margins: Margins{Left: 10, Top: 7, Right: 10, Bottom: 7}, Spacing: 8, Alignment: AlignHNearVCenter},
+		Layout:     HBox{MarginsZero: true, SpacingZero: true},
 		Children: []Widget{
-			iconView(&b.image, barIcons[barInfo]),
-			TextLabel{AssignTo: &b.text, StretchFactor: 1},
-			LinkLabel{AssignTo: &b.link, Visible: false, OnLinkActivated: func(*walk.LinkLabelLink) {
-				if b.act != nil {
-					b.act()
-				}
-			}},
+			// Empty, so it takes the bar's height without asking for any
+			// (a CustomWidget would make the bar grab room from lists).
+			Composite{
+				AssignTo:   &b.stripe,
+				Background: SolidColorBrush{Color: barStripes[barInfo]},
+				MinSize:    Size{Width: 4},
+				MaxSize:    Size{Width: 4},
+				Layout:     HBox{MarginsZero: true},
+			},
+			Composite{
+				Layout: HBox{Margins: Margins{Left: 12, Top: 9, Right: 12, Bottom: 9}, Spacing: 10, Alignment: AlignHNearVCenter},
+				Children: []Widget{
+					iconView(&b.image, barIcons[barInfo]),
+					TextLabel{AssignTo: &b.text, StretchFactor: 1},
+					LinkLabel{AssignTo: &b.link, Visible: false, OnLinkActivated: func(*walk.LinkLabelLink) {
+						if b.act != nil {
+							b.act()
+						}
+					}},
+				},
+			},
 		},
 	}
 }
@@ -428,6 +433,7 @@ func (b *infoBar) show(kind barKind, text, link string, act func()) {
 		b.kind = kind
 		b.box.SetBackground(brush(barColors[kind]))
 		b.image.SetImage(img(barIcons[kind]))
+		b.stripe.SetBackground(brush(barStripes[kind]))
 	}
 	if b.text.Text() != text {
 		b.text.SetText(text)
@@ -565,6 +571,7 @@ func searchBox(assign **walk.LineEdit, cue string, onChange func(text string)) C
 // user cancels.
 func ask(owner walk.Form, title, instruction, content string, icon walk.TaskDialogSystemIcon, choices ...[2]string) int {
 	td := walk.NewTaskDialog()
+	centerOnOwner(td, owner)
 	opts := walk.TaskDialogOpts{
 		Owner:         owner,
 		Title:         title,
@@ -607,6 +614,7 @@ func ask(owner walk.Form, title, instruction, content string, icon walk.TaskDial
 // are behind a "Show details" expander.
 func notify(owner walk.Form, title, instruction, content, details string, icon walk.TaskDialogSystemIcon) {
 	td := walk.NewTaskDialog()
+	centerOnOwner(td, owner)
 	_, err := td.Show(walk.TaskDialogOpts{
 		Owner:               owner,
 		Title:               title,

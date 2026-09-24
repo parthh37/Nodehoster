@@ -155,7 +155,9 @@ func runManager(openSite string) {
 		p := pg.p
 		m.pages[pg.kind] = p
 		contents = append(contents, Composite{AssignTo: &p.content, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 8}, Children: pg.w})
-		actions = append(actions, Composite{AssignTo: &p.actions, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 5}, Children: pg.a})
+		// The spacer keeps the rows (which would stretch) packed at the top.
+		actions = append(actions, Composite{AssignTo: &p.actions, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 1},
+			Children: append(pg.a, VSpacer{})})
 	}
 	m.markLocalOnly()
 
@@ -193,13 +195,13 @@ func runManager(openSite string) {
 			HSplitter{
 				Name:        "panes",
 				Persistent:  true,
-				HandleWidth: 6,
+				HandleWidth: 4,
 				Children: []Widget{
 					Composite{
 						StretchFactor: 1,
-						Layout:        VBox{Margins: Margins{Left: 8, Top: 8, Right: 2, Bottom: 8}, Spacing: 6},
+						Layout:        VBox{Margins: Margins{Left: 8, Top: 14, Right: 4, Bottom: 8}, Spacing: 8},
 						Children: []Widget{
-							heading("Connections"),
+							Composite{Layout: HBox{Margins: Margins{Left: 8}}, Children: []Widget{heading("Connections"), HSpacer{}}},
 							TreeView{
 								AssignTo:             &m.tree,
 								Model:                m.nav,
@@ -209,13 +211,13 @@ func runManager(openSite string) {
 					},
 					Composite{
 						StretchFactor: 5,
-						Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 8}, Spacing: 10},
+						Layout:        VBox{Margins: Margins{Left: 16, Top: 16, Right: 16, Bottom: 10}, Spacing: 12},
 						Children: append([]Widget{
 							Composite{
-								Layout: HBox{MarginsZero: true, Spacing: 12, Alignment: AlignHNearVCenter},
+								Layout: HBox{MarginsZero: true, Spacing: 14, Alignment: AlignHNearVCenter},
 								Children: []Widget{
 									ImageView{AssignTo: &m.headerIcon, MinSize: Size{Width: 32, Height: 32}, MaxSize: Size{Width: 32, Height: 32}},
-									Composite{Layout: VBox{MarginsZero: true, SpacingZero: true}, Children: []Widget{
+									Composite{Layout: VBox{MarginsZero: true, Spacing: 2}, Children: []Widget{
 										Label{AssignTo: &m.header, Font: fontTitle, EllipsisMode: EllipsisEnd},
 										Label{AssignTo: &m.subheader, TextColor: colorMuted, EllipsisMode: EllipsisEnd},
 									}},
@@ -228,9 +230,11 @@ func runManager(openSite string) {
 						StretchFactor:   1,
 						HorizontalFixed: true,
 						Background:      SolidColorBrush{Color: colorSurface},
-						Layout:          VBox{Margins: Margins{Left: 6, Top: 10, Right: 10, Bottom: 8}, Spacing: 6},
+						Layout:          VBox{Margins: Margins{Left: 4, Top: 16, Right: 12, Bottom: 8}, Spacing: 2},
 						Children: append([]Widget{
-							Label{Text: "Actions", Font: Font{Family: "Segoe UI Semibold", PointSize: 11}},
+							Composite{Layout: HBox{Margins: Margins{Left: 10, Bottom: 6}}, Children: []Widget{
+								Label{Text: "Actions", Font: fontPane}, HSpacer{},
+							}},
 						}, append(actions, VSpacer{})...),
 					},
 				},
@@ -245,6 +249,19 @@ func runManager(openSite string) {
 	if err != nil {
 		fatal(err)
 	}
+	styleForm(m.mw, colorSurface)
+	modernizeTree(m.tree, colorSurface)
+	roomyToolBar(m.mw.ToolBar())
+	// Moved to a monitor of other scaling (which resizes the window): the
+	// rows and padding set in pixels above follow.
+	dpi := m.mw.DPI()
+	m.mw.SizeChanged().Attach(func() {
+		if d := m.mw.DPI(); d != dpi {
+			dpi = d
+			m.tree.SetItemHeight(walk.IntFrom96DPI(treeRowHeight, m.tree.DPI()))
+			roomyToolBar(m.mw.ToolBar())
+		}
+	})
 	armSortables()
 	syncCommands()
 
