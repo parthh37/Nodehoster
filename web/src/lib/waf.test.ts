@@ -3,6 +3,8 @@ import type { WAFEvent } from '@/api/wafTypes';
 import {
   describeExclusion,
   effectiveWAF,
+  eventSiteLabel,
+  eventText,
   exclusionError,
   matchWhere,
   normalizeWAFSettings,
@@ -53,6 +55,29 @@ describe('suggestExclusion', () => {
     expect(x.args).toBeUndefined();
     expect(x.ruleIds).toEqual([930100, 941100]);
     expect(exclusionError(x)).toBeNull();
+  });
+  it('cuts the path before a redacted token', () => {
+    expect(suggestExclusion(ev([m(941100, 'arg', 'q')], '/reset/[redacted]/confirm')).path).toBe('/reset/');
+  });
+});
+
+describe('eventText', () => {
+  it('escapes controls and bidirectional overrides', () => {
+    expect(eventText('/a\nb\u202egnp.exe\u0000')).toBe('/a\\u000ab\\u202egnp.exe\\u0000');
+    expect(eventText('/ünïcode/ok')).toBe('/ünïcode/ok');
+    expect(eventText(undefined)).toBe('');
+  });
+  it('keeps markup as text and cuts long values', () => {
+    expect(eventText('/<img src=x onerror=alert(1)>')).toBe('/<img src=x onerror=alert(1)>');
+    expect(eventText('x'.repeat(20), 10)).toBe(`${'x'.repeat(10)}…`);
+  });
+});
+
+describe('eventSiteLabel', () => {
+  it('names the site and the slot that served the request', () => {
+    expect(eventSiteLabel({ siteId: 's1' }, { s1: 'shop' })).toBe('shop');
+    expect(eventSiteLabel({ siteId: 's1', slot: 'staging' }, { s1: 'shop' })).toBe('shop [staging]');
+    expect(eventSiteLabel({ siteId: 's2' }, {})).toBe('s2');
   });
 });
 

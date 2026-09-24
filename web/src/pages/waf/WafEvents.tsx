@@ -16,7 +16,7 @@ import { Badge } from '@/components/Badge';
 import { ErrorBox } from '@/components/Field';
 import { useToast } from '@/components/Toast';
 import { formatDateTime, relativeTime } from '@/lib/format';
-import { WAF_CATEGORIES, categoryLabel, matchWhere, severityTone, suggestExclusion } from '@/lib/waf';
+import { WAF_CATEGORIES, categoryLabel, eventSiteLabel, eventText, matchWhere, severityTone, suggestExclusion } from '@/lib/waf';
 import { ExclusionDialog } from './ExclusionDialog';
 
 const PAGE = 100;
@@ -154,15 +154,21 @@ export function WafEvents({ siteId, initialSite = '' }: { siteId?: string; initi
                     </Td>
                     {!siteId && (
                       <Td>
-                        <Link to={`/sites/${ev.siteId}/firewall`} className="nh-link text-[13px]" onClick={(e) => e.stopPropagation()}>
-                          {siteNames[ev.siteId] ?? ev.siteId}
+                        <Link to={`/sites/${encodeURIComponent(ev.siteId)}/firewall`} className="nh-link text-[13px]" onClick={(e) => e.stopPropagation()}>
+                          {eventSiteLabel(ev, siteNames)}
                         </Link>
                       </Td>
                     )}
                     <Td className="font-mono text-xs">{ev.clientIp}</Td>
                     <Td className="min-w-0 text-[13px]">
-                      <div className="truncate font-mono text-xs">
-                        {ev.method} {ev.path}
+                      {/* The method and path are the client's: shown as escaped text, never as a link. */}
+                      <div className="truncate font-mono text-xs" title={eventText(ev.path)}>
+                        {eventText(ev.method, 16)} {eventText(ev.path, 300)}
+                        {siteId && ev.slot && (
+                          <Badge tone="gray" className="ml-1.5">
+                            slot {ev.slot}
+                          </Badge>
+                        )}
                       </div>
                       {first && (
                         <div className="truncate text-xs text-zinc-500">
@@ -230,14 +236,22 @@ function EventDetail({ ev }: { ev: WAFEvent }) {
           Request ID <Mono>{ev.id}</Mono>
         </span>
         <span>
-          Host <Mono>{ev.host}</Mono>
+          Host <Mono>{eventText(ev.host, 255)}</Mono>
+        </span>
+        {ev.slot && (
+          <span>
+            Slot <Mono>{ev.slot}</Mono>
+          </span>
+        )}
+        <span className="min-w-0 break-all">
+          Path <Mono>{eventText(ev.path)}</Mono>
         </span>
         <span>
           Paranoia level {ev.paranoiaLevel}, threshold {ev.threshold}
         </span>
         {ev.userAgent && (
           <span className="min-w-0 truncate">
-            User-Agent <Mono>{ev.userAgent}</Mono>
+            User-Agent <Mono>{eventText(ev.userAgent, 512)}</Mono>
           </span>
         )}
       </div>
@@ -264,7 +278,7 @@ function EventDetail({ ev }: { ev: WAFEvent }) {
                 <div>
                   {m.message} — in {matchWhere(m)}
                 </div>
-                {m.snippet && <code className="mt-0.5 block break-all rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">{m.snippet}</code>}
+                {m.snippet && <code className="mt-0.5 block break-all rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">{eventText(m.snippet)}</code>}
               </Td>
             </Tr>
           ))}

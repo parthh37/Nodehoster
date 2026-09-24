@@ -84,14 +84,19 @@ export function matchWhere(m: Pick<WAFMatch, 'in' | 'name'>): string {
   }
 }
 
+/** What an event does not keep (model.WAFRedacted). */
+export const WAF_REDACTED = '[redacted]';
+
 /**
  * The narrowest exclusion that would have let an event's request through:
- * its rules, under its path, and — when every match was in a named
- * argument, cookie or header — only for those.
+ * its rules, under its path (cut before a redacted segment), and — when
+ * every match was in a named argument, cookie or header — only for those.
  */
 export function suggestExclusion(ev: Pick<WAFEvent, 'id' | 'path' | 'matches'>): WAFExclusion {
   const ruleIds = [...new Set(ev.matches.map((m) => m.ruleId))].sort((a, b) => a - b);
-  const x: WAFExclusion = { path: ev.path || undefined, ruleIds, comment: `From request ${ev.id}` };
+  const i = ev.path.indexOf(WAF_REDACTED);
+  const path = i >= 0 ? ev.path.slice(0, i) : ev.path;
+  const x: WAFExclusion = { path: path || undefined, ruleIds, comment: `From request ${ev.id}` };
   const named = ev.matches.length > 0 && ev.matches.every((m) => !!m.name && ['arg', 'argName', 'file', 'cookie', 'header'].includes(m.in));
   if (named) {
     const pick = (kinds: string[]) => [...new Set(ev.matches.filter((m) => kinds.includes(m.in)).map((m) => m.name as string))];
@@ -103,6 +108,32 @@ export function suggestExclusion(ev: Pick<WAFEvent, 'id' | 'path' | 'matches'>):
     if (headers.length) x.headers = headers;
   }
   return x;
+}
+
+/**
+ * Client-sent text from an event (path, host, User-Agent) made safe to
+ * show: control characters and the bidirectional controls that could make
+ * it read as something else are escaped as \uXXXX (the server does so
+ * too; this does not depend on it), and it is cut at max characters.
+ * Render the result as text only — never as markup, a link or a URL.
+ */
+export function eventText(s: string | undefined, max = 1024): string {
+  if (!s) return '';
+  let out = '';
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 0;
+    const unsafe =
+      c < 0x20 || c === 0x7f || (c >= 0x80 && c < 0xa0) || c === 0x061c || c === 0x200e || c === 0x200f || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+    out += unsafe ? `\\u${c.toString(16).padStart(4, '0')}` : ch;
+    if (out.length > max) return `${out.slice(0, max)}…`;
+  }
+  return out;
+}
+
+/** The site an event is for, as lists show it: "shop", or "shop [staging]" for a slot's traffic. */
+export function eventSiteLabel(ev: Pick<WAFEvent, 'siteId' | 'slot'>, names: Record<string, string>): string {
+  const name = names[ev.siteId] ?? ev.siteId;
+  return ev.slot ? `${name} [${ev.slot}]` : name;
 }
 
 /** A path prefix one level up ("/admin/posts/12" -> "/admin/posts/"), for widening an exclusion. */
