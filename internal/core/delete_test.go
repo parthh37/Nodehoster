@@ -16,6 +16,26 @@ import (
 	"github.com/parthh37/nodehoster/internal/tasks"
 )
 
+// testCore opens a core in a temporary directory, shut down at the end of
+// the test.
+func testCore(t *testing.T) *Core {
+	t.Helper()
+	boot := config.DefaultBootstrap()
+	boot.Admin.Listen = "127.0.0.1:0"
+	// A short path: the process manager's agent socket lives in it.
+	root, err := os.MkdirTemp("", "nhcore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	c, err := Open(config.NewPaths(root), boot, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Shutdown)
+	return c
+}
+
 // slowTask is a task process that takes as long as the test wants to stop,
 // like one using its whole shutdown timeout.
 type slowTask struct {
@@ -44,23 +64,10 @@ func (r slowRunner) StartTask(*model.Site, model.ScheduledTask, string, io.Write
 // Deleting a site waits for its task runs to stop, which can take their
 // shutdown timeout; other sites must stay editable meanwhile.
 func TestDeleteSiteDoesNotBlockOtherEdits(t *testing.T) {
-	boot := config.DefaultBootstrap()
-	boot.Admin.Listen = "127.0.0.1:0"
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// A short path: the process manager's agent socket lives in it.
-	root, err := os.MkdirTemp("", "nhcore")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(root) })
-	c, err := Open(config.NewPaths(root), boot, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testCore(t)
 	proc := &slowTask{done: make(chan struct{}), release: make(chan struct{}), asked: make(chan struct{})}
-	defer c.Shutdown()
 	defer close(proc.release) // before Shutdown, whatever happens
-	c.Tasks = tasks.New(tasks.Options{Store: c.Store, Bus: c.Bus, Log: log, LogsDir: c.Paths.SiteLogs, Runner: slowRunner{proc}})
+	c.Tasks = tasks.New(tasks.Options{Store: c.Store, Bus: c.Bus, Log: c.Log, LogsDir: c.Paths.SiteLogs, Runner: slowRunner{proc}})
 
 	ctx := context.Background()
 	worker, err := c.CreateSite(ctx, &model.Site{Name: "worker", Type: model.SiteWorker,

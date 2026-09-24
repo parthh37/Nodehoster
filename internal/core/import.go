@@ -204,11 +204,14 @@ func nodeEnv(s *model.Site) []model.EnvVar {
 	return s.Node.Env
 }
 
-// addTask adds a scheduled task to a node or worker site.
+// addTask adds a scheduled task to a node or worker site. The site is read
+// and written under the lock, so an edit saved meanwhile is not lost.
 func (c *Core) addTask(ctx context.Context, siteID string, t model.ScheduledTask) (*model.Site, error) {
 	if siteID == "" {
 		return nil, &model.ValidationError{Field: "taskSite", Message: "choose the site that runs this task"}
 	}
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
 	existing, err := c.Site(siteID)
 	if err != nil {
 		return nil, &model.ValidationError{Field: "taskSite", Message: "the site that should run this task does not exist"}
@@ -219,5 +222,5 @@ func (c *Core) addTask(ctx context.Context, siteID string, t model.ScheduledTask
 	s := Masked(existing) // masked secrets keep their stored values
 	t.ID = ""
 	s.Tasks = append(s.Tasks, t)
-	return c.UpdateSite(ctx, siteID, s)
+	return c.updateSite(ctx, siteID, s)
 }

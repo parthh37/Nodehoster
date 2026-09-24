@@ -761,6 +761,11 @@ func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*mod
 func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
+	return c.updateSite(ctx, id, in)
+}
+
+// updateSite is UpdateSite with sitesMu held, for a read-modify-write.
+func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	existing, err := c.Site(id)
 	if err != nil {
 		return nil, err
