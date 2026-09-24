@@ -113,6 +113,11 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/node/versions", a.nodeVersions)
 		r.Get("/settings/dns-catalog", a.dnsCatalog)
 		r.Get("/mime/defaults", a.mimeDefaults)
+		// Filtered per alert; silencing checks operator on the alert's site.
+		r.Get("/alerts", a.listAlerts)
+		r.Get("/alerts/history", a.alertHistory)
+		r.Post("/alerts/{alert}/silence", a.silenceAlert)
+		r.Delete("/alerts/{alert}/silence", a.unsilenceAlert)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleViewer))
@@ -130,6 +135,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/runs", a.listRuns)
 		r.Get("/sites/{id}/runs/{run}/log", a.runLog)
 		r.Get("/sites/{id}/runs/{run}/log/stream", a.runLogStream)
+		r.Get("/sites/{id}/alert-rules", a.siteAlertRules)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))

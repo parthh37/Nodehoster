@@ -35,4 +35,8 @@ export const qk = {
   backupFiles: (destId: string) => ['backups', 'files', destId] as const,
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
   logShippingStatus: ['logshipping', 'status'] as const,
+  alerts: ['alerts'] as const,
+  alertList: (siteId?: string) => ['alerts', 'list', siteId ?? ''] as const,
+  alertHistory: (siteId?: string, server?: boolean) => ['alerts', 'history', siteId ?? '', !!server] as const,
+  siteAlertRules: (siteId: string) => ['alerts', 'rules', siteId] as const,
 };

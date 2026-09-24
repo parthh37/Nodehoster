@@ -2,6 +2,8 @@
 // the `json` tags. Times are RFC 3339 strings. Fields tagged `omitempty` are
 // optional here.
 
+import type { AlertSettings, SiteAlerts } from './alerts';
+
 export const SECRET = '__SECRET__';
 
 // ---------------------------------------------------------------- sites
@@ -359,6 +361,8 @@ export interface Site {
   deploy: DeployConfig;
   /** Scheduled tasks (node and worker sites). */
   tasks?: ScheduledTask[];
+  /** Overrides of the server-wide alert rules, and the site's own (api/alerts.ts). */
+  alerts?: SiteAlerts;
   activeRelease?: string;
   createdAt: string;
   updatedAt: string;
@@ -645,6 +649,7 @@ export interface Settings {
   backup: BackupSettings;
   logShipping: LogShippingSettings;
   updates: UpdateSettings;
+  alerts: AlertSettings;
 }
 
 /** Automatic updates from the signed release feed (model.UpdateSettings). */

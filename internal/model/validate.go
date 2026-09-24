@@ -156,6 +156,7 @@ func (s *Site) ApplyDefaults() {
 	for i := range s.Tasks {
 		s.Tasks[i].applyDefaults()
 	}
+	s.Alerts.applyDefaults()
 }
 
 func (hc *HealthCheck) applyDefaults(intervalSec int) {
@@ -321,6 +322,9 @@ func (s *Site) Validate() error {
 		return verr("tasks", "scheduled tasks need a Node.js application or background worker site")
 	}
 	if err := validateTasks(s.Tasks); err != nil {
+		return err
+	}
+	if err := s.Alerts.validate(s); err != nil {
 		return err
 	}
 	r := s.Routing
@@ -595,6 +599,7 @@ func DefaultSettings() Settings {
 		Backup:             DefaultBackup(),
 		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 		Updates:            DefaultUpdates(),
+		Alerts:             DefaultAlerts(),
 	}
 }
 

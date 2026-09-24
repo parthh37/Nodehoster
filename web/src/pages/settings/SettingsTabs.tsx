@@ -323,6 +323,8 @@ export const EVENT_TYPES = [
   'update.installing',
   'update.installed',
   'update.failed',
+  'alert.firing',
+  'alert.resolved',
 ];
 
 const FORMATS = [

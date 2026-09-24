@@ -52,10 +52,18 @@ const (
 // administrator did).
 const SecurityBanned = "security.banned"
 
+// Resource alerts (internal/alerts): a rule's condition has held for its
+// "for" period (and, as reminders, still does), and it has cleared.
+// Critical alerts are errors, warnings warnings.
+const (
+	AlertFiring   = "alert.firing"
+	AlertResolved = "alert.resolved"
+)
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, AlertFiring, AlertResolved}
 
 type Bus struct {
 	store    *store.Store

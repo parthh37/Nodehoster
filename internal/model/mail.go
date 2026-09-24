@@ -97,7 +97,7 @@ type MailMessage struct {
 	Recipients  []MailRecipient `json:"recipients"`
 	Subject     string          `json:"subject,omitempty"`
 	Size        int64           `json:"size"`
-	Source      string          `json:"source"` // smtp | pickup | test
+	Source      string          `json:"source"` // smtp | pickup | test | alert
 	ClientIP    string          `json:"clientIp,omitempty"`
 	User        string          `json:"user,omitempty"` // authenticated SMTP user
 	State       string          `json:"state"`

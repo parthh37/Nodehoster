@@ -21,13 +21,15 @@ import { MimeTab } from './MimeTab';
 import { SecurityTab } from './SecurityTab';
 import { SsoTab } from './SsoTab';
 import { UpdatesTab } from './UpdatesTab';
+import { AlertsTab } from './AlertsTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup' | 'updates';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup' | 'updates' | 'alerts';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
   { key: 'dns', label: 'DNS providers' },
   { key: 'notifications', label: 'Notifications' },
+  { key: 'alerts', label: 'Alerts' },
   { key: 'tls', label: 'TLS & proxy' },
   { key: 'mime', label: 'MIME types' },
   { key: 'security', label: 'Security' },
@@ -39,7 +41,7 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'updates', label: 'Updates' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup', 'updates'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup', 'updates', 'alerts'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -53,6 +55,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('backup')) return 'backup';
   if (field.startsWith('logShipping')) return 'logshipping';
   if (field.startsWith('updates')) return 'updates';
+  if (field.startsWith('alerts')) return 'alerts';
   return 'process';
 }
 
@@ -138,6 +141,7 @@ export function SettingsPage() {
         {props && tab === 'logshipping' && <LogShippingTab {...props} />}
         {props && tab === 'backup' && <BackupsTab {...props} />}
         {props && tab === 'updates' && <UpdatesTab {...props} />}
+        {props && tab === 'alerts' && <AlertsTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
       {dirty && (

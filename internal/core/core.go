@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/parthh37/nodehoster/internal/alerts"
 	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/config"
@@ -58,6 +59,7 @@ type Core struct {
 	Bans      *ipban.Manager
 	Tasks     *tasks.Scheduler
 	Ship      *logship.Shipper
+	Alerts    *alerts.Engine
 	StartedAt time.Time
 	IsService bool
 
@@ -114,6 +116,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
 	c.settings.Updates.ApplyDefaults()
+	c.settings.Alerts.ApplyDefaults() // settings saved before resource alerts existed
 	c.UpdateFeed = update.NewFeed(update.DefaultFeed)
 
 	c.Ship = newShipper(log, c.siteName)
@@ -161,6 +164,9 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	})
 	if err != nil {
 		return nil, err
+	}
+	if err := c.openAlerts(ctx); err != nil {
+		return nil, fmt.Errorf("load alerts: %w", err)
 	}
 	c.Tasks = tasks.New(tasks.Options{
 		Store: st, Bus: c.Bus, Log: log, LogsDir: paths.SiteLogs, Runner: taskRunner{c.Procs},
@@ -219,6 +225,7 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
 	c.wg.Go(func() { c.updateLoop(ctx) })
+	c.wg.Go(func() { c.alertLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -324,6 +331,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	}
 	in.Updates.ApplyDefaults()
 	if err := in.Updates.Validate(); err != nil {
+		return cur, err
+	}
+	in.Alerts.ApplyDefaults()
+	if err := in.Alerts.Validate(); err != nil {
 		return cur, err
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
