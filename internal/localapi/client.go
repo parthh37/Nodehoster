@@ -17,12 +17,17 @@ import (
 	"time"
 
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/remote"
 )
 
-// Client talks to one local endpoint.
+// Client talks to one local endpoint, or to another server's web console
+// over HTTPS (ConnectRemote): the same API either way, so that NodeHoster
+// Manager's pages and the command line work against both.
 type Client struct {
 	http   *http.Client // requests with a timeout
 	stream *http.Client // long-lived event streams
+	base   string       // what paths are relative to
+	token  string       // remote servers: the API token
 }
 
 // ErrNotRunning means nothing is listening on the endpoint: the service is
@@ -56,11 +61,85 @@ func NewClient(dial func(context.Context) (net.Conn, error)) *Client {
 	return &Client{
 		http:   &http.Client{Transport: tr, Timeout: 60 * time.Second},
 		stream: &http.Client{Transport: tr},
+		base:   localBase,
 	}
 }
 
 // The host name is a placeholder: the transport dials the pipe regardless.
-const base = "http://nodehoster.local"
+const localBase = "http://nodehoster.local"
+
+// ConnectRemote returns a client for another server's web console at
+// baseURL (see model.NormalizeServerURL), authenticated by an API token
+// created there. TLS is verified against the trusted roots, or pinned to
+// fingerprint when one is given; redirects are never followed. What the
+// client may do is what the token allows; the account endpoints and the
+// local pipe's own (/api/local/...) are not there.
+func ConnectRemote(baseURL, token, fingerprint string) (*Client, error) {
+	base, err := model.NormalizeServerURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := model.ParseFingerprint(fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, errors.New("an API token of that server is needed")
+	}
+	tr, err := remote.NewTransport(base, fp)
+	if err != nil {
+		return nil, err
+	}
+	hc := remote.NewClient(tr)
+	hc.Timeout = 60 * time.Second
+	return &Client{http: hc, stream: remote.NewClient(tr), base: base, token: token}, nil
+}
+
+// Remote reports whether the client reaches another server over HTTPS
+// rather than the local pipe.
+func (c *Client) Remote() bool { return c.token != "" }
+
+// BaseURL is the remote server's web console URL ("" for the local pipe).
+func (c *Client) BaseURL() string {
+	if !c.Remote() {
+		return ""
+	}
+	return c.base
+}
+
+// newRequest builds a request to path, authenticated for a remote server.
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return req, nil
+}
+
+// fail turns an error answer into an *Error; a remote server refusing the
+// token is said so, not "not signed in".
+func (c *Client) fail(resp *http.Response) error {
+	err := decodeError(resp)
+	if e, ok := err.(*Error); ok && c.Remote() && e.Status == http.StatusUnauthorized {
+		e.Message = remote.Describe(&remote.StatusError{Status: e.Status})
+	}
+	return err
+}
+
+// connError explains a failed connection: to the local pipe, whether the
+// service runs; to a remote server, why it could not be reached.
+func (c *Client) connError(err error) error {
+	if c.Remote() {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		return fmt.Errorf("cannot reach %s: %s", c.base, remote.Describe(err))
+	}
+	return connError(err)
+}
 
 // Do sends a request and decodes a JSON response into out (unless nil).
 func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
@@ -72,7 +151,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
+	req, err := c.newRequest(ctx, method, path, body)
 	if err != nil {
 		return err
 	}
@@ -81,11 +160,11 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return connError(err)
+		return c.connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return decodeError(resp)
+		return c.fail(resp)
 	}
 	if out == nil {
 		io.Copy(io.Discard, resp.Body)
@@ -126,7 +205,7 @@ func (c *Client) UploadFile(ctx context.Context, path, field, filename string, r
 		}
 		pw.CloseWithError(err)
 	}()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, pr)
+	req, err := c.newRequest(ctx, http.MethodPost, path, pr)
 	if err != nil {
 		pr.Close()
 		return err
@@ -134,11 +213,11 @@ func (c *Client) UploadFile(ctx context.Context, path, field, filename string, r
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	resp, err := c.stream.Do(req)
 	if err != nil {
-		return connError(err)
+		return c.connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return decodeError(resp)
+		return c.fail(resp)
 	}
 	if out == nil {
 		io.Copy(io.Discard, resp.Body)
@@ -152,17 +231,17 @@ func (c *Client) UploadFile(ctx context.Context, path, field, filename string, r
 // Unlike Get it has no timeout of its own: large downloads (backups) are
 // bounded by ctx only.
 func (c *Client) Download(ctx context.Context, path string, w io.Writer) (name string, n int64, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return "", 0, err
 	}
 	resp, err := c.stream.Do(req)
 	if err != nil {
-		return "", 0, connError(err)
+		return "", 0, c.connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", 0, decodeError(resp)
+		return "", 0, c.fail(resp)
 	}
 	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
 		name = params["filename"]
@@ -174,7 +253,7 @@ func (c *Client) Download(ctx context.Context, path string, w io.Writer) (name s
 // Upload POSTs body as is (not JSON) and decodes a JSON response into out
 // (unless nil). Like Download it is bounded by ctx only.
 func (c *Client) Upload(ctx context.Context, path, contentType string, body io.Reader, header http.Header, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, body)
+	req, err := c.newRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return err
 	}
@@ -184,11 +263,11 @@ func (c *Client) Upload(ctx context.Context, path, contentType string, body io.R
 	req.Header.Set("Content-Type", contentType)
 	resp, err := c.stream.Do(req)
 	if err != nil {
-		return connError(err)
+		return c.connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return decodeError(resp)
+		return c.fail(resp)
 	}
 	if out == nil {
 		io.Copy(io.Discard, resp.Body)
@@ -200,17 +279,17 @@ func (c *Client) Upload(ctx context.Context, path, contentType string, body io.R
 // Stream reads server-sent events from path until ctx ends or the stream
 // breaks, calling fn for each event. It returns the reason it stopped.
 func (c *Client) Stream(ctx context.Context, path string, fn func(event string, data []byte)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
 	resp, err := c.stream.Do(req)
 	if err != nil {
-		return connError(err)
+		return c.connError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return decodeError(resp)
+		return c.fail(resp)
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)

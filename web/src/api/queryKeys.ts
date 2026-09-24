@@ -37,4 +37,11 @@ export const qk = {
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
   logShippingStatus: ['logshipping', 'status'] as const,
   tls: ['tls'] as const,
+  // This server's own, kept when the console switches to another server
+  // (see LOCAL_QUERY_ROOTS).
+  servers: ['local', 'servers'] as const,
+  remoteMe: (id: string) => ['local', 'remote-me', id] as const,
 };
+
+/** Query roots that are about this server whichever server the console operates. */
+export const LOCAL_QUERY_ROOTS: readonly string[] = ['me', 'local', 'auth', 'tokens'];

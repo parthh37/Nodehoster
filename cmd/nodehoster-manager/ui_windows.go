@@ -333,7 +333,7 @@ func (t *table) setProperties(props ...prop) {
 func setEnabled(on bool, cmds ...*command) {
 	for _, c := range cmds {
 		if c != nil {
-			c.setEnabled(on)
+			c.setEnabled(on && allowedHere(c)) // remote servers: not this computer's commands
 		}
 	}
 }

@@ -65,6 +65,10 @@ type Backup struct {
 	Settings     model.Settings       `json:"settings"`
 	Sites        []*model.Site        `json:"sites"`
 	Certificates []*model.Certificate `json:"certificates"`
+	// Servers are the connections to other servers, tokens sealed. A
+	// backup from before they existed has none: restoring it keeps this
+	// server's.
+	Servers []model.ServerConnection `json:"servers"`
 }
 
 func (c *Core) Backup(ctx context.Context) ([]byte, error) {
@@ -73,7 +77,11 @@ func (c *Core) Backup(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	hostname, _ := os.Hostname()
-	b := Backup{Version: config.Version, ExportedAt: time.Now(), Hostname: hostname, Settings: c.Settings(), Sites: c.Sites(), Certificates: certs}
+	b := Backup{Version: config.Version, ExportedAt: time.Now(), Hostname: hostname, Settings: c.Settings(), Sites: c.Sites(), Certificates: certs,
+		Servers: c.ServerConnections()}
+	if b.Servers == nil {
+		b.Servers = []model.ServerConnection{}
+	}
 	return json.MarshalIndent(b, "", "  ")
 }
 
@@ -144,6 +152,11 @@ func (c *Core) restoreConfig(ctx context.Context, data []byte, withFiles map[str
 			// Metadata only; ACME certificates are re-issued, others must be re-imported.
 			cert.Status = "pending"
 			c.Store.PutCertificate(ctx, cert)
+		}
+	}
+	if b.Servers != nil {
+		if err := c.restoreServers(ctx, b.Servers); err != nil {
+			return nil, fmt.Errorf("restore server connections: %w", err)
 		}
 	}
 	c.reload()

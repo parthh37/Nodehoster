@@ -67,11 +67,19 @@ const (
 	PreviewFailed  = "preview.failed"  // a preview could not be created, deployed or deleted
 )
 
+// A server connection (another NodeHoster server managed from this one)
+// stopped answering, or answers again.
+const (
+	RemoteDown = "remote.down"
+	RemoteUp   = "remote.up"
+)
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
 	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling,
-	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed}
+	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed,
+	RemoteDown, RemoteUp}
 
 type Bus struct {
 	store    *store.Store

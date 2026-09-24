@@ -15,6 +15,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/localapi"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/remote"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -26,7 +27,9 @@ import (
 // commands used most sits on top.
 type manager struct {
 	mw         *walk.MainWindow
-	cl         *localapi.Client
+	cl         apiClient        // the server shown: sw (remote_windows.go)
+	sw         *switchClient    // switched between pipe and remote servers
+	pipe       *localapi.Client // this server's admin pipe
 	nav        *navModel
 	tree       *walk.TreeView
 	headerIcon *walk.ImageView
@@ -65,6 +68,7 @@ type manager struct {
 	cmdAddSite, cmdImport, cmdConsole, cmdSettings *command
 	cmdDataFolder, cmdServerLog, cmdBackup         *command
 	cmdRestore, cmdMime, cmdMail, cmdFind          *command
+	cmdConnect, cmdDisconnect                      *command
 
 	server   serverPage
 	sitesPg  sitesPage
@@ -109,13 +113,17 @@ func runManager(openSite string) {
 	}
 
 	m := &manager{
-		cl:           localapi.Connect(localapi.Admin, config.DefaultDataDir()),
+		pipe:         localapi.Connect(localapi.Admin, config.DefaultDataDir()),
+		sw:           &switchClient{},
 		refreshNow:   make(chan bool, 1),
 		busy:         map[int]string{},
 		pendingSite:  openSite,
 		pendingTries: -10, // the first refreshes may come before the service answers
 	}
+	m.sw.set(m.pipe, nil)
+	m.cl = m.sw
 	m.nav = newNavModel()
+	m.addSavedRoots()
 	m.initCommands()
 
 	pages := []struct {
@@ -145,6 +153,7 @@ func runManager(openSite string) {
 		contents = append(contents, Composite{AssignTo: &p.content, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 8}, Children: pg.w})
 		actions = append(actions, Composite{AssignTo: &p.actions, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 5}, Children: pg.a})
 	}
+	m.markLocalOnly()
 
 	host, _ := os.Hostname()
 	var icon Property
@@ -170,6 +179,8 @@ func runManager(openSite string) {
 				m.cmdStart.toolItem(), m.cmdStop.toolItem(), m.cmdRestart.toolItem(),
 				Separator{},
 				m.cmdAddSite.toolItem(), m.cmdImport.toolItem(),
+				Separator{},
+				m.cmdConnect.toolItem(),
 				Separator{},
 				m.cmdConsole.toolItem(), m.cmdDataFolder.toolItem(), m.cmdServerLog.toolItem(),
 			},
@@ -261,6 +272,8 @@ func (m *manager) initCommands() {
 	m.cmdMime = newCommand("MIME types…", desktop.IconFileCode, func() { serverMimeDialog(m) })
 	m.cmdMail = newCommand("SMTP E-mail…", desktop.IconMail, func() { mailPropertiesDialog(m) })
 	m.cmdFind = newCommand("Find in list", desktop.IconSearch, m.focusSearch).withShortcut(walk.ModControl, walk.KeyF)
+	m.cmdConnect = newCommand("Connect to a server…", desktop.IconGlobe, func() { connectDialog(m) }).withShort("Connect")
+	m.cmdDisconnect = newCommand("Remove connection…", desktop.IconRemove, m.disconnect)
 }
 
 func (m *manager) menuBar() []MenuItem {
@@ -284,6 +297,9 @@ func (m *manager) menuBar() []MenuItem {
 			Separator{},
 			m.cmdAddSite.barItem(),
 			m.cmdImport.barItem(),
+			Separator{},
+			m.cmdConnect.barItem(),
+			m.cmdDisconnect.barItem(),
 			Separator{},
 			m.cmdBackup.barItem(),
 			m.cmdRestore.barItem(),
@@ -322,24 +338,33 @@ func (m *manager) poll() {
 	defer tick.Stop()
 	full := true
 	for n := 0; ; n++ {
-		svc, err := service.Status()
-		if err != nil {
-			svc = "unknown"
+		// The server selected in the tree: a remote one has no Windows
+		// service here, it runs when it answers.
+		cl, conn, gen := m.sw.snapshot()
+		svc, err := "running", error(nil)
+		if conn == nil {
+			if svc, err = service.Status(); err != nil {
+				svc = "unknown"
+			}
 		}
 		var sites []localapi.Site
 		var info *model.ServerInfo
 		var account string
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		sites, err = m.cl.Sites(ctx)
+		sites, err = cl.Sites(ctx)
 		if err == nil && (full || n%10 == 0) {
-			info, _ = m.cl.ServerInfo(ctx)
-			var who struct{ Account string }
-			if m.cl.Get(ctx, "/api/local/whoami", &who) == nil {
-				account = who.Account
-			}
+			info, _ = cl.ServerInfo(ctx)
+			account = m.whoami(ctx, cl)
 		}
 		cancel()
-		m.mw.Synchronize(func() { m.apply(svc, sites, info, account, err) })
+		if err != nil && conn != nil {
+			svc = "unknown"
+		}
+		m.mw.Synchronize(func() {
+			if m.sw.gen.Load() == gen { // not the previous server's
+				m.apply(svc, sites, info, account, err)
+			}
+		})
 
 		select {
 		case <-tick.C:
@@ -429,6 +454,10 @@ func (m *manager) serviceLevel() desktop.Level {
 }
 
 func (m *manager) updateStatusBar() {
+	if conn := m.remoteConn(); conn != nil {
+		m.updateRemoteStatus(conn)
+		return
+	}
 	m.sbService.SetIcon(dotIcon(m.serviceLevel()))
 	m.sbService.SetText("Service: " + desktop.StateText(model.SiteState(m.service)))
 	switch {
@@ -452,6 +481,10 @@ func (m *manager) updateStatusBar() {
 // updateBanner explains, above every page, why the manager cannot manage
 // the server right now, with the fix at hand.
 func (m *manager) updateBanner() {
+	if conn := m.remoteConn(); conn != nil {
+		m.updateRemoteBanner(conn)
+		return
+	}
 	switch {
 	case m.service == "not installed":
 		m.banner.show(barError, "The NodeHoster service is not installed. Run the installer, or from an elevated prompt: nodehoster service install", "", nil)
@@ -476,8 +509,10 @@ func (m *manager) updateCommands() {
 	setEnabled(installed && (m.service == "stopped" || m.service == "paused"), m.cmdStart)
 	setEnabled(m.service == "running", m.cmdStop, m.cmdRestart)
 	setEnabled(m.connected(), m.cmdAddSite, m.cmdImport, m.cmdSettings, m.cmdBackup, m.cmdRestore, m.cmdMime, m.cmdMail)
-	setEnabled(m.connected() && m.info != nil && m.info.AdminURL != "" && m.info.AdminError == "", m.cmdConsole)
+	setEnabled(m.connected() && (m.remote() || m.info != nil && m.info.AdminURL != "" && m.info.AdminError == ""), m.cmdConsole)
 	setEnabled(m.cur != nil && m.cur.search != nil, m.cmdFind)
+	setEnabled(true, m.cmdDataFolder, m.cmdServerLog) // this server only (setEnabled)
+	setEnabled(m.remote(), m.cmdDisconnect)
 }
 
 // updateHeader shows the current page's title, subtitle and tile. It runs
@@ -551,6 +586,18 @@ func (m *manager) navigate() {
 	}
 	item, _ := m.tree.CurrentItem().(*navItem)
 	if item == nil {
+		return
+	}
+	if r := rootOf(item); r != m.nav.root {
+		// Another server's node: its pages move under it. Not while the
+		// tree reports the selection: the switch rebuilds the tree.
+		m.mw.Synchronize(func() {
+			if m.activateRoot(r) {
+				m.tree.SetCurrentItem(r)
+			} else {
+				m.tree.SetCurrentItem(m.nav.root)
+			}
+		})
 		return
 	}
 	m.site = item.siteID
@@ -726,6 +773,10 @@ func (m *manager) serviceAction(cmd string) {
 }
 
 func (m *manager) openConsole() {
+	if conn := m.remoteConn(); conn != nil {
+		shellOpen(conn.URL + "/")
+		return
+	}
 	if m.info == nil || m.info.AdminURL == "" {
 		notify(m.mw, "Web console", "The web console is not available.",
 			"Use Tools → Web console settings to change where it listens.", "", walk.TaskDialogSystemIconInformation)
@@ -736,6 +787,10 @@ func (m *manager) openConsole() {
 
 // openConsolePath opens a page of the web console.
 func (m *manager) openConsolePath(p string) {
+	if conn := m.remoteConn(); conn != nil {
+		shellOpen(conn.URL + p)
+		return
+	}
 	if m.info == nil || m.info.AdminURL == "" {
 		m.openConsole() // explains why it is unavailable
 		return
@@ -793,6 +848,7 @@ type navItem struct {
 	kind     navKind
 	text     string
 	siteID   string
+	conn     *remote.Saved // a remote server's node (remote_windows.go)
 	parent   *navItem
 	children []*navItem
 	image    *walk.Icon
@@ -821,13 +877,14 @@ func (n *navItem) Image() interface{} {
 
 type navModel struct {
 	walk.TreeModelBase
-	root, sites *navItem
+	root, sites *navItem   // root: the node of the server shown, with the pages
+	roots       []*navItem // this server, then the remote servers connected to
 }
 
 func newNavModel() *navModel {
 	host, _ := os.Hostname()
 	root := &navItem{kind: navServer, text: host, image: ico(desktop.IconServer)}
-	m := &navModel{root: root}
+	m := &navModel{root: root, roots: []*navItem{root}}
 	m.sites = &navItem{kind: navSites, text: "Sites", parent: root, image: ico(desktop.IconSites)}
 	root.children = []*navItem{
 		m.sites,
@@ -844,5 +901,5 @@ func newNavModel() *navModel {
 	return m
 }
 
-func (m *navModel) RootCount() int           { return 1 }
-func (m *navModel) RootAt(int) walk.TreeItem { return m.root }
+func (m *navModel) RootCount() int             { return len(m.roots) }
+func (m *navModel) RootAt(i int) walk.TreeItem { return m.roots[i] }

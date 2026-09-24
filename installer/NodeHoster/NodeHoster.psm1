@@ -5,9 +5,24 @@
 # pipe only admits elevated Administrators, so run these from an elevated
 # session, as you would IIS's WebAdministration module.
 #
+# After Connect-NHServer, the commands target another server's web console
+# over HTTPS instead (`nodehoster.exe --server`), with an API token created
+# there, until Disconnect-NHServer.
+#
 # Windows PowerShell 5.1 compatible (and PowerShell 7).
 
 $script:UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6F1B3C2A-9D4E-4E7B-A1C5-2B7D9E0F4A11}_is1'
+
+# The server Connect-NHServer chose (a saved connection's name or a URL)
+# and its token when one was given; $null for this computer.
+$script:NHServer = $null
+$script:NHToken = $null
+
+# The global arguments that select the server.
+function Get-NHTargetArguments {
+  if ($script:NHServer) { return @('--server', $script:NHServer) }
+  return @()
+}
 
 # nodehoster.exe: $env:NODEHOSTER_EXE, else where setup installed it, else
 # the PATH.
@@ -45,7 +60,9 @@ function ConvertTo-NHCommandLine([string[]] $Arguments) {
 function Invoke-NHCli([string[]] $Arguments) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = Get-NHExecutable
-  $psi.Arguments = ConvertTo-NHCommandLine (@('--json') + $Arguments)
+  $psi.Arguments = ConvertTo-NHCommandLine (@('--json') + (Get-NHTargetArguments) + $Arguments)
+  # The token travels in the environment, not on the command line.
+  if ($script:NHToken) { $psi.EnvironmentVariables['NODEHOSTER_TOKEN'] = $script:NHToken }
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
   $psi.RedirectStandardOutput = $true
@@ -73,11 +90,15 @@ function Invoke-NHCli([string[]] $Arguments) {
 function Invoke-NHCliLive([string[]] $Arguments) {
   $exe = Get-NHExecutable
   $previous = $null
+  $target = Get-NHTargetArguments
+  $savedToken = $env:NODEHOSTER_TOKEN
   try { $previous = [Console]::OutputEncoding; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
   try {
-    & $exe --json @Arguments
+    if ($script:NHToken) { $env:NODEHOSTER_TOKEN = $script:NHToken }
+    & $exe --json @target @Arguments
     if ($LASTEXITCODE -ne 0) { throw "nodehoster $($Arguments[0]) failed (exit code $LASTEXITCODE); see the messages above." }
   } finally {
+    if ($script:NHToken) { $env:NODEHOSTER_TOKEN = $savedToken }
     if ($previous) { try { [Console]::OutputEncoding = $previous } catch { } }
   }
 }
@@ -824,8 +845,83 @@ function Remove-NHPreview {
   }
 }
 
+<#
+.SYNOPSIS
+Makes the NodeHoster commands target another server.
+.DESCRIPTION
+Until Disconnect-NHServer, the commands of this module manage another
+NodeHoster server through its web console's HTTPS API instead of the
+service on this computer, as `nodehoster.exe --server` does. -Server is a
+connection saved with `nodehoster server add` (or NodeHoster Manager's
+"Connect to a server..."), whose token is protected for your Windows
+account, or the console's URL with -Token. What the token's role allows on
+that server is what the commands can do.
+.PARAMETER Server
+A saved connection's name, or the web console's URL (https://web02:8484).
+.PARAMETER Token
+An API token created on that server; overrides a saved connection's.
+.EXAMPLE
+Connect-NHServer web02; Get-NHSite; Disconnect-NHServer
+.EXAMPLE
+Connect-NHServer https://web02.example.com:8484 -Token $env:WEB02_TOKEN
+#>
+function Connect-NHServer {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0)]
+    [string] $Server,
+    [string] $Token
+  )
+  $previous = $script:NHServer, $script:NHToken
+  $script:NHServer, $script:NHToken = $Server, $Token
+  try {
+    # Reach it now, so that a mistake shows here rather than later.
+    $null = Invoke-NHCli @('site', 'list')
+  } catch {
+    $script:NHServer, $script:NHToken = $previous
+    throw
+  }
+}
+
+<#
+.SYNOPSIS
+Makes the NodeHoster commands target this computer's service again.
+#>
+function Disconnect-NHServer {
+  [CmdletBinding()]
+  param()
+  $script:NHServer, $script:NHToken = $null, $null
+}
+
+<#
+.SYNOPSIS
+Lists the connections to other servers saved for your Windows account.
+.DESCRIPTION
+Save one with `nodehoster server add <name> <url>` (it asks for the token
+and shows the certificate to trust), then use it with Connect-NHServer.
+.EXAMPLE
+Get-NHServer
+#>
+function Get-NHServer {
+  [CmdletBinding()]
+  param()
+  $server, $token = $script:NHServer, $script:NHToken
+  $script:NHServer, $script:NHToken = $null, $null # saved connections are this computer's
+  try {
+    foreach ($s in @(Invoke-NHCli @('server', 'list'))) {
+      Add-Member -InputObject $s -NotePropertyName Connected -NotePropertyValue ($server -and ($server -eq $s.name -or $server -eq $s.url)) -Force
+      Add-NHType $s 'NodeHoster.Server'
+    }
+  } finally {
+    $script:NHServer, $script:NHToken = $server, $token
+  }
+}
+
+Update-TypeData -TypeName NodeHoster.Server -DefaultDisplayPropertySet name, url, fingerprint, tokenSaved, Connected -Force
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
   Update-NHCertificateOcsp, Get-NHTlsSetting, Set-NHTlsSetting,
-  Get-NHPreview, Publish-NHPreview, Remove-NHPreview
+  Get-NHPreview, Publish-NHPreview, Remove-NHPreview,
+  Connect-NHServer, Disconnect-NHServer, Get-NHServer

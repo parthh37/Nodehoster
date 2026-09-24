@@ -979,7 +979,7 @@ func (c *Core) resealSecrets(data []byte, portable map[string]string) ([]byte, [
 		return nil, nil, fmt.Errorf("not a NodeHoster backup: %w", err)
 	}
 	var cur any
-	here, err := json.Marshal(Backup{Settings: c.Settings(), Sites: c.Sites()})
+	here, err := json.Marshal(Backup{Settings: c.Settings(), Sites: c.Sites(), Servers: c.ServerConnections()})
 	if err != nil {
 		return nil, nil, err
 	}

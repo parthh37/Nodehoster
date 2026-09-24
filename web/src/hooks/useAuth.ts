@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { authApi } from '@/api/endpoints';
+import { authApi, serversApi } from '@/api/endpoints';
 import { qk } from '@/api/queryKeys';
 import type { Access, Role } from '@/api/types';
 import { accessOf, canOperate, canOperateServer, isServerAdmin, isSiteScoped } from '@/lib/access';
+import { capAccess } from '@/lib/servers';
+import { useServerTarget } from './useServerTarget';
 
 export function useMe() {
   return useQuery({ queryKey: qk.me, queryFn: authApi.me, retry: false, staleTime: 60_000 });
@@ -19,16 +21,41 @@ export interface Permissions {
   isAdmin: boolean;
 }
 
-export function usePermissions(): Permissions {
-  const { data } = useMe();
-  const access = accessOf(data);
+function permissionsOf(access: Access | undefined, role: Role | undefined): Permissions {
   return {
-    role: data?.user.role,
+    role,
     access,
     siteScoped: isSiteScoped(access),
     canOperate: canOperateServer(access),
     isAdmin: isServerAdmin(access),
   };
+}
+
+/** The signed-in user's permissions on this server, whichever server the console operates. */
+export function useLocalPermissions(): Permissions {
+  const { data } = useMe();
+  return permissionsOf(accessOf(data), data?.user.role);
+}
+
+/**
+ * The permissions on the server the console operates: on a connected
+ * server, what its token may do there, never above the user's role here.
+ */
+export function usePermissions(): Permissions {
+  const local = useLocalPermissions();
+  const { target } = useServerTarget();
+  const remote = useQuery({
+    queryKey: qk.remoteMe(target?.id ?? ''),
+    queryFn: () => serversApi.remoteMe(target!.id),
+    enabled: !!target,
+    retry: false,
+    staleTime: 60_000,
+  });
+  if (!target) return local;
+  if (remote.isPending) return permissionsOf(undefined, undefined);
+  // Unreachable: show the pages read-only; they explain the failure.
+  const access = capAccess(remote.isError ? { role: 'viewer' } : accessOf(remote.data), local.role);
+  return permissionsOf(access, access?.role);
 }
 
 export interface SitePermissions {
