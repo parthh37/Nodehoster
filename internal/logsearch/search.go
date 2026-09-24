@@ -98,7 +98,12 @@ var ErrBadCursor = errors.New("invalid cursor")
 type cursor struct {
 	File   string `json:"f"`
 	Offset int64  `json:"o,omitempty"` // plain files: continue before this offset
-	Skip   int    `json:"s,omitempty"` // .gz files: matches already returned, newest first
+	// .gz files: only the matches before this one, counted from the start
+	// of the file, remain. Counting from the start (not the number already
+	// returned, from the end) keeps what a page holds in memory to the
+	// page itself, whatever a cursor says, and lets a page stop reading
+	// there.
+	Before int `json:"b,omitempty"`
 }
 
 func (c cursor) encode() string {
@@ -109,7 +114,7 @@ func (c cursor) encode() string {
 func decodeCursor(s string) (cursor, error) {
 	var c cursor
 	b, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil || json.Unmarshal(b, &c) != nil || c.File == "" || c.Offset < 0 || c.Skip < 0 {
+	if err != nil || json.Unmarshal(b, &c) != nil || c.File == "" || c.Offset < 0 || c.Before < 0 {
 		return c, ErrBadCursor
 	}
 	return c, nil
@@ -189,11 +194,11 @@ func Search(files []string, q Query) (Result, error) {
 		var next *cursor
 		var err error
 		if strings.HasSuffix(f, ".gz") {
-			skip := 0
+			before := 0
 			if i == start && cur.File != "" {
-				skip = cur.Skip
+				before = cur.Before
 			}
-			next, err = s.gz(f, skip)
+			next, err = s.gz(f, before)
 		} else {
 			off := int64(-1)
 			if i == start && cur.File != "" && cur.Offset > 0 {
@@ -310,8 +315,13 @@ func (s *search) plain(path string, end int64) (*cursor, error) {
 }
 
 // gz scans a compressed file forwards (gzip cannot be read backwards),
-// keeping the newest skip+wanted matches.
-func (s *search) gz(path string, skip int) (*cursor, error) {
+// keeping the newest matches before the before'th (0 = all of them).
+func (s *search) gz(path string, before int) (*cursor, error) {
+	name := filepath.Base(path)
+	want := s.q.Limit - len(s.res.Lines)
+	if want <= 0 {
+		return &cursor{File: name, Before: before}, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -322,16 +332,13 @@ func (s *search) gz(path string, skip int) (*cursor, error) {
 		return nil, err
 	}
 	defer zr.Close()
-	name := filepath.Base(path)
-	want := s.q.Limit - len(s.res.Lines)
-	keep := skip + want + 1 // one more tells whether older matches remain
-	ring := make([]Line, 0, keep)
-	total := 0
+	ring := make([]Line, want) // the newest matches: match n is at n % want
+	n := 0                     // matches read, oldest first
 	oldestTooOld := false
 	sub := &search{q: s.q, deadline: s.deadline}
 	sub.q.Since = time.Time{} // checked below: the file is in time order, oldest first
 	br := bufio.NewReaderSize(zr, 64<<10)
-	for {
+	for before <= 0 || n < before {
 		line, err := br.ReadString('\n')
 		s.res.Scanned += int64(len(line))
 		if len(line) > 0 {
@@ -343,12 +350,8 @@ func (s *search) gz(path string, skip int) (*cursor, error) {
 				if !s.q.Since.IsZero() && !l.Time.IsZero() && l.Time.Before(s.q.Since) {
 					oldestTooOld = true
 				} else {
-					total++
-					if len(ring) == keep {
-						copy(ring, ring[1:])
-						ring = ring[:keep-1]
-					}
-					ring = append(ring, l)
+					ring[n%want] = l
+					n++
 				}
 			}
 		}
@@ -359,14 +362,12 @@ func (s *search) gz(path string, skip int) (*cursor, error) {
 			return nil, err
 		}
 	}
-	// ring holds the newest matches, oldest first.
-	avail := len(ring) - skip
-	for i := avail - 1; i >= 0 && len(s.res.Lines) < s.q.Limit; i-- {
-		s.res.Lines = append(s.res.Lines, ring[i])
+	returned := min(n, want)
+	for k := 1; k <= returned; k++ {
+		s.res.Lines = append(s.res.Lines, ring[(n-k)%want])
 	}
-	returned := min(max(avail, 0), want)
-	if total > skip+returned {
-		return &cursor{File: name, Skip: skip + returned}, nil
+	if rest := n - returned; rest > 0 {
+		return &cursor{File: name, Before: rest}, nil
 	}
 	if oldestTooOld {
 		s.done = true

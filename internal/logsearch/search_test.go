@@ -2,10 +2,12 @@ package logsearch
 
 import (
 	"compress/gzip"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +236,32 @@ func TestParsers(t *testing.T) {
 	st, lvl := ServerLine(`time=2026-03-01T02:30:05.123+05:30 level=WARN msg="x level=ERROR"`)
 	if lvl != "warning" || st.IsZero() {
 		t.Errorf("ServerLine = %v %q", st, lvl)
+	}
+}
+
+// A crafted cursor into a .gz file must not make a search allocate in
+// proportion to a number it carries (a site viewer can send any cursor).
+// Not parallel: it measures the process's allocations.
+func TestSearchCraftedGzipCursor(t *testing.T) {
+	files := Files(logs(t))
+	gz := filepath.Base(files[2])
+	for _, raw := range []string{
+		`{"f":"` + gz + `","s":4194304}`,
+		`{"f":"` + gz + `","b":1099511627776}`,
+	} {
+		cur := base64.RawURLEncoding.EncodeToString([]byte(raw))
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		res, err := Search(files, Query{Parse: parse(""), Limit: 3, Cursor: cur})
+		runtime.ReadMemStats(&after)
+		if err != nil && err != ErrBadCursor {
+			t.Errorf("%s: %v", raw, err)
+		}
+		if n := after.TotalAlloc - before.TotalAlloc; n > 8<<20 {
+			t.Errorf("%s: the search allocated %d MiB", raw, n>>20)
+		}
+		if err == nil && fmt.Sprint(minutes(res)) != "[99 98 97]" {
+			t.Errorf("%s: %v", raw, minutes(res))
+		}
 	}
 }
