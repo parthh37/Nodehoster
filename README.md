@@ -34,7 +34,7 @@ IIS Manager, with a status icon in the notification area.
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - **Other runtimes** under the same process manager, like IIS hosting more than ASP.NET: **Bun**, **Deno**, **Python** (a script, `python -m` a module, or an ASGI/WSGI app on uvicorn, Hypercorn or Waitress), **.NET** (ASP.NET Core on Kestrel: `dotnet app.dll` or a self-contained `.exe`, like the ASP.NET Core Module's out-of-process hosting) and any **custom command** that listens on `PORT`. Instances, restarts, rapid-fail protection, recycling, Job Objects, run-as identity, secrets, logs, CPU/memory, deployments and scheduled tasks work the same for all of them — see [Runtimes](#runtimes)
-- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 verified), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, registry, PATH, Program Files) and picked per site; only programs no one but administrators can change are ever run
+- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 checked against the release's own checksums: see [Runtimes](#runtimes)), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, registry, PATH, Program Files) and picked per site; only programs no one but administrators can change are ever run
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 - **Secret stores** like Azure App Service's Key Vault references: a variable (or a git deploy token) can come from **HashiCorp Vault / OpenBao** (KV v1/v2, token or AppRole with automatic renewal, namespaces), **Infisical** (cloud or self-hosted, Universal Auth) or **Bitwarden Secrets Manager** (cloud US/EU or self-hosted; pure Go, no SDK to install). Read at every instance start, recycle, task run and build, cached in memory for a few minutes, never written anywhere; the last known value keeps sites starting while a store is down; optional zero-downtime recycle when a secret changes
 
@@ -428,6 +428,17 @@ processes is the same for all of them; what differs is how they start:
 | **.NET** | `dotnet <app.dll>` or `<app.exe>` (self-contained) | the `dotnet.exe` found on the server; the app's runtimeconfig picks the framework |
 | **Custom command** | any program with its arguments | — |
 
+- **What the Bun and Deno checksums prove**: a version is downloaded over
+  HTTPS from the project's GitHub release, and its SHA-256 is compared with
+  the one GitHub reports for the asset or the checksum file in the same
+  release (`SHASUMS256.txt`, `*.sha256sum`). That catches a corrupt or
+  truncated download, not a release replaced by someone with access to the
+  project's GitHub account or its build: the checksum comes from the same
+  place as the zip. Deno does not sign its releases; Bun publishes a
+  PGP signature of `SHASUMS256.txt` (`SHASUMS256.txt.asc`) that NodeHoster
+  does not check. Install from the Runtimes page what you would install by
+  hand from the same release, and pin versions per site rather than taking
+  the newest on every server.
 - **Deno** grants a program nothing it is not told to: the consoles start a
   Deno site with `--allow-net --allow-env --allow-read` (edit them under
   Arguments); a task in `deno.json` sets its own.
