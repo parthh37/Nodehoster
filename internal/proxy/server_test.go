@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -102,6 +103,58 @@ func TestClientIPBehindTrustedProxies(t *testing.T) {
 		}
 		if got := s.clientIP(req); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestForwardingHeadersFromClients: forwarding headers the proxy does not
+// set itself reach the application only from trusted proxies. From anyone
+// else they could make it build links for a made-up prefix, which the
+// response cache (whose key does not include them) would give everyone.
+func TestForwardingHeadersFromClients(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.Header().Set("Cache-Control", "max-age=60")
+		io.WriteString(w, "ok")
+	}))
+	t.Cleanup(up.Close)
+	s := affServer(t)
+	_, lan, _ := net.ParseCIDR("10.0.0.0/8")
+	s.trusted = []*net.IPNet{lan}
+	site := proxySite("", false, up)
+	site.Routing.Locations = []model.Location{{Path: "/app", Kind: "url", URL: up.URL, StripPrefix: true}}
+	rt := compileTest(t, s, site)
+	spoofed := []string{"X-Forwarded-Prefix", "/evil", "X-Forwarded-Port", "8443", "X-Forwarded-Server", "evil.example",
+		"X-Forwarded-Ssl", "on", "X-Forwarded-Scheme", "https"}
+	send := func(from, path string) http.Header {
+		t.Helper()
+		r := fetch(t, rt, nil, func(req *http.Request) {
+			req.RemoteAddr = from
+			req.URL.Path = path
+			for i := 0; i+1 < len(spoofed); i += 2 {
+				req.Header.Set(spoofed[i], spoofed[i+1])
+			}
+		})
+		if r.status != http.StatusOK {
+			t.Fatalf("%s from %s: %d %s", path, from, r.status, r.body)
+		}
+		return <-seen
+	}
+
+	h := send("192.0.2.1:1234", "/")
+	for i := 0; i < len(spoofed); i += 2 {
+		if v := h.Get(spoofed[i]); v != "" {
+			t.Errorf("a client's %s reached the application: %q", spoofed[i], v)
+		}
+	}
+	if h := send("192.0.2.1:1234", "/app/x"); h.Get("X-Forwarded-Prefix") != "/app" {
+		t.Errorf("location prefix: %q", h.Get("X-Forwarded-Prefix"))
+	}
+	h = send("10.0.0.1:1234", "/")
+	for i := 0; i+1 < len(spoofed); i += 2 {
+		if v := h.Get(spoofed[i]); v != spoofed[i+1] {
+			t.Errorf("a trusted proxy's %s = %q, want %q", spoofed[i], v, spoofed[i+1])
 		}
 	}
 }

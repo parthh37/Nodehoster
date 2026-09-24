@@ -246,12 +246,26 @@ func newTransport(insecure bool, responseTimeout time.Duration) *http.Transport 
 
 // ---- request pipeline
 
+// untrustedForwarded are removed from requests that did not come through a
+// trusted proxy.
+var untrustedForwarded = []string{"X-Forwarded-Prefix", "X-Forwarded-Port", "X-Forwarded-Server",
+	"X-Forwarded-Ssl", "X-Forwarded-Scheme"}
+
 func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	site := rt.site
 	ro := site.Routing
 	clientIP := rt.srv.clientIP(r)
 	ctx := context.WithValue(r.Context(), ctxClientIP, clientIP)
 	r = r.WithContext(ctx)
+	if !rt.srv.trustsForwarded(r) {
+		// The forwarding headers the proxy does not set itself (it replaces
+		// X-Forwarded-For/-Host/-Proto) are believed only from trusted
+		// proxies: applications build links from them, and a response built
+		// for a client's made-up prefix would be cached for everyone.
+		for _, h := range untrustedForwarded {
+			r.Header.Del(h)
+		}
+	}
 
 	// HTTPS redirect.
 	if ro.HTTPSRedirect && r.TLS == nil && rt.httpsPort != 0 {
