@@ -315,7 +315,16 @@ Sources:
   static applications become `static` locations; an iisnode application
   below a site becomes its own `node` site without bindings, mounted with a
   location of kind `site` (`siteId: "import:<key>"` until applied). Sites
-  running ASP.NET Core, PHP or other handlers are noted and not selected.
+  running ASP.NET Core, PHP or other handlers are noted and not selected; so
+  are those that only look like they run code through IIS's server-wide
+  handlers (an application pool with a .NET CLR version — IIS's default is
+  v4.0 —, `<system.web>` `compilation`/`httpRuntime`/`machineKey`,
+  `<connectionStrings>`, a managed handler, `.aspx`/`.php`/`.asp`… default
+  documents or pages, `bin\*.dll`, `App_Data`, `App_Code` in the folder
+  when it is readable); such applications below a site are left out rather
+  than becoming static locations. Imported sites that serve files get
+  `routing.unknownMimeTypes: "deny"`, as IIS refuses extensions without a
+  MIME map, and static files never include `web.config`.
 - `webconfig`: one iisnode application's `web.config`: the handler's script,
   `<iisnode>` (`nodeProcessCountPerApplication` → instances, 0 = CPU count;
   `nodeProcessCommandLine` → Node.js version from the path and options;

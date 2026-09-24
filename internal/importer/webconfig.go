@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,7 @@ type webConfig struct {
 	httpPlat    *wcHTTPPlatform
 	appSettings [][2]string
 	connStrings []string
+	aspNet      []string // ASP.NET's own settings found (<system.web>)
 	redirect    *wcRedirect
 	defaultDocs []string
 	dirBrowse   *bool
@@ -34,6 +36,7 @@ type wcHandler struct {
 	Modules      string `xml:"modules,attr"`
 	ScriptProc   string `xml:"scriptProcessor,attr"`
 	ResourceType string `xml:"resourceType,attr"`
+	Type         string `xml:"type,attr"` // a managed (.NET) handler
 }
 
 func (h wcHandler) is(module string) bool {
@@ -130,6 +133,12 @@ func parseWebConfig(wc *webConfig, text string) error {
 			for _, x := range c.Add {
 				wc.connStrings = append(wc.connStrings, x.Name)
 			}
+		case "compilation", "httpRuntime", "machineKey":
+			// Only ASP.NET reads these (<system.web>); their children
+			// are scanned like any other element.
+			if !slices.Contains(wc.aspNet, "<"+se.Name.Local+">") {
+				wc.aspNet = append(wc.aspNet, "<"+se.Name.Local+">")
+			}
 		case "httpRedirect":
 			var r wcRedirect
 			derr = d.DecodeElement(&r, &se)
@@ -217,6 +226,8 @@ func (wc *webConfig) codeHandler() string {
 	for _, h := range wc.handlers {
 		switch {
 		case h.is("iisnode"):
+		case h.Type != "":
+			return "ASP.NET (the handler " + h.Name + ")"
 		case h.is("AspNetCoreModule"), h.is("AspNetCoreModuleV2"):
 			return "ASP.NET Core"
 		case h.is("FastCgiModule"):

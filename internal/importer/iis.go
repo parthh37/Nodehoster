@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,8 +28,10 @@ type ahConfig struct {
 }
 
 type ahPool struct {
-	Name         string `xml:"name,attr"`
-	ProcessModel struct {
+	Name string `xml:"name,attr"`
+	// nil: not set here. "" is "No Managed Code"; IIS's default is v4.0.
+	ManagedRuntime *string `xml:"managedRuntimeVersion,attr"`
+	ProcessModel   struct {
 		IdentityType string `xml:"identityType,attr"`
 		UserName     string `xml:"userName,attr"`
 	} `xml:"processModel"`
@@ -125,7 +129,7 @@ func (b *iisBuilder) config(it *item, locPath, dir string) *webConfig {
 		}
 	}
 	if dir != "" {
-		file := strings.TrimRight(dir, `\/`) + string(sep(dir)) + "web.config"
+		file := joinPath(dir, "web.config")
 		if data, err := b.opts.ReadFile(file); err == nil {
 			if err := parseWebConfig(wc, string(data)); err != nil {
 				it.skipped("%s could not be read (%v); its settings were not imported.", file, err)
@@ -160,7 +164,7 @@ func (b *iisBuilder) site(pv *model.ImportPreview, site ahSite) {
 	}
 	dir := b.physical(it, rootDir(root))
 	wc := b.config(it, site.Name, dir)
-	s := b.siteFromConfig(it, site.Name, dir, wc)
+	s := b.siteFromConfig(it, root, site.Name, dir, wc)
 	s.AutoStart = !strings.EqualFold(site.ServerAutoStart, "false")
 	if !s.AutoStart {
 		it.converted("serverAutoStart is off: the site does not start with the service.")
@@ -195,6 +199,8 @@ func (b *iisBuilder) site(pv *model.ImportPreview, site ahSite) {
 			it.converted("Application %s runs Node.js: imported as its own site %q, mounted at %s (it receives the full path, as under iisnode).", app.Path, child.Options[0].Site.Name, app.Path)
 		} else if h := awc.codeHandler(); h != "" {
 			it.skipped("Application %s runs %s, which NodeHoster does not host; it was left out.", app.Path, h)
+		} else if m := b.codeMarkers(&app, appDir, awc); len(m) > 0 {
+			it.skipped("Application %s looks like it runs code NodeHoster does not host (%s); it was left out: serving its folder as files could expose its configuration, binaries or source code.", app.Path, strings.Join(m, "; "))
 		} else if appDir != "" {
 			b.staticLocation(it, s, app.Path, appDir, "application")
 		}
@@ -243,6 +249,81 @@ func (b *iisBuilder) staticLocation(it *item, s *model.Site, p, dir, what string
 	}
 	s.Routing.Locations = append(s.Routing.Locations, model.Location{Path: p, Kind: "static", Root: dir, StripPrefix: true})
 	it.converted("The %s %s became a location serving the files of %s.", what, p, dir)
+	denyUnknownTypes(it, s)
+}
+
+// denyUnknownTypes refuses files whose extension no MIME map knows, as IIS
+// does (404.3): an IIS folder holds files IIS never served — .config,
+// .dll, .mdf, .cs — that must not become downloads here.
+func denyUnknownTypes(it *item, s *model.Site) {
+	if s.Routing.UnknownMimeTypes == model.UnknownMimeDeny {
+		return
+	}
+	s.Routing.UnknownMimeTypes = model.UnknownMimeDeny
+	it.converted("Files whose extension has no MIME type are refused (404), as in IIS.")
+}
+
+// codeExts are pages IIS runs through a handler (ASP.NET, classic ASP,
+// PHP) rather than sending as files.
+var codeExts = []string{".aspx", ".asmx", ".ashx", ".axd", ".svc", ".cshtml", ".vbhtml", ".asax", ".asp", ".php"}
+
+func isCodeFile(name string) bool {
+	return slices.Contains(codeExts, strings.ToLower(path.Ext(strings.ReplaceAll(name, `\`, "/"))))
+}
+
+// codeMarkers lists what shows that an IIS site or application runs code
+// even though its web.config declares no handler for it: IIS's server-wide
+// handlers run .aspx pages in any application pool that loads .NET, and
+// PHP or ASP pages wherever those are installed. Such a folder typically
+// holds web.config (connection strings, machineKey), bin\*.dll and
+// App_Data, which must not be served as files.
+func (b *iisBuilder) codeMarkers(app *ahApp, dir string, wc *webConfig) []string {
+	var m []string
+	if pool, p, ok := b.pool(app); ok {
+		v := "v4.0" // IIS's default
+		if p.ManagedRuntime != nil {
+			v = *p.ManagedRuntime
+		} else if b.poolDefs.ManagedRuntime != nil {
+			v = *b.poolDefs.ManagedRuntime
+		}
+		if v = strings.TrimSpace(v); v != "" {
+			m = append(m, fmt.Sprintf("its application pool %q loads .NET CLR %s (ASP.NET)", pool, v))
+		}
+	}
+	if len(wc.aspNet) > 0 {
+		m = append(m, "ASP.NET settings in web.config ("+strings.Join(wc.aspNet, ", ")+")")
+	}
+	if len(wc.connStrings) > 0 {
+		m = append(m, "connection strings in web.config")
+	}
+	for _, d := range wc.defaultDocs {
+		if isCodeFile(d) {
+			m = append(m, "the default document "+d)
+			break
+		}
+	}
+	if dir == "" {
+		return m
+	}
+	names, _ := b.opts.ReadDir(dir)
+	var code string
+	for _, n := range names {
+		switch {
+		case strings.EqualFold(n, "bin"):
+			dlls, _ := b.opts.ReadDir(joinPath(dir, n))
+			if slices.ContainsFunc(dlls, func(f string) bool { return strings.EqualFold(path.Ext(f), ".dll") }) {
+				m = append(m, n+`\*.dll`)
+			}
+		case strings.EqualFold(n, "App_Data"), strings.EqualFold(n, "App_Code"):
+			m = append(m, n)
+		case code == "" && isCodeFile(n):
+			code = n
+		}
+	}
+	if code != "" {
+		m = append(m, "pages such as "+code)
+	}
+	return m
 }
 
 // nodeApp is an iisnode application below a site: its own node site
@@ -261,7 +342,7 @@ func (b *iisBuilder) nodeApp(parent *item, site ahSite, app ahApp, dir string, w
 
 // siteFromConfig decides what a site is from its configuration: an
 // iisnode application, a redirect, an ARR reverse proxy or static files.
-func (b *iisBuilder) siteFromConfig(it *item, name, dir string, wc *webConfig) *model.Site {
+func (b *iisBuilder) siteFromConfig(it *item, app *ahApp, name, dir string, wc *webConfig) *model.Site {
 	if s, ok := nodeFromWebConfig(it, wc, name, dir, b.opts); ok {
 		return s
 	}
@@ -293,6 +374,13 @@ func (b *iisBuilder) siteFromConfig(it *item, name, dir string, wc *webConfig) *
 	s := &model.Site{Name: siteName(name), Type: model.SiteStatic, Static: &model.StaticConfig{Root: dir}}
 	s.Routing.Compression, s.Routing.AccessLog = true, true
 	it.converted("Static files from %s.", dir)
+	if wc.codeHandler() == "" {
+		if m := b.codeMarkers(app, dir, wc); len(m) > 0 {
+			it.skipped("The site looks like it runs code NodeHoster does not host: %s. It is proposed as static files but not selected: serving its folder as files could expose its configuration, binaries or source code. Select it only if the folder holds nothing but public files.", strings.Join(m, "; "))
+			it.Selected = false
+		}
+	}
+	denyUnknownTypes(it, s)
 	if len(wc.defaultDocs) > 0 {
 		s.Static.IndexFiles = wc.defaultDocs
 		it.converted("Default documents: %s.", strings.Join(wc.defaultDocs, ", "))
@@ -425,14 +513,7 @@ func parseBindingInfo(info string) (ip string, port int, host string, err error)
 // identity notes the application pool's identity: passwords are never
 // imported, so a specific account must be entered again.
 func (b *iisBuilder) identity(it *item, app *ahApp) {
-	pool := app.Pool
-	if pool == "" {
-		pool = b.appDefs.Pool
-	}
-	if pool == "" {
-		return
-	}
-	p, ok := b.pools[strings.ToLower(pool)]
+	pool, p, ok := b.pool(app)
 	if !ok {
 		return
 	}
@@ -448,4 +529,18 @@ func (b *iisBuilder) identity(it *item, app *ahApp) {
 	default:
 		it.skipped("Application pool %q runs as %s; NodeHoster runs sites as its service account unless Run as is set.", pool, idType)
 	}
+}
+
+// pool is the application pool an application runs in, when the
+// configuration defines it.
+func (b *iisBuilder) pool(app *ahApp) (string, ahPool, bool) {
+	name := app.Pool
+	if name == "" {
+		name = b.appDefs.Pool
+	}
+	if name == "" {
+		return "", ahPool{}, false
+	}
+	p, ok := b.pools[strings.ToLower(name)]
+	return name, p, ok
 }

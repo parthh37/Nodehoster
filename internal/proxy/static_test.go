@@ -17,6 +17,10 @@ func TestStaticTraversal(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "index.html"), []byte("ok"), 0o644)
 	os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET"), 0o644)
 	os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("SECRET"), 0o644)
+	// A folder moved from IIS: web.config holds connection strings.
+	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
+	os.WriteFile(filepath.Join(root, "web.config"), []byte("SECRET"), 0o644)
+	os.WriteFile(filepath.Join(root, "sub", "Web.config"), []byte("SECRET"), 0o644)
 	h := &staticHandler{root: root, index: []string{"index.html"}}
 
 	for _, target := range []string{
@@ -28,6 +32,11 @@ func TestStaticTraversal(t *testing.T) {
 		"/C:%5Cwindows%5Cwin.ini",
 		"/index.html::$DATA",
 		"/index.html%00",
+		"/web.config",
+		"/WEB.CONFIG",
+		"/web.config.",
+		"/web.config%20",
+		"/sub/Web.config",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://site"+target, nil))

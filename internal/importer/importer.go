@@ -25,6 +25,10 @@ type Options struct {
 	// ReadFile reads a web.config next to an IIS site. Default: the local
 	// file system, files of at most 1 MB.
 	ReadFile func(path string) ([]byte, error)
+	// ReadDir lists the names in an IIS site's folder, to recognize
+	// ASP.NET (bin\*.dll, App_Data) and pages of other languages. Default:
+	// the local file system.
+	ReadDir func(path string) ([]string, error)
 	// Getenv expands %VARIABLES% in IIS physical paths. Default: this
 	// machine's environment for the local IIS, Windows defaults otherwise.
 	Getenv func(string) string
@@ -42,6 +46,9 @@ func (o *Options) defaults(source string) {
 	}
 	if o.ReadFile == nil {
 		o.ReadFile = readSmallFile
+	}
+	if o.ReadDir == nil {
+		o.ReadDir = readDirNames
 	}
 	if o.Getenv == nil {
 		if source == model.ImportLocalIIS {
@@ -65,6 +72,21 @@ func readSmallFile(path string) ([]byte, error) {
 		return nil, errors.New("not a readable configuration file")
 	}
 	return os.ReadFile(path)
+}
+
+// readDirNames lists a folder, up to a few thousand names: enough to see
+// what kind of site it is.
+func readDirNames(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(5000)
+	if len(names) > 0 {
+		return names, nil
+	}
+	return nil, err
 }
 
 // windowsDefaults resolves the variables an applicationHost.config

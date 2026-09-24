@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -182,6 +183,104 @@ func TestIISApplicationHost(t *testing.T) {
 		if len(it.Conflicts) != 0 {
 			t.Errorf("%s: conflicts %v", it.Key, it.Conflicts)
 		}
+	}
+}
+
+// A classic ASP.NET (or PHP, or ASP) site rarely declares a handler in its
+// own web.config: IIS's server-wide handlers run it. Proposing it as static
+// files, selected, would publish web.config, bin\*.dll and App_Data.
+func TestIISCodeSitesAreNotSelectedAsStatic(t *testing.T) {
+	cases := []struct {
+		name, pool, webConfig string
+		files                 []string // in the site's folder; "bin/x" in bin
+		want                  string   // in the note; "" = a plain static site
+	}{
+		{name: "plain", pool: "Static", files: []string{"index.html", "web.config"}},
+		{name: "pool", pool: "Classic", want: `pool "Classic" loads .NET CLR v2.0`},
+		{name: "pooldefault", pool: "Inherit", want: `pool "Inherit" loads .NET CLR v4.0`},
+		{name: "appdefaults", pool: "", want: `pool "DefaultAppPool" loads .NET CLR v4.0`},
+		{name: "systemweb", pool: "Static", webConfig: `<configuration><system.web><compilation debug="false" /><httpRuntime /></system.web></configuration>`, want: "<compilation>, <httpRuntime>"},
+		{name: "machinekey", pool: "Static", webConfig: `<configuration><location path="."><system.web><machineKey validationKey="AB" /></system.web></location></configuration>`, want: "<machineKey>"},
+		{name: "connstrings", pool: "Static", webConfig: `<configuration><connectionStrings><add name="Db" connectionString="Server=x;Password=p" /></connectionStrings></configuration>`, want: "connection strings"},
+		{name: "defaultdoc", pool: "Static", webConfig: `<configuration><system.webServer><defaultDocument><files><add value="Default.aspx" /></files></defaultDocument></system.webServer></configuration>`, want: "Default.aspx"},
+		{name: "managedhandler", pool: "Static", webConfig: `<configuration><system.webServer><handlers><add name="Report" path="report.axd" verb="*" type="Shop.ReportHandler, Shop" /></handlers></system.webServer></configuration>`, want: "ASP.NET (the handler Report)"},
+		{name: "bin", pool: "Static", files: []string{"index.html", "Bin/Shop.dll"}, want: `Bin\*.dll`},
+		{name: "appdata", pool: "Static", files: []string{"index.html", "App_Data"}, want: "App_Data"},
+		{name: "php", pool: "Static", files: []string{"index.php", "style.css"}, want: "index.php"},
+	}
+	var sites, pages strings.Builder
+	files := map[string][]byte{}
+	dirs := map[string][]string{}
+	for i, c := range cases {
+		dir := `C:\sites\` + c.name
+		pool := ""
+		if c.pool != "" {
+			pool = ` applicationPool="` + c.pool + `"`
+		}
+		fmt.Fprintf(&sites, `<site name="%s" id="%d"><application path="/"%s><virtualDirectory path="/" physicalPath="%s" /></application>
+			<bindings><binding protocol="http" bindingInformation="*:80:%s.example.com" /></bindings></site>`, c.name, i+1, pool, dir, c.name)
+		if c.webConfig != "" {
+			files[dir+`\web.config`] = []byte(c.webConfig)
+		}
+		for _, f := range c.files {
+			if d, name, ok := strings.Cut(f, "/"); ok {
+				dirs[dir] = append(dirs[dir], d)
+				dirs[dir+`\`+d] = append(dirs[dir+`\`+d], name)
+			} else {
+				dirs[dir] = append(dirs[dir], f)
+			}
+		}
+	}
+	// A child application in a .NET pool is not turned into a static
+	// location either.
+	pages.WriteString(`<site name="parent" id="99"><application path="/" applicationPool="Static"><virtualDirectory path="/" physicalPath="C:\sites\parent" /></application>
+		<application path="/admin" applicationPool="Classic"><virtualDirectory path="/" physicalPath="C:\sites\admin" /></application>
+		<application path="/assets" applicationPool="Static"><virtualDirectory path="/" physicalPath="C:\sites\assets" /></application>
+		<bindings><binding protocol="http" bindingInformation="*:80:parent.example.com" /></bindings></site>`)
+	config := `<configuration><system.applicationHost><applicationPools>
+		<add name="DefaultAppPool" /><add name="Static" managedRuntimeVersion="" /><add name="Inherit" />
+		<add name="Classic" managedRuntimeVersion="v2.0" managedPipelineMode="Classic" />
+		</applicationPools><sites>` + sites.String() + pages.String() + `<applicationDefaults applicationPool="DefaultAppPool" /></sites></system.applicationHost></configuration>`
+	opts := Options{
+		ReadFile: func(p string) ([]byte, error) {
+			if b, ok := files[p]; ok {
+				return b, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		ReadDir: func(p string) ([]string, error) {
+			if names, ok := dirs[p]; ok {
+				return names, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	}
+	pv, err := Preview(model.ImportIIS, []byte(config), "applicationHost.config", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		it := find(t, pv, "iis-"+c.name)
+		s := chosen(it).Site
+		if s.Type != model.SiteStatic || s.Routing.UnknownMimeTypes != model.UnknownMimeDeny {
+			t.Errorf("%s: type %s, unknown MIME types %q", c.name, s.Type, s.Routing.UnknownMimeTypes)
+		}
+		if c.want == "" {
+			if !it.Selected || hasNote(it, model.NoteSkipped, "not selected") {
+				t.Errorf("%s: a plain static site was not selected:\n%s", c.name, notes(it))
+			}
+			continue
+		}
+		if it.Selected || !hasNote(it, model.NoteSkipped, "not selected", c.want) {
+			t.Errorf("%s: selected=%v, want a note about %q:\n%s", c.name, it.Selected, c.want, notes(it))
+		}
+	}
+	parent := find(t, pv, "iis-parent")
+	if locs := chosen(parent).Site.Routing.Locations; !reflect.DeepEqual(locs, []model.Location{{Path: "/assets", Kind: "static", Root: `C:\sites\assets`, StripPrefix: true}}) {
+		t.Errorf("parent locations %+v", locs)
+	}
+	if !hasNote(parent, model.NoteSkipped, "/admin", `pool "Classic"`, "left out") {
+		t.Errorf("parent notes:\n%s", notes(parent))
 	}
 }
 

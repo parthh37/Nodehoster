@@ -11,8 +11,8 @@ import (
 
 // staticHandler serves files like an IIS static site: default documents,
 // optional directory browsing, optional SPA fallback, MIME types from
-// NodeHoster's own table, and dotfiles (.env, .git) never served, the way
-// IIS hides web.config.
+// NodeHoster's own table, and dotfiles (.env, .git) and web.config never
+// served, the way IIS's request filtering hides web.config.
 type staticHandler struct {
 	root     string
 	index    []string
@@ -78,7 +78,10 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // resolve maps a URL path to a file under the root. It refuses anything
 // that could step outside the root or reveal hidden files: a decoded "%5C"
 // is a path separator on Windows and ":" can name another drive or an NTFS
-// alternate data stream, so neither may appear in a request path.
+// alternate data stream, so neither may appear in a request path. A folder
+// moved from IIS keeps its web.config (connection strings, machineKey):
+// it is refused in any case and with the trailing dots or spaces Windows
+// ignores in file names.
 func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	if strings.ContainsAny(urlPath, "\\:\x00") {
 		return "", "", false
@@ -86,6 +89,9 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	clean = path.Clean("/" + urlPath)
 	for _, seg := range strings.Split(clean, "/") {
 		if strings.HasPrefix(seg, ".") && seg != ".well-known" {
+			return "", "", false
+		}
+		if strings.EqualFold(strings.TrimRight(seg, ". "), "web.config") {
 			return "", "", false
 		}
 	}
