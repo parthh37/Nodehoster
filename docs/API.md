@@ -13,8 +13,8 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
   `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
-  backup destination credentials, the Seq API key and log-shipping headers marked
-  `secret`) are returned as
+  backup destination credentials, the Seq API key, log-shipping headers marked
+  `secret` and the tokens of server connections) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
   403 when not permitted. A user is either server-wide (one of those roles, on
@@ -113,6 +113,7 @@ What a site-scoped caller gets:
 | `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
 | everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
+| `/api/servers/*` | 403: a connection is the whole of another server |
 
 **Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
 token's maximum role, not above the caller's) and `siteIds` (sites the caller
@@ -721,6 +722,109 @@ now such as `15m`, `24h`), `limit` (default 200, at most 1000), `cursor`.
 `nodehoster_requests_total{site,code}`, `nodehoster_instance_memory_bytes`, etc.
 A site-scoped (or site-restricted) token sees only its sites and no
 certificate metrics.
+
+## Server connections (multi-server)
+
+Like IIS Manager's "Connect to a Server": a server keeps connections to
+other NodeHoster servers, and the web console operates any of them through
+this one. A connection is `ServerConnection` = `{id, name, url, token,
+fingerprint?, minRole, createdAt, updatedAt}`:
+
+- `url`: the remote web console's base URL (`https://web02:8484`; a path
+  prefix is kept, a trailing `/api` dropped). `https://` is required, except
+  to this computer (`http://127.0.0.1…`, `localhost`).
+- `token`: an API token created on the remote server (secret: sealed,
+  read as `__SECRET__`, travels in configuration backups like every other
+  secret). Sending the mask back keeps it, unless the URL now points to
+  another host (scheme, host or port changed): then it must be entered
+  again (422 on `token`), so a stored token is never sent to a server it
+  was not made for. Use a dedicated token, restricted to the role (and
+  sites) this server's users need there.
+- `fingerprint`: pins the remote certificate (SHA-256 of the leaf, 64 hex
+  digits; colons, spaces and a `SHA256:` prefix are accepted). Without it
+  the certificate must verify against the trusted roots for the host name.
+  With it, that certificate and no other is accepted. Verification is
+  never simply switched off.
+- `minRole`: the least role a user of this server needs to see and use the
+  connection: `admin` (default), `operator` or `viewer`. Site-scoped users
+  and site-restricted tokens never can.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/servers` | viewer | | `ServerView[]` (`ServerConnection` + `health`), only those the caller's role may use |
+| GET | `/api/servers/{id}` | viewer | | `ServerView`; 404 for one the caller may not use |
+| POST | `/api/servers/{id}/check` | viewer | | `ServerView` after checking it now |
+| POST | `/api/servers` | admin | `ServerConnection` | 201 `ServerView` (audited `server.add`) |
+| PUT | `/api/servers/{id}` | admin | `ServerConnection` | `ServerView` (audited `server.update`) |
+| DELETE | `/api/servers/{id}` | admin | | 204 (audited `server.remove`) |
+| POST | `/api/servers/test` | admin | `{id?, url, token, fingerprint?}` | `ServerTestResult` |
+| any | `/api/servers/{id}/proxy/<path>` | viewer (and `minRole`) | as the remote endpoint | the remote `/api/<path>`'s answer |
+
+`health` (`ServerHealth`) is refreshed every 30 s (8 servers at a time, 10 s
+each), and right after a connection is added or changed: `{reachable,
+error?, checkedAt?, latencyMs, since?, version?, commit?, hostname?, os?,
+cpuPercent, cpuCount, memTotal, memUsed, sites, running, degraded, failed,
+stopped, user?, role?}` (the sites the token can see, by state; who the
+token is there). `checkedAt` absent: not checked yet. A server that answers
+but refuses the token is not reachable. After two failed checks in a row a
+`remote.down` event (warning) is raised, and `remote.up` (info) when it
+answers again, once each.
+
+`POST /api/servers/test` is for setting a connection up (trust on first
+use): `ServerTestResult` = `{certificate?: {fingerprint, subject, issuer,
+dnsNames, notBefore, notAfter, verified, verifyError?}, trusted, health}`.
+The certificate is read without trusting it; the token is only sent when
+the connection is `trusted` as configured (the certificate verifies, or
+matches `fingerprint`), and `health` is then what a check found. With `id`
+and a masked token, the stored token is used (same host only).
+
+**The proxy.** `/api/servers/{id}/proxy/<path>?<query>` is forwarded to
+`<url>/api/<path>?<query>` with the connection's token, streaming both
+ways: event streams (`/stream`, log tails) stay open, and uploads (a zip
+deployment, a restore) are passed through, up to 8 GiB. Only these request
+headers travel: `Accept`, `Accept-Language`, `Content-Type`,
+`Last-Event-ID`, `Range`, `If-None-Match`, `If-Modified-Since`,
+`X-Backup-Passphrase`, plus `Authorization: Bearer <token>` and
+`X-NodeHoster-Role-Limit` (below); the caller's cookies, `Authorization`,
+CSRF and forwarding headers never do. Only `Content-Type`,
+`Content-Length`, `Content-Disposition`, `Content-Range`, `Accept-Ranges`,
+`Last-Modified`, `ETag` and `X-Accel-Buffering` come back (never
+`Set-Cookie`); this server's own security and caching headers apply.
+Rules:
+
+- The path stays under the remote `/api`: segments `.` and `..`, a
+  backslash or NUL (also percent-encoded) and empty segments are refused
+  (400). Escapes such as `%2F` inside a segment travel as they are.
+- The remote account endpoints are refused (403): `auth/*` except
+  `auth/me`, and `tokens`. Nobody mints tokens or changes the account
+  behind a connection.
+- The CSRF rule applies to the local request as usual. A caller whose role
+  is `viewer` only reads (`GET`/`HEAD`; 403 otherwise).
+- The caller's role travels as `X-NodeHoster-Role-Limit`: a server of this
+  version or later narrows the request's access to at most that role, so
+  a local operator cannot act as an administrator there even with an
+  administrator's token (`auth/me` shows the capped access). Any client
+  may send the header to narrow its own access; an unknown role is 400.
+  An older remote server ignores it: the token's role applies.
+- The remote server's 401 becomes a 502 of this server (the token was
+  revoked or expired), so that the console does not take it for its own
+  session ending; redirects are not followed (502). Other answers,
+  including 404 `no such endpoint` from an older version, pass through.
+- Timeouts: 10 s to connect and for the TLS handshake, 5 minutes for the
+  answer's headers, and a response other than an event stream ends when
+  the remote server sends nothing for 2 minutes (or past 16 GiB). An event
+  stream ends within 2 s of the caller losing the right to use the
+  connection (role changed, connection removed or restricted, session or
+  token ended).
+- Every proxied request other than `GET`/`HEAD` is in this server's audit
+  log: `server.proxy`, the connection's name as target and `METHOD
+  /api/<path> (status)` as detail. The remote server audits it too, as the
+  token's user.
+
+The connections are kept apart from `Settings` (saving settings never
+touches them) and are part of configuration backups (`servers` in the
+export; a backup from before connections existed leaves this server's in
+place when restored).
 
 ## Local endpoints (desktop manager, command line)
 

@@ -19,12 +19,16 @@ import (
 // apply on the UI thread. Failures show in the status bar: the lists keep
 // what they had.
 func loadInto[T any](m *manager, path string, apply func(T)) {
+	gen := m.sw.gen.Load()
 	go func() {
 		var v T
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := m.cl.Get(ctx, path, &v)
 		cancel()
 		m.mw.Synchronize(func() {
+			if m.sw.gen.Load() != gen {
+				return // another server was selected meanwhile
+			}
 			if err != nil {
 				m.flashStatus("Could not load "+path+": "+err.Error(), true)
 				return

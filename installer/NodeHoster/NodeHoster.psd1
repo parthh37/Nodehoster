@@ -19,7 +19,8 @@
     'Get-NHSite', 'Start-NHSite', 'Stop-NHSite', 'Restart-NHSite', 'Invoke-NHRecycle',
     'Publish-NHSite', 'Get-NHRelease', 'Undo-NHDeployment',
     'Get-NHLog', 'Get-NHEvent', 'Get-NHCertificate',
-    'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup'
+    'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup',
+    'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

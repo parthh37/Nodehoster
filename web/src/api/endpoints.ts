@@ -1,6 +1,7 @@
 // Typed functions for every endpoint in docs/API.md.
 
 import { http, qs } from './client';
+import { routePath } from './target';
 import type {
   ACMEOptions,
   AdminSettings,
@@ -51,6 +52,10 @@ import type {
   SiteView,
   SSOSettings,
   SSOTestResult,
+  ServerConnection,
+  ServerTest,
+  ServerTestResult,
+  ServerView,
   TaskRun,
   TaskRunStart,
   TaskView,
@@ -80,9 +85,13 @@ export const serverApi = {
   metrics: (minutes = 60) => http.get<MetricPoint[]>(`/api/server/metrics${qs({ minutes })}`),
   events: (limit = 100, siteId?: string) => http.get<NHEvent[]>(`/api/events${qs({ limit, siteId })}`),
   audit: (limit = 100, offset = 0) => http.get<AuditEntry[]>(`/api/audit${qs({ limit, offset })}`),
-  backupUrl: '/api/backup',
+  get backupUrl() {
+    return routePath('/api/backup');
+  },
   /** An archive with the configured contents and passphrase. */
-  backupArchiveUrl: '/api/backup?format=zip',
+  get backupArchiveUrl() {
+    return routePath('/api/backup?format=zip');
+  },
   restore: (file: File, passphrase?: string) => {
     const fd = new FormData();
     fd.append('file', file);
@@ -133,7 +142,7 @@ export const sitesApi = {
   status: (id: string) => http.get<SiteStatus>(`/api/sites/${enc(id)}/status`),
   metrics: (id: string, minutes = 60) => http.get<MetricPoint[]>(`/api/sites/${enc(id)}/metrics${qs({ minutes })}`),
   logs: (id: string, type: LogType, lines = 500) => http.get<LogLine[]>(`/api/sites/${enc(id)}/logs${qs({ type, lines })}`),
-  logsDownloadUrl: (id: string, type: LogType) => `/api/sites/${enc(id)}/logs/download${qs({ type })}`,
+  logsDownloadUrl: (id: string, type: LogType) => routePath(`/api/sites/${enc(id)}/logs/download${qs({ type })}`),
   clearLogs: (id: string) => http.post(`/api/sites/${enc(id)}/logs/clear`),
   purgeCache: (id: string, path?: string) => http.post<{ purged: number }>(`/api/sites/${enc(id)}/cache/purge`, path ? { path } : {}),
   searchLogs: (id: string, p: LogSearchParams, signal?: AbortSignal) =>
@@ -160,7 +169,7 @@ export const tasksApi = {
   runs: (id: string, task?: string, limit = 50) => http.get<TaskRun[]>(`/api/sites/${enc(id)}/runs${qs({ task, limit })}`),
   cancel: (id: string, runId: string) => http.post<TaskRun>(`/api/sites/${enc(id)}/runs/${enc(runId)}/cancel`),
   log: (id: string, runId: string) => http.text(`/api/sites/${enc(id)}/runs/${enc(runId)}/log`),
-  logDownloadUrl: (id: string, runId: string) => `/api/sites/${enc(id)}/runs/${enc(runId)}/log${qs({ download: true })}`,
+  logDownloadUrl: (id: string, runId: string) => routePath(`/api/sites/${enc(id)}/runs/${enc(runId)}/log${qs({ download: true })}`),
 };
 
 export interface AcmeRequest {
@@ -239,7 +248,7 @@ export const mailApi = {
   retry: (id: string) => http.post(`/api/mail/queue/${enc(id)}/retry`),
   retryAll: () => http.post('/api/mail/queue/retry'),
   remove: (id: string) => http.del(`/api/mail/queue/${enc(id)}`),
-  emlUrl: (id: string) => `/api/mail/queue/${enc(id)}/eml`,
+  emlUrl: (id: string) => routePath(`/api/mail/queue/${enc(id)}/eml`),
   test: (body: MailTest) => http.post<MailMessage>('/api/mail/test', body),
   /** Deliverability checks for the configured sending domains plus `domains`; takes up to ~25 s. */
   health: (domains: string[] = [], signal?: AbortSignal) => {
@@ -273,4 +282,20 @@ export const importApi = {
   /** This server's applicationHost.config (Windows with IIS only). */
   previewLocalIIS: () => http.post<ImportPreview>('/api/import/preview', { source: 'local-iis' }),
   apply: (req: ImportApplyRequest) => http.post<ImportApplyResult>('/api/import/apply', req),
+};
+
+/**
+ * Connections to other servers. Always this server's (never proxied):
+ * administrators manage them; the list holds those the caller may use.
+ */
+export const serversApi = {
+  list: () => http.get<ServerView[]>('/api/servers'),
+  get: (id: string) => http.get<ServerView>(`/api/servers/${enc(id)}`),
+  check: (id: string) => http.post<ServerView>(`/api/servers/${enc(id)}/check`),
+  create: (s: Omit<ServerConnection, 'id'>) => http.post<ServerView>('/api/servers', s),
+  update: (id: string, s: ServerConnection) => http.put<ServerView>(`/api/servers/${enc(id)}`, s),
+  remove: (id: string) => http.del(`/api/servers/${enc(id)}`),
+  test: (t: ServerTest) => http.post<ServerTestResult>('/api/servers/test', t),
+  /** Who the connection's token is on that server, capped at the caller's role. */
+  remoteMe: (id: string) => http.get<Me>(`/api/servers/${enc(id)}/proxy/auth/me`),
 };

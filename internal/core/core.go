@@ -77,6 +77,7 @@ type Core struct {
 
 	backups backupState
 	updates updateState
+	servers serverState // connections to other NodeHoster servers
 	// UpdateFeed is where new releases come from (tests replace it).
 	UpdateFeed *update.Feed
 
@@ -120,6 +121,9 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
 	if err := c.openBans(ctx); err != nil {
 		return nil, fmt.Errorf("load IP bans: %w", err)
+	}
+	if err := c.openServers(ctx); err != nil {
+		return nil, fmt.Errorf("load server connections: %w", err)
 	}
 	c.Bus.OnEmit = func(e model.Event) {
 		if c.Ship.Wants(model.LogSourceEvent) {
@@ -219,6 +223,7 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
 	c.wg.Go(func() { c.updateLoop(ctx) })
+	c.wg.Go(func() { c.serverMonitor(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.

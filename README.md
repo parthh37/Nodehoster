@@ -78,6 +78,7 @@ IIS Manager, with a status icon in the notification area.
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
 - **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
+- **Multi-server management** like IIS Manager's "Connect to a Server": connect the web console to other NodeHoster servers (their web console URL and an API token created there, encrypted at rest, with a self-signed certificate pinned by its SHA-256 fingerprint after you compare it on first connect) and switch between them from the top bar — every page then operates that server through this one, live status, log tails and zip uploads included. A **Servers** page shows each one's reachability, version, sites running/failed, CPU and memory, checked every 30 s, with `remote.down` / `remote.up` notifications. Administrators choose which roles may use each connection; users never get more there than their role here (viewers only read), and every change made through a connection is in the local audit log. NodeHoster Manager (**Connect to a server…**), the command line (`nodehoster --server web02 site list`) and the PowerShell module (`Connect-NHServer`) connect the same way, with the token saved for your Windows account only (DPAPI)
 - **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
@@ -195,6 +196,22 @@ addresses, manage the mail queue, change where the web console listens,
 back up to a file, run a scheduled backup now and see its history, restore
 from a backup, and start or stop the service.
 
+**Connect to a server…** (File menu, or the tool bar) adds another
+NodeHoster server to the connections tree: its web console URL and an API
+token created there (Account → API tokens). A certificate that is not
+trusted (the self-signed one admin listeners get by default) is shown with
+its SHA-256 fingerprint to compare with the server's before it is pinned.
+The token is saved for your Windows account, protected by DPAPI, and the
+command line shares these connections. Selecting the server's node shows
+the same pages for it, over HTTPS instead of the pipe, with what the
+token's role allows there: sites (start, stop, recycle, deploy a `.zip`,
+live logs, settings), certificates, Node.js, mail, users, bans, events,
+backups and updates. What needs the server's own computer — starting and
+stopping its Windows service, changing where its web console listens, and
+opening its data folder, log files or site folders — is disabled for remote
+servers (use NodeHoster Manager on that server). File → Remove connection
+forgets it.
+
 Every list can be searched (Ctrl+F) and sorted by clicking a column, and
 has the actions of its rows on a right-click; Delete removes, Enter opens,
 F5 refreshes, Ctrl+N adds a site, Ctrl+1…9 go to a section. The window
@@ -249,7 +266,19 @@ nodehoster update check | update install [--yes]
 nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
 nodehoster deps                              Node.js and Git: installed or missing (exit code 1 if missing)
 nodehoster deps install [node] [git]         install what is missing (setup runs this)
+nodehoster server add <name> <url> [--fingerprint <sha256>]  save a connection to another server
+nodehoster server list | server test <name> | server remove <name>
+nodehoster --server <name|url> [--token <token>] <command>   run a command on that server
 ```
+
+`--server` runs a command against another server's web console over HTTPS
+instead of the local pipe (no elevation needed): a connection saved with
+`nodehoster server add` (it asks for the token, and shows a certificate
+that is not trusted with its fingerprint to confirm; the token is saved for
+your Windows account with DPAPI, shared with NodeHoster Manager), or a URL
+with the token in `--token` or, better, `NODEHOSTER_TOKEN`
+(`NODEHOSTER_FINGERPRINT` pins a self-signed certificate). The token's role
+on that server applies. `deps` and `server` work on this computer only.
 
 `backup run` and `backup history` are commands: to save a backup in a file
 named `run` or `history`, give a path (`nodehoster backup .\run`). An
@@ -269,7 +298,9 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
 `Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Start-NHBackup`. They take site names from the pipeline. `Connect-NHServer
+<name|url> [-Token]` makes them target another server until
+`Disconnect-NHServer`; `Get-NHServer` lists the saved connections:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -406,6 +437,7 @@ internal/nodeversions Node.js runtime installer
 internal/deps         Git lookup and MinGit installer (nodehoster deps)
 internal/api          REST API (docs/API.md) and embedded web UI
 internal/localapi     local pipes for the desktop programs (client; server in localserver)
+internal/remote       other servers' web console API: TLS pinning, health checks, saved connections
 internal/desktop      desktop presentation logic: health, formatting, icons
 internal/auth         users, sessions, tokens, TOTP
 internal/store        SQLite persistence

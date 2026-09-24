@@ -160,6 +160,12 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/node/available", a.nodeAvailable)
 		r.Get("/mail/status", a.mailStatus)
 		r.Get("/mail/queue", a.mailQueue)
+		// Server connections (servers.go): each is also limited to the
+		// roles its MinRole allows, checked by the handlers.
+		r.Get("/servers", a.listServers)
+		r.Get("/servers/{id}", a.getServer)
+		r.Post("/servers/{id}/check", a.checkServer)
+		r.Handle("/servers/{id}/proxy/*", http.HandlerFunc(a.proxyServer))
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleOperator))
@@ -215,6 +221,10 @@ func (a *API) routes(r chi.Router) {
 		r.Put("/updates", a.putUpdates)
 		r.Post("/updates/check", a.checkUpdate)
 		r.Post("/updates/install", a.installUpdate)
+		r.Post("/servers", a.createServer)
+		r.Post("/servers/test", a.testServer)
+		r.Put("/servers/{id}", a.updateServer)
+		r.Delete("/servers/{id}", a.deleteServer)
 	})
 }
 
@@ -294,7 +304,17 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 		// The access is worked out once per request, from the user as
 		// stored now, so a changed role or grant applies immediately to
 		// sessions and tokens alike.
-		ctx = withAccess(ctx, auth.UserAccess(&u.User).Restrict(tok))
+		acc := auth.UserAccess(&u.User).Restrict(tok)
+		if lim := r.Header.Get(model.RoleLimitHeader); lim != "" {
+			// Another server's connection proxy caps its token at its
+			// user's role (servers_proxy.go): it only takes rights away.
+			var ok bool
+			if acc, ok = limitAccess(acc, model.Role(lim)); !ok {
+				writeErr(w, http.StatusBadRequest, "invalid "+model.RoleLimitHeader)
+				return
+			}
+		}
+		ctx = withAccess(ctx, acc)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxUser, u)))
 	})
 }

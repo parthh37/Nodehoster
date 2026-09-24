@@ -1329,3 +1329,78 @@ export interface LogSearchParams {
   limit?: number;
   cursor?: string;
 }
+
+// ---------------------------------------------------------------- server connections
+
+/** Another NodeHoster server managed from this one (Servers page, server switcher). */
+export interface ServerConnection {
+  id: string;
+  name: string;
+  /** The remote web console's base URL, e.g. https://web02:8484. */
+  url: string;
+  /** An API token created on that server; SECRET when stored. */
+  token: string;
+  /** Pinned SHA-256 of the server's certificate (64 hex digits); '' = verified against trusted roots. */
+  fingerprint?: string;
+  /** The least local role that may use the connection. */
+  minRole: Exclude<Role, 'sites'>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ServerHealth {
+  /** Answered with the token accepted. False without checkedAt: not checked yet. */
+  reachable: boolean;
+  error?: string;
+  checkedAt?: string;
+  latencyMs: number;
+  /** Since when the server is in its current state, as seen from here. */
+  since?: string;
+  version?: string;
+  commit?: string;
+  hostname?: string;
+  os?: string;
+  cpuPercent: number;
+  cpuCount: number;
+  memTotal: number;
+  memUsed: number;
+  sites: number;
+  running: number;
+  degraded: number;
+  failed: number;
+  stopped: number;
+  /** The token's user there, and its role ('sites' when limited to some sites). */
+  user?: string;
+  role?: Role;
+}
+
+export interface ServerView extends ServerConnection {
+  health: ServerHealth;
+}
+
+export interface PeerCertificate {
+  fingerprint: string;
+  subject: string;
+  issuer: string;
+  dnsNames: string[];
+  notBefore: string;
+  notAfter: string;
+  /** The chain verifies for the host name against the trusted roots of this server. */
+  verified: boolean;
+  verifyError?: string;
+}
+
+export interface ServerTest {
+  id?: string;
+  url: string;
+  token: string;
+  fingerprint?: string;
+}
+
+export interface ServerTestResult {
+  /** Absent over plain HTTP (to this computer only). */
+  certificate?: PeerCertificate;
+  /** The TLS connection is trusted as configured; the token is only tried then. */
+  trusted: boolean;
+  health: ServerHealth;
+}

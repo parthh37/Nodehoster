@@ -2,6 +2,7 @@
 // helpers only add typed parsing and a single close function.
 
 import type { Deployment, LogLine, LogType, NHEvent, SiteStatus, TaskRun } from './types';
+import { routePath } from './target';
 
 export interface StreamHandle {
   close(): void;
@@ -27,7 +28,7 @@ function open(url: string, handlers: Handlers, opts: StreamOptions = {}): Stream
 
   const connect = () => {
     if (closed) return;
-    es = new EventSource(url, { withCredentials: true });
+    es = new EventSource(routePath(url), { withCredentials: true });
     es.onopen = () => {
       retry = 0;
       opts.onOpen?.();

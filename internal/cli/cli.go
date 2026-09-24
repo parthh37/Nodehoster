@@ -142,9 +142,17 @@ func Main(args []string, dataDir string, jsonOut bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	st, _ := os.Stdin.Stat()
+	client, err := clientFor(dataDir, Server, Token) // --server: another server (servers.go)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return ExitUsage
+	}
+	if client.Remote() {
+		OfflineUpdates, ServiceUp, dataDir = nil, nil, "" // this computer's service is not the one targeted
+	}
 	e := &Env{
 		Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin, JSON: jsonOut,
-		Client: localapi.Connect(localapi.Admin, dataDir), Ctx: ctx,
+		Client: client, Ctx: ctx,
 		Interactive: st != nil && st.Mode()&os.ModeCharDevice != 0,
 		DataDir:     dataDir,
 	}
@@ -184,6 +192,8 @@ func Run(e *Env, args []string) int {
 		err = usagef("missing arguments: expected %s", c.Args)
 	case c.MaxArgs >= 0 && len(pos) > c.MaxArgs:
 		err = usagef("unexpected argument %q", pos[c.MaxArgs])
+	default:
+		err = refuseRemote(e, c)
 	}
 	if err != nil {
 		fmt.Fprintf(e.Stderr, "error: %v\n", err)
