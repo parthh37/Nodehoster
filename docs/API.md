@@ -867,7 +867,12 @@ createdBy?}`. Server-wide only: site-scoped callers get 403. Manual bans and
 unbans are audited (`ban.add`, `ban.remove`).
 
 `ipBan.wafBlocks` (default 5 in 60 s) counts requests a site's web
-application firewall blocked (below); detections in detect mode never count.
+application firewall blocked (below); detections in detect mode never count,
+nor do requests a browser made for another site's page
+(`Sec-Fetch-Site: cross-site`: an image or link elsewhere whose URL carries
+an attack string would otherwise get that page's visitors banned). Anyone
+can send that header, which only spares the sender a ban: the request is
+still blocked.
 
 ## Web application firewall
 
@@ -896,18 +901,43 @@ inspectBodyKB?, exclusions?[]}`:
   2), every other header but `Authorization` for Log4Shell, Shellshock and
   OGNL, uploaded file names, and bodies up to `inspectBodyKB` (default 128,
   at most 4096) that are `application/x-www-form-urlencoded`, JSON (keys
-  as argument names, dotted: `post.body`), `multipart/form-data` (text
-  fields; file contents are not inspected), text (`text/*`, GraphQL) or,
-  from paranoia level 2, XML. The rest of a body, and binary or compressed
-  bodies, stream to the site uninspected; what was read is replayed to it
-  first, so it receives every byte.
+  as argument names, dotted: `post.body`, cut at 256 characters; nested
+  more than 64 deep, rule 920205 fires and the body is inspected as
+  text), `multipart/form-data` (fields, whatever their `Content-Type`,
+  and file names; file contents are not inspected), text (`text/*`,
+  GraphQL) or, from paranoia level 2, XML. A `Content-Type` that does not
+  parse scores 920190 and the body is inspected as text. `gzip` and
+  `deflate` bodies (`Content-Encoding`, as Express's body-parser accepts
+  them) are inflated for inspection, up to `inspectBodyKB` of inflated
+  data and no further (a zip bomb costs no more than any body), and
+  passed on as sent. The rest of a body, and binary bodies, stream to the
+  site uninspected; what was read is replayed to it first, so it receives
+  every byte.
+- Inspection fails closed. A request that cannot be inspected completely
+  counts as reaching the threshold whatever its score (blocked in block
+  mode, a `detected` event in detect mode): more than 2048 argument names
+  and values (query string and body) or more than 1024 headers and
+  cookies (rule 920210), more work than the per-request budget (920220),
+  or a body in another content coding (Brotli, zstd, several codings:
+  920240). Excluding 920210 has every value inspected however many there
+  are; excluding 920240 lets such bodies through uninspected; 920220
+  cannot be excluded.
+- Bodies held for inspection share a server-wide budget of 64 MB. When it
+  is spent (many large bodies arriving slowly at once), a site in block
+  mode answers `503` with `Retry-After: 1` (no event, no strike towards a
+  ban) and one in detect mode passes the body on uninspected.
 - `exclusions[]` = `{path?, ruleIds?[], categories?[], args?[], cookies?[],
-  headers?[], comment?}`: under `path` (a prefix; absent = the whole site),
-  with `args`/`cookies`/`headers` (names, case-insensitive, a trailing `*`
+  headers?[], comment?}`: under `path` (absent = the whole site), with
+  `args`/`cookies`/`headers` (names, case-insensitive, a trailing `*`
   matches a prefix) those are not inspected by the listed rules and
   categories (all rules if none); without names the listed rules and
   categories are off; with nothing listed the firewall is off under
-  `path`. Categories: `sqli`, `xss`, `lfi`, `rfi`, `rce`, `nodejs`, `php`,
+  `path`. `path` is a prefix of whole segments (`/api` covers `/api` and
+  `/api/x`, not `/api-admin`; a trailing `/` makes no difference),
+  matched without regard to case against the request's path both as sent
+  (repeated slashes collapsed) and with its dot segments resolved:
+  `/hooks/../login` is not under `/hooks/`, nor is `/login/../hooks/x`.
+  Categories: `sqli`, `xss`, `lfi`, `rfi`, `rce`, `nodejs`, `php`,
   `java`, `scanner`, `protocol`.
 
 It runs after IP restrictions, maintenance mode, rate limiting, basic
@@ -915,17 +945,30 @@ authentication and the body size limit, and before URL rewriting (it sees
 what the client sent). A blocked request gets the site's 403 error page,
 or the built-in one showing the request ID, and an `X-Request-Id` header.
 Blocks count towards automatic IP banning (`ipBan.wafBlocks`) unless the
-site is exempt (`routing.banning.exempt`). A mounted site (a location of
-kind `site`) is covered by the firewall of the site it is mounted in.
+site is exempt (`routing.banning.exempt`) or the request was a browser's
+cross-site one (above). A mounted site (a location of kind `site`) is
+covered by the firewall of the site it is mounted in and by its own: its
+mode and exclusions apply to the path it sees (after `stripPrefix`), its
+events and counters are its own. A deployment slot uses its site's
+firewall; its traffic is counted and its events saved as the site's, with
+`slot` set.
 
 Blocked and detected requests are saved as `WAFEvent` = `{seq, id, time,
-siteId, action: blocked|detected, clientIp, method, host, path (no query
-string), userAgent?, score, threshold, paranoiaLevel, matches[]}` with
+siteId, slot?, action: blocked|detected, clientIp, method, host, path,
+userAgent?, score, threshold, paranoiaLevel, matches[]}` with
 `WAFMatch` = `{ruleId, category, severity, score, message, in:
-path|arg|argName|cookie|header|file|body|request|query, name?, snippet?}`;
-`snippet` is the matched text (decoded, at most 120 bytes, control
-characters escaped), `[redacted]` for arguments and cookies whose names
-look like passwords, tokens or session IDs. Events are kept
+path|arg|argName|cookie|header|file|body|request|query, name?, snippet?}`.
+`path` has no query string, and path segments that look like tokens (24
+or more base64 or hex characters, letters and digits mixed) read
+`[redacted]`. `snippet` is the matched text (decoded, at most 120 bytes,
+control characters escaped), `[redacted]` for arguments, cookies and
+headers whose names look like passwords, tokens or session IDs (`sid`,
+`*.sid` such as Express's `connect.sid`, `PHPSESSID`, `JSESSIONID`,
+`ASP.NET_SessionId`, anything with `session`...); in a body inspected as
+text, a match following such a field is `[redacted]` and such fields'
+values within the snippet are too. `path`, `host`, `userAgent` and
+`snippet` are the client's text: show them as text, never as markup or
+links. Events are kept
 `eventRetentionDays`, at most 100,000; at most 200 a second are saved (the
 rest are counted, `nodehoster_waf_events_dropped_total`). Blocks raise
 `security.waf` events (warning; at most 10 a minute, the rest summarized).
@@ -942,7 +985,8 @@ rest are counted, `nodehoster_waf_events_dropped_total`). Blocks raise
 `/metrics` adds, for sites with the firewall on,
 `nodehoster_waf_inspected_total{site,type}`,
 `nodehoster_waf_requests_total{site,type,action="blocked|detected"}` and
-`nodehoster_waf_rule_matches_total{site,type,category}`.
+`nodehoster_waf_rule_matches_total{site,type,category}`, a site's
+deployment slots included.
 
 ## Mail (SMTP server)
 

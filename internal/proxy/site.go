@@ -393,6 +393,14 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 				errorPage(w, ro.ErrorPages, http.StatusBadGateway, "The application mounted at this path does not exist.")
 				return
 			}
+			// The mounted site's own firewall applies too, with its own
+			// mode and exclusions (on the path it sees).
+			if target.waf != nil && target != rt {
+				clientIP, _ := r.Context().Value(ctxClientIP).(string)
+				if !target.inspectWAF(w, r, clientIP) {
+					return
+				}
+			}
 			target.core.ServeHTTP(w, r)
 		default:
 			if loc.handler == nil {

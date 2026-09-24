@@ -301,9 +301,9 @@ func safeText(s string, max int) string {
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
-			// Controls, and the bidirectional overrides that could make
-			// the text read differently from what it is.
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x061c || r == 0x200e || r == 0x200f || r == 0x2028 || r == 0x2029 || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			// Controls, and the bidirectional marks and overrides that
+			// could make the text read differently from what it is.
 			b.WriteString(`\u`)
 			const hexd = "0123456789abcdef"
 			b.WriteByte(hexd[r>>12&0xf])

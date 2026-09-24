@@ -98,7 +98,7 @@ export function ExclusionDialog({
       <div className="space-y-4">
         <Field
           label="Path prefix"
-          hint="Only requests whose path starts with this. Blank = the whole site."
+          hint="Only requests under this path: whole segments (/api covers /api/x, not /api-admin), any case. Blank = the whole site."
           labelAction={
             d.path && d.path !== '/' ? (
               <button type="button" className="nh-link text-xs" onClick={() => set({ path: parentPath(d.path) })}>

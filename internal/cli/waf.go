@@ -194,7 +194,7 @@ func wafEventsCmd(fs *flag.FlagSet) Runner {
 			for i, m := range ev.Matches {
 				rules[i] = strconv.Itoa(m.RuleID)
 			}
-			rows = append(rows, []string{localTime(ev.Time), ev.Action, names[ev.SiteID], ev.ClientIP,
+			rows = append(rows, []string{localTime(ev.Time), ev.Action, ev.SiteName(names[ev.SiteID]), ev.ClientIP,
 				truncate(ev.Method+" "+ev.Path, 50), strings.Join(rules, ","), fmt.Sprintf("%d/%d", ev.Score, ev.Threshold), ev.ID})
 		}
 		e.table([]string{"TIME", "ACTION", "SITE", "CLIENT", "REQUEST", "RULES", "SCORE", "REQUEST ID"}, rows)

@@ -61,10 +61,13 @@ export interface WAFEvent {
   id: string;
   time: string;
   siteId: string;
+  /** The deployment slot that served the request; absent = production. */
+  slot?: string;
   action: WAFAction | string;
   clientIp: string;
   method: string;
   host: string;
+  /** Without the query string; token-like segments read "[redacted]". Attacker-controlled: render as text only. */
   path: string;
   userAgent?: string;
   score: number;

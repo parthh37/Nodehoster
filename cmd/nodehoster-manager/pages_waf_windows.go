@@ -179,7 +179,7 @@ func (s *wafPage) reload(m *manager) {
 			if ev.Action == model.WAFActionDetected {
 				action = "Detected"
 			}
-			rows[i] = []string{ev.Time.Local().Format("2006-01-02 15:04:05"), action, names[ev.SiteID], ev.ClientIP,
+			rows[i] = []string{ev.Time.Local().Format("2006-01-02 15:04:05"), action, ev.SiteName(names[ev.SiteID]), ev.ClientIP,
 				ev.Method + " " + ev.Path, strings.Join(rules, ", "), fmt.Sprintf("%d/%d", ev.Score, ev.Threshold), ev.ID}
 		}
 		s.events.set(keys, rows)
@@ -308,9 +308,13 @@ func (s *wafPage) showDetails(m *manager) {
 	if ev.Action == model.WAFActionDetected {
 		action, icon = "Detected (not blocked)", walk.TaskDialogSystemIconWarning
 	}
+	host := ev.Host
+	if ev.Slot != "" {
+		host += " (slot " + ev.Slot + ")"
+	}
 	notify(m.mw, "Firewall event", fmt.Sprintf("%s %s %s", action, ev.Method, ev.Path),
 		fmt.Sprintf("From %s to %s at %s. Score %d of %d (paranoia level %d). Request ID %s.\nUser-Agent: %s",
-			ev.ClientIP, ev.Host, ev.Time.Local().Format("2006-01-02 15:04:05"), ev.Score, ev.Threshold, ev.Paranoia, ev.ID, ev.UserAgent),
+			ev.ClientIP, host, ev.Time.Local().Format("2006-01-02 15:04:05"), ev.Score, ev.Threshold, ev.Paranoia, ev.ID, ev.UserAgent),
 		b.String(), icon)
 }
 

@@ -146,8 +146,11 @@ var defs = []def{
 	{id: 920180, cat: model.WAFProtocol, sev: notice, pl: 2, msg: "Missing User-Agent header", reqst: true},
 	{id: 920190, cat: model.WAFProtocol, sev: warning, pl: 1, msg: "Malformed Content-Type header", reqst: true},
 	{id: 920200, cat: model.WAFProtocol, sev: notice, pl: 1, msg: "Request body could not be parsed", reqst: true},
+	{id: 920205, cat: model.WAFProtocol, sev: critical, pl: 1, msg: "JSON body nested too deeply", reqst: true},
+	// 920210, 920220 and 920240 make a request fail closed (Result.Incomplete).
 	{id: 920210, cat: model.WAFProtocol, sev: warning, pl: 1, msg: "Too many arguments to inspect", reqst: true},
 	{id: 920220, cat: model.WAFProtocol, sev: critical, pl: 1, msg: "Request too costly to inspect completely", reqst: true},
+	{id: 920240, cat: model.WAFProtocol, sev: critical, pl: 1, msg: "Request body in a content encoding the firewall cannot read", reqst: true},
 
 	// ---- 930: path traversal and local file inclusion
 	{id: 930100, cat: model.WAFLFI, sev: critical, pl: 1, msg: "Path traversal (../)", in: tPath | tInput | tFile, in2: tHeaders,
