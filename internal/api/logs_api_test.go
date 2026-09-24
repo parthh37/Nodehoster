@@ -131,6 +131,40 @@ func TestLogShippingSettingsAndDelivery(t *testing.T) {
 	}
 }
 
+// A header turned from secret to plain text comes back masked: its sealed
+// value must neither be stored as the plain value (then shown and sent as
+// is) nor decrypted, so the value has to be entered again.
+func TestLogShippingHeaderSecretToPlain(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	expect(t, e.logShipping(admin, []any{
+		map[string]any{"name": "collector", "type": "http", "enabled": false, "sources": []string{"app"},
+			"http": map[string]any{"url": "https://logs.example/in", "headers": []any{map[string]any{"name": "X-Key", "value": "k3y", "secret": true}}}},
+	}), http.StatusOK)
+
+	s := decodeJSON[map[string]any](t, e.do(http.MethodGet, "/api/settings", nil, admin...))
+	target := s["logShipping"].(map[string]any)["targets"].([]any)[0].(map[string]any)
+	hd := target["http"].(map[string]any)["headers"].([]any)[0].(map[string]any)
+	hd["secret"] = false // value still the mask
+	rec := e.do(http.MethodPut, "/api/settings", s, admin...)
+	expect(t, rec, http.StatusUnprocessableEntity)
+	if f := decodeJSON[map[string]string](t, rec)["field"]; f != "logShipping.targets[0].http.headers[0].value" {
+		t.Errorf("field = %q", f)
+	}
+	expect(t, e.do(http.MethodPost, "/api/logshipping/test", target, admin...), http.StatusUnprocessableEntity)
+	if h := e.c.Settings().LogShipping.Targets[0].HTTP.Headers[0]; !h.Secret || e.c.Box.MustUnseal(h.Value) != "k3y" {
+		t.Errorf("stored header = %+v", h)
+	}
+
+	// Entered again, it is stored as plain text.
+	hd["value"] = "plain-value"
+	expect(t, e.do(http.MethodPut, "/api/settings", s, admin...), http.StatusOK)
+	if h := e.c.Settings().LogShipping.Targets[0].HTTP.Headers[0]; h.Secret || h.Value != "plain-value" {
+		t.Errorf("stored header = %+v", h)
+	}
+}
+
 func TestSiteLogSearch(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

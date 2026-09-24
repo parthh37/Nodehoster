@@ -103,8 +103,11 @@ func cloneTarget(t model.LogTarget) model.LogTarget {
 }
 
 // mergeTargetSecrets replaces masked secrets with the stored ones of the
-// target with the same ID (headers matched by name).
-func mergeTargetSecrets(t *model.LogTarget, stored []model.LogTarget) {
+// target with the same ID (headers matched by name); f is the field path
+// for errors. A header turned from secret to plain text comes back masked
+// and must be entered again: its stored value is sealed, and decrypting it
+// would make a secret readable back through the settings.
+func mergeTargetSecrets(t *model.LogTarget, stored []model.LogTarget, f string) error {
 	var old *model.LogTarget
 	for i := range stored {
 		if t.ID != "" && stored[i].ID == t.ID && stored[i].Type == t.Type {
@@ -124,6 +127,9 @@ func mergeTargetSecrets(t *model.LogTarget, stored []model.LogTarget) {
 			if h.Value != secrets.Mask {
 				continue
 			}
+			if !h.Secret {
+				return &model.ValidationError{Field: fmt.Sprintf("%s.http.headers[%d].value", f, i), Message: "the value of " + h.Name + " was secret: enter it again to store it as plain text"}
+			}
 			h.Value = ""
 			if old != nil && old.HTTP != nil {
 				for _, o := range old.HTTP.Headers {
@@ -134,6 +140,7 @@ func mergeTargetSecrets(t *model.LogTarget, stored []model.LogTarget) {
 			}
 		}
 	}
+	return nil
 }
 
 // prepareLogShipping validates targets and seals their secrets, keeping
@@ -148,7 +155,9 @@ func (c *Core) prepareLogShipping(in *model.LogShippingSettings, cur model.LogSh
 		if t.ID == "" {
 			t.ID = uuid.NewString()
 		}
-		mergeTargetSecrets(t, cur.Targets)
+		if err := mergeTargetSecrets(t, cur.Targets, fmt.Sprintf("logShipping.targets[%d]", i)); err != nil {
+			return err
+		}
 	}
 	if err := in.Validate(); err != nil {
 		return err
@@ -226,7 +235,9 @@ func (c *Core) LogShippingStatus() []logship.Status {
 // come from the saved target with the same ID).
 func (c *Core) TestLogTarget(ctx context.Context, in model.LogTarget) error {
 	t := cloneTarget(in)
-	mergeTargetSecrets(&t, c.Settings().LogShipping.Targets)
+	if err := mergeTargetSecrets(&t, c.Settings().LogShipping.Targets, "target"); err != nil {
+		return err
+	}
 	t, err := c.unsealTarget(t)
 	if err != nil {
 		return err

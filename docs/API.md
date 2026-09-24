@@ -627,7 +627,9 @@ server events are chosen by `sources` alone.
   batches of records `{time, source, level, message, siteId?, site?,
   instance?, stream?, access?: {method, path, status, bytes, durationMs,
   clientIp, host, userAgent, referer}, attrs?}`, as a JSON array or one
-  per line.
+  per line. A header's value is masked when `secret` is set; turning
+  `secret` off requires sending the value again (422 on the value field
+  when it is still the mask).
 
 Shipping never blocks logging: each target has a queue of 10,000 records
 or 16 MiB (the oldest are dropped when it is full, and counted), batches of
