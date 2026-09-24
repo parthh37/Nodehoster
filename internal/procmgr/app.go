@@ -781,7 +781,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		releasePort()
 		return nil, err
 	}
-	if err := a.m.setSecretEnv(env, site, n.Env, ""); err != nil {
+	if err := a.m.setSecretEnv(env, site, n.Env, a.key(), ""); err != nil {
 		releasePort()
 		return nil, err
 	}

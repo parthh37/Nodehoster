@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ type fakeProvider struct {
 	mu     sync.Mutex
 	values map[string]string
 	down   bool
+	refuse bool // answer 403, as a store whose credentials were revoked
 	delay  time.Duration
 	reads  atomic.Int32 // fetch calls
 	asked  atomic.Int32 // references read
@@ -40,6 +43,8 @@ func (p *fakeProvider) fetch(ctx context.Context, refs []string) []result {
 		switch v, ok := p.values[r]; {
 		case p.down:
 			out[i].err = errors.New("connection refused")
+		case p.refuse:
+			out[i].err = fmt.Errorf("reading %s was refused: %w", r, &httpError{Status: 403, Message: "permission denied"})
 		case !ok:
 			out[i].err = notFound("%s was not found", r)
 		default:
@@ -261,7 +266,7 @@ func TestWatchRecyclesChangedSites(t *testing.T) {
 	})
 	m.stores["vault"].cfg.WatchIntervalSec = 60
 	ctx := context.Background()
-	m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{Record: true, SiteID: "site1"})
+	m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{Record: true, Key: "site1"})
 	m.Resolve(ctx, []model.SecretRef{ref("app#B")}, ResolveOptions{}) // site2: not recorded
 
 	m.tick(ctx) // schedules the first watch
@@ -368,5 +373,134 @@ func TestManagerTestKeepsNothing(t *testing.T) {
 	res = m.Test(context.Background(), vaultStore(srv.URL, model.VaultStore{Token: "root-token"}), "no-key")
 	if res.OK || !strings.Contains(res.Error, "#") {
 		t.Errorf("bad reference = %+v", res)
+	}
+}
+
+// A store refusing the credentials (401/403) may mean access was revoked:
+// the last known value is used only for AuthFailGrace after it was read,
+// with a secret.failed event, and then forgotten.
+func TestResolveAuthRefusalIsBounded(t *testing.T) {
+	ev := &recorded{}
+	m, p, clock := testManager(t, Options{Event: ev.add})
+	ctx := context.Background()
+	if _, err := m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.refuse = true
+	p.mu.Unlock()
+	clock.Add(10 * time.Minute) // past the cache TTL, within the grace
+	got, err := m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{})
+	if err != nil || got[ref("app#A")] != "a1" {
+		t.Fatalf("within the grace = %v, %v", got, err)
+	}
+	evs := ev.all()
+	if len(evs) != 1 || !strings.HasPrefix(evs[0], "error "+events.SecretFailed) || !strings.Contains(evs[0], "refused") {
+		t.Fatalf("events = %q", evs)
+	}
+	clock.Add(AuthFailGrace)
+	_, err = m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{})
+	if err == nil || !IsRefused(err) || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("after the grace: %v", err)
+	}
+	// Forgotten: an outage afterwards does not bring the value back.
+	p.mu.Lock()
+	p.refuse, p.down = false, true
+	p.mu.Unlock()
+	if _, err := m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{}); err == nil {
+		t.Fatal("a refused value came back with an outage")
+	}
+	// An outage alone still falls back whatever the value's age.
+	p.setDown(false)
+	m.Resolve(ctx, []model.SecretRef{ref("app#B")}, ResolveOptions{})
+	p.setDown(true)
+	clock.Add(24 * time.Hour)
+	if got, err := m.Resolve(ctx, []model.SecretRef{ref("app#B")}, ResolveOptions{}); err != nil || got[ref("app#B")] != "b1" {
+		t.Fatalf("outage = %v, %v", got, err)
+	}
+}
+
+// Production and each deployment slot have their own record: a slot
+// starting does not replace what production started with, a rotation of
+// a reference only production uses recycles production, and one only the
+// slot uses recycles the slot.
+func TestWatchKeepsSlotRecordsApart(t *testing.T) {
+	var mu sync.Mutex
+	var changed []string
+	m, p, clock := testManager(t, Options{
+		Watched: func() map[string][]model.SecretRef {
+			return map[string][]model.SecretRef{"site1": {ref("app#A")}, "site1@staging": {ref("app#B")}}
+		},
+		Changed: func(key string, refs []string) {
+			mu.Lock()
+			changed = append(changed, key+":"+strings.Join(refs, ","))
+			mu.Unlock()
+		},
+	})
+	m.stores["vault"].cfg.WatchIntervalSec = 60
+	ctx := context.Background()
+	m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{Record: true, Key: "site1"})
+	m.Resolve(ctx, []model.SecretRef{ref("app#B")}, ResolveOptions{Record: true, Key: "site1@staging"})
+	m.tick(ctx) // schedules the first watch
+
+	p.set("app#A", "a2")
+	clock.Add(61 * time.Second)
+	m.tick(ctx)
+	mu.Lock()
+	if len(changed) != 1 || changed[0] != "site1:secretref:vault/app#A" {
+		t.Fatalf("production-only rotation: %v", changed)
+	}
+	changed = nil
+	mu.Unlock()
+
+	p.set("app#B", "b2")
+	clock.Add(61 * time.Second)
+	m.tick(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(changed) != 1 || changed[0] != "site1@staging:secretref:vault/app#B" {
+		t.Fatalf("slot-only rotation: %v", changed)
+	}
+}
+
+// The HTTP client never follows a redirect to another server: requests
+// carry credentials in headers and bodies that Go would send along.
+func TestRedirectToAnotherServerIsRefused(t *testing.T) {
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Header.Get("X-Vault-Token") != "" || len(body) > 0 {
+			leaked.Store(true)
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer other.Close()
+	store := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/away":
+			http.Redirect(w, r, other.URL+"/v1/auth/approle/login", http.StatusTemporaryRedirect)
+		case "/here":
+			http.Redirect(w, r, "/ok", http.StatusTemporaryRedirect)
+		case "/ok":
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer store.Close()
+	hc, err := newHTTPClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := http.Header{}
+	h.Set("X-Vault-Token", "root-token")
+	err = do(context.Background(), hc, http.MethodPost, store.URL+"/away", h, map[string]string{"secret_id": "s3cr3t"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "another server") {
+		t.Fatalf("cross-server redirect: %v", err)
+	}
+	if leaked.Load() {
+		t.Fatal("credentials were sent to the other server")
+	}
+	var out struct{ OK bool }
+	if err := do(context.Background(), hc, http.MethodGet, store.URL+"/here", h, nil, &out); err != nil || !out.OK {
+		t.Fatalf("same-server redirect: %v, %+v", err, out)
 	}
 }

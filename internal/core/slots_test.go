@@ -121,7 +121,7 @@ func TestSwapPreviewAndTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pv, err := c.SwapPreview(s, "staging")
+	pv, err := c.SwapPreview(s, "staging", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSwapPreviewAndTarget(t *testing.T) {
 	if _, err := c.StartSwap(s.ID, "staging", "alice", false); err == nil {
 		t.Fatal("a blocked swap started")
 	}
-	if _, err := c.SwapPreview(s, "qa"); err == nil {
+	if _, err := c.SwapPreview(s, "qa", true); err == nil {
 		t.Fatal("preview of a missing slot")
 	}
 	if _, err := c.StartSwap(s.ID, "production", "alice", false); err == nil {
@@ -156,12 +156,22 @@ func TestEnvDiffAndHost(t *testing.T) {
 	a, _ := c.Box.Seal("same")
 	b, _ := c.Box.Seal("same") // sealed twice: different ciphertexts
 	d, _ := c.Box.Seal("other")
-	diff := c.envDiff(
-		[]model.EnvVar{{Name: "A", Value: a, Secret: true}, {Name: "B", Value: "1"}, {Name: "C", Value: d, Secret: true}, {Name: "ONLY_A", Value: "x"}},
-		[]model.EnvVar{{Name: "A", Value: b, Secret: true}, {Name: "B", Value: "2"}, {Name: "C", Value: a, Secret: true}, {Name: "ONLY_B", Value: "y"}},
-	)
-	if strings.Join(diff, ",") != "B,C,ONLY_A,ONLY_B" {
-		t.Fatalf("diff = %v", diff)
+	vault := func(r string) *model.SecretRef { return &model.SecretRef{Store: "vault", Ref: r} }
+	x := []model.EnvVar{{Name: "A", Value: a, Secret: true}, {Name: "B", Value: "1"}, {Name: "C", Value: d, Secret: true}, {Name: "ONLY_A", Value: "x"},
+		{Name: "R", From: vault("app#R")}, {Name: "S", From: vault("app#S")}, {Name: "T", Value: d, Secret: true}}
+	y := []model.EnvVar{{Name: "A", Value: b, Secret: true}, {Name: "B", Value: "2"}, {Name: "C", Value: a, Secret: true}, {Name: "ONLY_B", Value: "y"},
+		{Name: "R", From: vault("app#R")}, {Name: "S", From: vault("other#S")}, {Name: "T", From: vault("app#T")}}
+	// An administrator is told which secrets differ; references are
+	// compared, not only values (S and T differ in their source).
+	diff, n := c.envDiff(x, y, true)
+	if strings.Join(diff, ",") != "B,C,ONLY_A,ONLY_B,S,T" || n != 0 {
+		t.Fatalf("diff = %v, %d", diff, n)
+	}
+	// Anyone else only how many: which secret values differ is not
+	// something the configuration shows them.
+	diff, n = c.envDiff(x, y, false)
+	if strings.Join(diff, ",") != "B,ONLY_A,ONLY_B,S,T" || n != 1 {
+		t.Fatalf("viewer diff = %v, %d", diff, n)
 	}
 
 	for _, tc := range []struct {

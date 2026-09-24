@@ -61,7 +61,8 @@ func (a *API) swapPreview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p, err := a.c.SwapPreview(s, slot)
+	// Only an administrator is told which secret values differ.
+	p, err := a.c.SwapPreview(s, slot, canOnSite(r, s.ID, model.RoleAdmin))
 	if err != nil {
 		a.fail(w, err)
 		return

@@ -4,6 +4,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -48,7 +50,7 @@ type SecretStore struct {
 	Type string `json:"type"` // vault | infisical | bitwarden
 	// URL is the server: Vault's address (https://vault.example.com:8200);
 	// for Infisical and Bitwarden "" means their cloud, else the base URL
-	// of a self-hosted server.
+	// of a self-hosted server. https, except on the loopback interface.
 	URL string `json:"url"`
 	// CACert, PEM, is trusted for this store in addition to the Windows
 	// certificate store: a self-hosted server with a private CA.
@@ -57,7 +59,8 @@ type SecretStore struct {
 	// CacheTTLSec is how long a value read from the store is reused before
 	// it is read again (recycles and instance restarts within it do not
 	// ask the store). When the store cannot be reached, the last value read
-	// is used whatever its age.
+	// is used whatever its age; when it refuses NodeHoster's credentials,
+	// only for an hour after it was read (secretstore.AuthFailGrace).
 	CacheTTLSec int `json:"cacheTtlSec"`
 	// WatchIntervalSec, when set, checks the secrets referenced by running
 	// sites this often and recycles a site (without downtime) when one of
@@ -203,7 +206,7 @@ func (s *SecretStore) Validate(field string) error {
 	}
 	named := fmt.Sprintf("secret store %q: ", s.Name)
 	if s.URL != "" {
-		if err := validURL(s.URL); err != nil {
+		if err := storeURL(s.URL); err != nil {
 			return verr(field+".url", "%s%v", named, err)
 		}
 	}
@@ -278,7 +281,7 @@ func (s *SecretStore) Validate(field string) error {
 		}
 		for _, u := range []struct{ f, v string }{{"apiUrl", b.APIURL}, {"identityUrl", b.IdentityURL}} {
 			if u.v != "" {
-				if err := validURL(u.v); err != nil {
+				if err := storeURL(u.v); err != nil {
 					return verr(f+"."+u.f, "%s%v", named, err)
 				}
 			}
@@ -299,6 +302,57 @@ func vaultPathOK(p string) bool {
 		if seg == "" || seg == "." || seg == ".." || !infisicalNameRe.MatchString(seg) {
 			return false
 		}
+	}
+	return true
+}
+
+// storeURL checks the URL of a store's server: https, since NodeHoster
+// sends it credentials, except on the loopback interface (a store on
+// this machine, or a test).
+func storeURL(raw string) error {
+	if err := validURL(raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	if u.Scheme == "https" || isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("must be an https:// URL: NodeHoster sends the store its credentials (http:// is only accepted for localhost)")
+}
+
+func isLoopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// SameStoreServer reports whether two stores (after ApplyDefaults) send
+// their credentials to the same servers: same scheme, host and port of
+// every URL they use, and the same cloud region. A store's saved
+// credentials are only reused (for a masked field) when it does.
+func SameStoreServer(a, b SecretStore) bool {
+	origin := func(raw string) string {
+		if raw == "" {
+			return ""
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return raw
+		}
+		port := u.Port()
+		if port == "" {
+			port = map[string]string{"http": "80", "https": "443"}[strings.ToLower(u.Scheme)]
+		}
+		return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Hostname()) + ":" + port
+	}
+	if a.Type != b.Type || origin(a.URL) != origin(b.URL) {
+		return false
+	}
+	if a.Bitwarden != nil && b.Bitwarden != nil {
+		x, y := a.Bitwarden, b.Bitwarden
+		return x.Region == y.Region && origin(x.APIURL) == origin(y.APIURL) && origin(x.IdentityURL) == origin(y.IdentityURL)
 	}
 	return true
 }
@@ -392,39 +446,82 @@ func (r *SecretRef) validate(field string) error {
 
 // SiteSecretRef is a reference found in a site's configuration.
 type SiteSecretRef struct {
-	Field    string    `json:"field"`              // node.env[3], tasks[1].env[0], deploy.git.tokenFrom
+	// Field is where the reference is: node.env[3], tasks[1].env[0],
+	// slots[0].env[2], deploy.previews.env[1] or deploy.git.tokenFrom.
+	Field    string    `json:"field"`
 	Variable string    `json:"variable,omitempty"` // the environment variable, if it is one
 	Task     string    `json:"task,omitempty"`     // the task's name, for a task variable
+	Slot     string    `json:"slot,omitempty"`     // the deployment slot's name, for a slot's own variable
+	Preview  bool      `json:"preview,omitempty"`  // a variable of the preview settings (deploy.previews.env)
 	Ref      SecretRef `json:"ref"`
 }
 
-// SecretRefs lists every secret store reference of the site.
+// Place names where the reference is, for an administrator: "variable
+// DB", "variable DB of task nightly", "variable DB of slot staging",
+// "variable DB of the preview settings" or "git token".
+func (r SiteSecretRef) Place() string {
+	switch {
+	case r.Task != "":
+		return fmt.Sprintf("variable %s of task %s", r.Variable, r.Task)
+	case r.Slot != "":
+		return fmt.Sprintf("variable %s of slot %s", r.Variable, r.Slot)
+	case r.Preview:
+		return fmt.Sprintf("variable %s of the preview settings", r.Variable)
+	case r.Variable != "":
+		return "variable " + r.Variable
+	}
+	return "git token"
+}
+
+// SecretRefs lists every secret store reference of the site: its
+// variables, its tasks' and its deployment slots' own variables, the
+// variables its previews are given, and its git token.
 func (s *Site) SecretRefs() []SiteSecretRef {
 	var out []SiteSecretRef
-	if s.Node != nil {
-		for i, e := range s.Node.Env {
+	add := func(env []EnvVar, field string, r SiteSecretRef) {
+		for i, e := range env {
 			if e.From != nil {
-				out = append(out, SiteSecretRef{Field: fmt.Sprintf("node.env[%d]", i), Variable: e.Name, Ref: *e.From})
+				r.Field, r.Variable, r.Ref = fmt.Sprintf("%s[%d]", field, i), e.Name, *e.From
+				out = append(out, r)
 			}
 		}
+	}
+	if s.Node != nil {
+		add(s.Node.Env, "node.env", SiteSecretRef{})
 	}
 	for i, t := range s.Tasks {
-		for j, e := range t.Env {
-			if e.From != nil {
-				out = append(out, SiteSecretRef{Field: fmt.Sprintf("tasks[%d].env[%d]", i, j), Variable: e.Name, Task: t.Name, Ref: *e.From})
-			}
-		}
+		add(t.Env, fmt.Sprintf("tasks[%d].env", i), SiteSecretRef{Task: t.Name})
 	}
+	for i, sl := range s.Slots {
+		add(sl.Env, fmt.Sprintf("slots[%d].env", i), SiteSecretRef{Slot: sl.Name})
+	}
+	add(s.Deploy.Previews.Env, "deploy.previews.env", SiteSecretRef{Preview: true})
 	if r := s.Deploy.Git.TokenFrom; r != nil {
 		out = append(out, SiteSecretRef{Field: "deploy.git.tokenFrom", Ref: *r})
 	}
 	return out
 }
 
-// validateSecretRefs checks the syntax of the site's references: a
-// variable taken from a secret store has no value of its own and is not a
-// NodeHoster secret (nothing of it is stored), and a git token is either
-// stored or referenced.
+// ReservedEnvName reports whether NodeHoster sets a variable of this name
+// itself when it starts a process: PORT, NODE_APP_INSTANCE,
+// ASPNETCORE_URLS, NODE_OPTIONS (the agent) and NODEHOSTER_*. Such a
+// variable cannot come from a secret store: store values are read last
+// and would replace NodeHoster's (a store's ASPNETCORE_URLS would move
+// Kestrel off its port).
+func ReservedEnvName(name string) bool {
+	switch n := strings.ToUpper(name); n {
+	case "PORT", "NODE_APP_INSTANCE", "ASPNETCORE_URLS", "NODE_OPTIONS":
+		return true
+	default:
+		return strings.HasPrefix(n, "NODEHOSTER_")
+	}
+}
+
+// validateSecretRefs checks the syntax of the site's references (in
+// every place SecretRefs lists): a variable taken from a secret store has
+// no value of its own, is not a NodeHoster secret (nothing of it is
+// stored) and is not one NodeHoster sets, and a git token is either stored
+// or referenced.
 func (s *Site) validateSecretRefs() error {
 	check := func(env []EnvVar, f string) error {
 		for i := range env {
@@ -439,10 +536,8 @@ func (s *Site) validateSecretRefs() error {
 			if e.Secret || e.Value != "" {
 				return verr(ef+".value", "%s comes from a secret store: it has no value of its own", e.Name)
 			}
-			// NodeHoster adds the agent to NODE_OPTIONS when it builds
-			// the environment, before stores are read.
-			if strings.EqualFold(e.Name, "NODE_OPTIONS") {
-				return verr(ef+".from", "NODE_OPTIONS cannot come from a secret store")
+			if ReservedEnvName(e.Name) {
+				return verr(ef+".from", "%s is set by NodeHoster: it cannot come from a secret store", e.Name)
 			}
 		}
 		return nil
@@ -456,6 +551,14 @@ func (s *Site) validateSecretRefs() error {
 		if err := check(s.Tasks[i].Env, fmt.Sprintf("tasks[%d].env", i)); err != nil {
 			return err
 		}
+	}
+	for i := range s.Slots {
+		if err := check(s.Slots[i].Env, fmt.Sprintf("slots[%d].env", i)); err != nil {
+			return err
+		}
+	}
+	if err := check(s.Deploy.Previews.Env, "deploy.previews.env"); err != nil {
+		return err
 	}
 	if r := s.Deploy.Git.TokenFrom; r != nil {
 		if err := r.validate("deploy.git.tokenFrom"); err != nil {

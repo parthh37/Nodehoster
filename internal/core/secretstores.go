@@ -47,47 +47,67 @@ func (c *Core) allSecretRefs() []model.SecretRef {
 }
 
 // watchedSecretRefs lists the variables from secret stores of the sites
-// whose processes are running: a change of one recycles its site.
+// and deployment slots whose processes are running, by model.SlotKey: a
+// change of one recycles that site or slot. A slot runs with its own
+// variables (model.SlotSite), so it is watched for those.
 func (c *Core) watchedSecretRefs() map[string][]model.SecretRef {
 	out := map[string][]model.SecretRef{}
-	for _, s := range c.Sites() {
-		if !s.RunsNode() || s.Node == nil || !c.Procs.Running(s.ID) {
-			continue
+	add := func(key string, env []model.EnvVar) {
+		if !c.Procs.Running(key) {
+			return
 		}
 		var refs []model.SecretRef
-		for _, e := range s.Node.Env {
-			if e.From != nil {
+		for _, e := range env {
+			if e.From != nil && !model.ReservedEnvName(e.Name) {
 				refs = append(refs, *e.From)
 			}
 		}
 		if len(refs) > 0 {
-			out[s.ID] = refs
+			out[key] = refs
+		}
+	}
+	for _, s := range c.Sites() {
+		if !s.RunsNode() || s.Node == nil {
+			continue
+		}
+		add(s.ID, s.Node.Env)
+		for _, sl := range s.Slots {
+			if cfg := model.SlotSite(s, sl.Name); cfg != nil {
+				add(model.SlotKey(s.ID, sl.Name), cfg.Node.Env)
+			}
 		}
 	}
 	return out
 }
 
-// secretsChanged recycles a site whose secrets changed in their store:
-// instances are replaced one at a time, so it keeps serving. It runs from
-// the manager's goroutine, which c.wg tracks, hence c.wg.Go is safe here.
-func (c *Core) secretsChanged(siteID string, refs []string) {
+// secretsChanged recycles a site or deployment slot (key is
+// model.SlotKey) whose secrets changed in their store: instances are
+// replaced one at a time, so it keeps serving. It runs from the manager's
+// goroutine, which c.wg tracks, hence c.wg.Go is safe here.
+func (c *Core) secretsChanged(key string, refs []string) {
+	siteID, slot := model.SplitSlotKey(key)
 	s, err := c.Site(siteID)
 	if err != nil {
 		return
 	}
-	c.Bus.Info(events.SecretRotated, siteID, "%s: %s changed in the secret store; recycling", s.Name, strings.Join(refs, ", "))
+	label := s.Name
+	if slot != "" {
+		label += " [" + slot + "]"
+	}
+	c.Bus.Info(events.SecretRotated, siteID, "%s: %s changed in the secret store; recycling", label, strings.Join(refs, ", "))
 	c.wg.Go(func() {
-		if err := c.Procs.Recycle(siteID, "a secret changed"); err != nil {
-			c.Log.Warn("recycle after a secret changed", "site", s.Name, "err", err)
+		if err := c.Procs.RecycleSlot(siteID, slot, "a secret changed"); err != nil {
+			c.Log.Warn("recycle after a secret changed", "site", label, "err", err)
 		}
 	})
 }
 
 // secretEnv reads the variables of vars that come from secret stores,
 // by name. what names what is starting, for the failure event ("an
-// instance", "task Nightly", "the deployment"); record marks the values as
-// those the site's instances run with (see Options.Watched).
-func (c *Core) secretEnv(site *model.Site, vars []model.EnvVar, what string, record bool) (map[string]string, error) {
+// instance", "task Nightly", "the deployment"); a recordKey other than ""
+// records the values as those that site's or slot's instances run with
+// (model.SlotKey; see secretstore.Options.Watched).
+func (c *Core) secretEnv(site *model.Site, vars []model.EnvVar, what, recordKey string) (map[string]string, error) {
 	var refs []model.SecretRef
 	for _, v := range vars {
 		if v.From != nil {
@@ -97,7 +117,7 @@ func (c *Core) secretEnv(site *model.Site, vars []model.EnvVar, what string, rec
 	if len(refs) == 0 {
 		return map[string]string{}, nil
 	}
-	vals, err := c.Secrets.Resolve(c.secretsCtx(), refs, secretstore.ResolveOptions{Record: record, SiteID: site.ID})
+	vals, err := c.Secrets.Resolve(c.secretsCtx(), refs, secretstore.ResolveOptions{Record: recordKey != "", Key: recordKey})
 	if err != nil {
 		name := ""
 		var re *secretstore.ResolveError
@@ -125,7 +145,7 @@ func (c *Core) secretEnv(site *model.Site, vars []model.EnvVar, what string, rec
 
 // secretToken reads a deploy token from its secret store.
 func (c *Core) secretToken(site *model.Site, ref model.SecretRef) (string, error) {
-	vals, err := c.Secrets.Resolve(c.secretsCtx(), []model.SecretRef{ref}, secretstore.ResolveOptions{SiteID: site.ID})
+	vals, err := c.Secrets.Resolve(c.secretsCtx(), []model.SecretRef{ref}, secretstore.ResolveOptions{})
 	if err != nil {
 		err = fmt.Errorf("git token from secret store: %w", err)
 		if c.Secrets.AllowEvent("failed\x00" + site.ID + "\x00deploy") {
@@ -156,23 +176,9 @@ func (c *Core) prepareSecretStores(in *[]model.SecretStore, cur []model.SecretSt
 		}
 		s.ApplyDefaults()
 		f := fmt.Sprintf("secretStores[%d]", i)
-		mergeStoreSecrets(s, cur)
-		// Only the credentials of the chosen authentication are kept.
-		if v := s.Vault; v != nil {
-			if v.Auth == model.VaultAuthAppRole {
-				v.Token = ""
-			} else {
-				v.RoleID, v.SecretID = "", ""
-			}
-		}
-		if s.Type != model.SecretStoreVault {
-			s.Vault = nil
-		}
-		if s.Type != model.SecretStoreInfisical {
-			s.Infisical = nil
-		}
-		if s.Type != model.SecretStoreBitwarden {
-			s.Bitwarden = nil
+		trimStore(s)
+		if err := mergeStoreSecrets(s, cur, f); err != nil {
+			return err
 		}
 		if err := s.Validate(f); err != nil {
 			return err
@@ -195,10 +201,10 @@ func (c *Core) prepareSecretStores(in *[]model.SecretStore, cur []model.SecretSt
 		for _, r := range site.SecretRefs() {
 			s, ok := byName[r.Ref.Store]
 			if !ok {
-				return &model.ValidationError{Field: "secretStores", Message: fmt.Sprintf("site %q uses secret store %q (%s): change it before removing or renaming the store", site.Name, r.Ref.Store, refPlace(r))}
+				return &model.ValidationError{Field: "secretStores", Message: fmt.Sprintf("site %q uses secret store %q (%s): change it before removing or renaming the store", site.Name, r.Ref.Store, r.Place())}
 			}
 			if err := model.ValidateSecretRef(s.Type, r.Ref.Ref); err != nil {
-				return &model.ValidationError{Field: "secretStores", Message: fmt.Sprintf("site %q uses %s (%s), which a %s store cannot read: %v", site.Name, r.Ref, refPlace(r), s.Type, err)}
+				return &model.ValidationError{Field: "secretStores", Message: fmt.Sprintf("site %q uses %s (%s), which a %s store cannot read: %v", site.Name, r.Ref, r.Place(), s.Type, err)}
 			}
 		}
 	}
@@ -214,36 +220,66 @@ func (c *Core) prepareSecretStores(in *[]model.SecretStore, cur []model.SecretSt
 	return nil
 }
 
-// refPlace names where a reference is, for an administrator.
-func refPlace(r model.SiteSecretRef) string {
-	switch {
-	case r.Task != "":
-		return fmt.Sprintf("variable %s of task %s", r.Variable, r.Task)
-	case r.Variable != "":
-		return "variable " + r.Variable
+// trimStore drops what a store does not use: the sections of other types
+// and the credentials of the Vault authentication not chosen.
+func trimStore(s *model.SecretStore) {
+	if v := s.Vault; v != nil {
+		if v.Auth == model.VaultAuthAppRole {
+			v.Token = ""
+		} else {
+			v.RoleID, v.SecretID = "", ""
+		}
 	}
-	return "git token"
+	if s.Type != model.SecretStoreVault {
+		s.Vault = nil
+	}
+	if s.Type != model.SecretStoreInfisical {
+		s.Infisical = nil
+	}
+	if s.Type != model.SecretStoreBitwarden {
+		s.Bitwarden = nil
+	}
 }
 
-// mergeStoreSecrets replaces masked credentials of s with the stored ones
-// of the store with the same ID and type (never the mask itself).
-func mergeStoreSecrets(s *model.SecretStore, stored []model.SecretStore) {
-	var olds []*string
+// mergeStoreSecrets replaces masked credentials of s (after ApplyDefaults
+// and trimStore) with the stored ones of the store with the same ID and
+// type (never the mask itself). field is s's path, for errors.
+//
+// Saved credentials are only reused while the store keeps sending them to
+// the same server (model.SameStoreServer): otherwise an administrator
+// could point a store (or a connection test) at a server of theirs and
+// receive them. A credential given as a sealed value is only accepted when
+// it is the saved one (settings read inside the server and saved again):
+// user-supplied ciphertext is never unsealed and sent anywhere.
+func mergeStoreSecrets(s *model.SecretStore, stored []model.SecretStore, field string) error {
+	var old *model.SecretStore
 	for _, o := range stored {
 		if s.ID != "" && o.ID == s.ID && o.Type == s.Type {
 			o = secretstore.Clone(o)
-			olds = secretstore.Credentials(&o)
+			old = &o
 		}
+	}
+	var olds []*string
+	if old != nil {
+		olds = secretstore.Credentials(old)
 	}
 	for i, p := range secretstore.Credentials(s) {
-		if *p != secrets.Mask {
-			continue
-		}
-		*p = ""
+		saved := ""
 		if i < len(olds) {
-			*p = *olds[i]
+			saved = *olds[i]
 		}
+		if *p != secrets.Mask && (*p == "" || *p != saved) {
+			if secrets.IsSealed(*p) {
+				return &model.ValidationError{Field: field, Message: fmt.Sprintf("secret store %q: a credential cannot be an encrypted value: enter it as it is", s.Name)}
+			}
+			continue // entered anew
+		}
+		if saved != "" && !model.SameStoreServer(*s, *old) {
+			return &model.ValidationError{Field: field + ".url", Message: fmt.Sprintf("secret store %q: its server changed, so its saved credentials are not sent there: enter them again", s.Name)}
+		}
+		*p = saved
 	}
+	return nil
 }
 
 // maskSecretStores hides the stores' credentials for the API.
@@ -296,13 +332,17 @@ func (c *Core) SecretStoreStatus() []model.SecretStoreStatus {
 }
 
 // TestSecretStore signs in to a store as edited (masked credentials are
-// the saved store's with the same ID) and reads in.Ref if given.
+// the saved store's with the same ID, while its server is the same) and
+// reads in.Ref if given.
 func (c *Core) TestSecretStore(ctx context.Context, in model.SecretStoreTest) (model.SecretTestResult, error) {
 	s := secretstore.Clone(in.Store)
 	s.ApplyDefaults()
-	mergeStoreSecrets(&s, c.Settings().SecretStores)
 	if s.Name == "" {
 		s.Name = "test"
+	}
+	trimStore(&s)
+	if err := mergeStoreSecrets(&s, c.Settings().SecretStores, "store"); err != nil {
+		return model.SecretTestResult{}, err
 	}
 	if err := s.Validate("store"); err != nil {
 		return model.SecretTestResult{}, err
@@ -360,10 +400,14 @@ func (c *Core) CheckSiteSecrets(ctx context.Context, id string) ([]model.SecretR
 }
 
 // procSecretEnv is the process manager's ResolveEnv: task "" is an
-// instance of the site, whose values are recorded for rotation.
-func (c *Core) procSecretEnv(site *model.Site, vars []model.EnvVar, task string) (map[string]string, error) {
+// instance of the site or slot key (model.SlotKey), whose values are
+// recorded under that key for rotation.
+func (c *Core) procSecretEnv(site *model.Site, vars []model.EnvVar, key, task string) (map[string]string, error) {
 	if task == "" {
-		return c.secretEnv(site, vars, "an instance", true)
+		if key == "" {
+			key = site.ID
+		}
+		return c.secretEnv(site, vars, "an instance", key)
 	}
-	return c.secretEnv(site, vars, "task "+task, false)
+	return c.secretEnv(site, vars, "task "+task, "")
 }

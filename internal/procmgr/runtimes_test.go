@@ -153,6 +153,31 @@ func TestProcessCommandEnvironment(t *testing.T) {
 	if _, e, _, _ = m.processCommand(s, app, taskEntry(model.ScheduledTask{Script: "Tool.dll"}), "tok", 0); envOf(e, "ASPNETCORE_URLS") != "http://0.0.0.0:80" {
 		t.Errorf("task ASPNETCORE_URLS = %q, want the site's own", envOf(e, "ASPNETCORE_URLS"))
 	}
+	// Nor can a secret store move it (a configuration from before
+	// validation refused that): store values never replace NodeHoster's,
+	// and processCommand leaves variables from stores to setSecretEnv.
+	s = site(&model.NodeConfig{Runtime: model.RuntimeDotnet, Script: "Shop.dll", Env: []model.EnvVar{
+		{Name: "ASPNETCORE_URLS", From: &model.SecretRef{Store: "vault", Ref: "app#URLS"}},
+		{Name: "DB", From: &model.SecretRef{Store: "vault", Ref: "app#DB"}},
+	}})
+	m.opts.ResolveEnv = func(_ *model.Site, vars []model.EnvVar, _, _ string) (map[string]string, error) {
+		out := map[string]string{}
+		for _, v := range vars {
+			out[v.Name] = "http://0.0.0.0:9999"
+		}
+		return out, nil
+	}
+	_, e, _, _ = m.processCommand(s, app, instanceEntry(s.Node), "tok", 41000)
+	if _, set := e.vals[fold("DB")]; set {
+		t.Error("processCommand set a variable from a secret store")
+	}
+	if err := m.setSecretEnv(e, s, s.Node.Env, "s1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if envOf(e, "ASPNETCORE_URLS") != "http://127.0.0.1:41000" || envOf(e, "DB") != "http://0.0.0.0:9999" {
+		t.Errorf("ASPNETCORE_URLS = %q, DB = %q", envOf(e, "ASPNETCORE_URLS"), envOf(e, "DB"))
+	}
+	m.opts.ResolveEnv = nil
 
 	// Deno: the module cache is the site's, the one deployments fill.
 	s = site(&model.NodeConfig{Runtime: model.RuntimeDeno, RuntimeVersion: "2.1.4", Script: "main.ts"})

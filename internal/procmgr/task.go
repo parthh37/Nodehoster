@@ -52,7 +52,7 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 	if err != nil {
 		return nil, err
 	}
-	if err := m.setSecretEnv(env, site, n.Env, task.Name); err != nil {
+	if err := m.setSecretEnv(env, site, n.Env, site.ID, task.Name); err != nil {
 		return nil, err
 	}
 	for _, e := range task.Env {
@@ -65,7 +65,7 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 		}
 		env.set(e.Name, v)
 	}
-	if err := m.setSecretEnv(env, site, task.Env, task.Name); err != nil {
+	if err := m.setSecretEnv(env, site, task.Env, site.ID, task.Name); err != nil {
 		return nil, err
 	}
 	env.set("NODEHOSTER_TASK", task.Name)

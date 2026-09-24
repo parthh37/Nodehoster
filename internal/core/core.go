@@ -199,7 +199,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		ActivateSlot: c.activateSlot, OnFinish: c.deployFinished,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
 		SecretEnv: func(s *model.Site, vars []model.EnvVar) (map[string]string, error) {
-			return c.secretEnv(s, vars, "the deployment", false)
+			return c.secretEnv(s, vars, "the deployment", "")
 		},
 		SecretToken: c.secretToken,
 	})

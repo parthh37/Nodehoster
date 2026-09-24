@@ -55,14 +55,66 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const SEGMENT_RE = /^[A-Za-z0-9_.-]+$/;
 
-function urlProblem(u: string): string | null {
+function isLoopback(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/** Mirror of the server's check of a store URL: https, since credentials are sent to it, except on this machine. */
+export function storeUrlProblem(u: string): string | null {
   try {
     const p = new URL(u);
     if (p.protocol !== 'http:' && p.protocol !== 'https:') return 'must be an http:// or https:// URL';
+    if (p.protocol === 'http:' && !isLoopback(p.hostname))
+      return 'Must be an https:// URL: NodeHoster sends the store its credentials (http:// is only accepted for localhost)';
     return null;
   } catch {
     return 'not a URL';
   }
+}
+
+function origin(u: string | undefined): string {
+  if (!u) return '';
+  try {
+    const p = new URL(u);
+    return `${p.protocol}//${p.hostname.toLowerCase()}:${p.port || (p.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return u;
+  }
+}
+
+/**
+ * Mirror of model.SameStoreServer: whether two stores send their
+ * credentials to the same servers. The saved credentials (masked) are only
+ * kept while they do.
+ */
+export function sameStoreServer(a: SecretStore, b: SecretStore): boolean {
+  if (a.type !== b.type || origin(a.url) !== origin(b.url)) return false;
+  if (a.type === 'bitwarden') {
+    const x = a.bitwarden,
+      y = b.bitwarden;
+    return (x?.region ?? '') === (y?.region ?? '') && origin(x?.apiUrl) === origin(y?.apiUrl) && origin(x?.identityUrl) === origin(y?.identityUrl);
+  }
+  return true;
+}
+
+/** The credentials a store uses, by field path. */
+function credentialFields(s: SecretStore): [string, string | undefined][] {
+  switch (s.type) {
+    case 'vault':
+      return s.vault?.auth === 'approle' ? [['vault.secretId', s.vault?.secretId]] : [['vault.token', s.vault?.token]];
+    case 'infisical':
+      return [['infisical.clientSecret', s.infisical?.clientSecret]];
+    case 'bitwarden':
+      return [['bitwarden.accessToken', s.bitwarden?.accessToken]];
+  }
+  return [];
+}
+
+/** Variables NodeHoster sets itself, which cannot come from a secret store (mirror of model.ReservedEnvName). */
+export function reservedEnvName(name: string): boolean {
+  const n = name.toUpperCase();
+  return ['PORT', 'NODE_APP_INSTANCE', 'ASPNETCORE_URLS', 'NODE_OPTIONS'].includes(n) || n.startsWith('NODEHOSTER_');
 }
 
 function mountOK(p: string): boolean {
@@ -71,16 +123,29 @@ function mountOK(p: string): boolean {
 
 /**
  * The first problem of a store as edited, like the server's validation.
- * Credentials only need to be present (SECRET counts: the saved one is kept).
+ * Credentials only need to be present (SECRET counts: the saved one is
+ * kept, as long as the store's server is still `saved`'s).
  * `others` are the names of the other stores.
  */
-export function storeProblem(s: SecretStore, others: string[] = []): { field: string; message: string } | null {
+export function storeProblem(s: SecretStore, others: string[] = [], saved?: SecretStore | null): { field: string; message: string } | null {
   const name = s.name.trim();
   if (!NAME_RE.test(name)) return { field: 'name', message: "1-64 characters: letters, digits, '.', '_' or '-'" };
   if (others.some((o) => o.toLowerCase() === name.toLowerCase())) return { field: 'name', message: 'Another store has this name' };
   if (s.url) {
-    const p = urlProblem(s.url);
+    const p = storeUrlProblem(s.url);
     if (p) return { field: 'url', message: p };
+  }
+  if (s.type === 'bitwarden') {
+    for (const f of ['apiUrl', 'identityUrl'] as const) {
+      const u = s.bitwarden?.[f];
+      const p = u ? storeUrlProblem(u) : null;
+      if (p) return { field: `bitwarden.${f}`, message: p };
+    }
+  }
+  if (saved?.id && saved.id === s.id && !sameStoreServer(saved, s)) {
+    for (const [field, v] of credentialFields(s)) {
+      if (v === '__SECRET__') return { field, message: "The server changed: enter this again (saved credentials are only sent to the server they were entered for)" };
+    }
   }
   if (s.cacheTtlSec < 10 || s.cacheTtlSec > 86400) return { field: 'cacheTtlSec', message: 'Between 10 and 86400 seconds' };
   if (s.watchIntervalSec !== 0 && (s.watchIntervalSec < 60 || s.watchIntervalSec > 86400))

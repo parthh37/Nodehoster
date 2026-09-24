@@ -149,6 +149,9 @@ func (m *Manager) processCommand(site *model.Site, dir string, en entry, token s
 		}
 	}
 	for _, v := range n.Env {
+		if v.From != nil {
+			continue // set by the caller: see setSecretEnv
+		}
 		val := v.Value
 		if v.Secret {
 			val = m.opts.Unseal(val)

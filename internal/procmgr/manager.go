@@ -51,8 +51,10 @@ type Options struct {
 	// shipping). It must not block.
 	OnLog func(siteID string, l model.LogLine)
 	// ResolveEnv, optional, reads the variables of vars that come from
-	// secret stores (by name); task is "" for an instance of the site.
-	ResolveEnv func(site *model.Site, vars []model.EnvVar, task string) (map[string]string, error)
+	// secret stores (by name). key is model.SlotKey of the process's site
+	// and slot; task is "" for an instance, whose values are recorded under
+	// key (see secretstore.ResolveOptions).
+	ResolveEnv func(site *model.Site, vars []model.EnvVar, key, task string) (map[string]string, error)
 }
 
 type Manager struct {

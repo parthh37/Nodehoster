@@ -437,7 +437,7 @@ swap from a site that had never been deployed).
 | Method | Path | Role | Response |
 |---|---|---|---|
 | GET | `/api/sites/{id}/slots` | viewer | `SlotsView`: `{slots: SlotStatus[], swap?: SwapProgress, lastSwap?: SwapResult}`, production first |
-| GET | `/api/sites/{id}/slots/{slot}/swap` | viewer | `SwapPreview`: `{slot, productionRelease, slotRelease, warmup, changes: string[], warnings: string[], blockers: string[]}` |
+| GET | `/api/sites/{id}/slots/{slot}/swap` | viewer | `SwapPreview`: `{slot, productionRelease, slotRelease, warmup, changes: string[], warnings: string[], blockers: string[]}`. `changes` names the variables whose value or secret store reference differs between the slot and production; secret variables whose values differ are only named for an administrator of the site, and counted for everyone else |
 | POST | `/api/sites/{id}/slots/{slot}/swap` | operator | 202 `SwapProgress`; the swap goes on in the background. 422 `slot` with the first blocker, 409 while a deployment or swap runs |
 | POST | `/api/sites/{id}/slots/{slot}/start` | operator | `SlotsView` (a slot without a release runs production's application folder) |
 | POST | `/api/sites/{id}/slots/{slot}/stop` | operator | `SlotsView` |
@@ -1092,13 +1092,22 @@ watchIntervalSec, vault | infisical | bitwarden}`:
   renamed, and its type must understand the references (422 on
   `secretStores`, naming the site and the variable).
 - `url`: Vault/OpenBao's address (required); for Infisical and Bitwarden
-  `""` is their cloud, else a self-hosted server's base URL.
+  `""` is their cloud, else a self-hosted server's base URL. It (like
+  `apiUrl` and `identityUrl`) must be `https://`: NodeHoster sends the store
+  its credentials; `http://` is only accepted for `localhost`, `127.0.0.0/8`
+  and `::1`. A store's redirects are followed only to the same scheme, host
+  and port: a redirect to another server fails, since the request's
+  credentials (headers, and bodies that a 307/308 sends again) would go
+  along.
 - `caCert`: PEM certificates trusted for this store besides the system's.
   TLS verification cannot be turned off.
 - `cacheTtlSec` (default 300, 10–86400): how long a value read is reused.
   `watchIntervalSec` (0 = off, else 60–86400): how often the secrets that
-  running sites' instances started with are read again; a site whose value
-  changed is recycled (rolling, no downtime) with a `secret.rotated` event.
+  running sites' and deployment slots' instances started with are read
+  again; a site or slot whose value changed is recycled (rolling, no
+  downtime) with a `secret.rotated` event. Production and each slot are
+  watched for their own variables (a slot's: production's shared ones and
+  its own) and recycled on their own.
 - `vault: {auth: token|approle, token, roleId, secretId, authMount
   (default approle), namespace, mount (default secret), kvVersion: 1|2
   (default 2)}` — `token` and `secretId` are secrets. AppRole tokens are
@@ -1116,15 +1125,22 @@ watchIntervalSec, vault | infisical | bitwarden}`:
   implement Secrets Manager.
 
 Credentials are sealed with the master key, masked as `__SECRET__` in
-responses (send the mask back to keep them), carried by configuration
+responses (send the mask back to keep them, as long as the store's server
+is unchanged: a store, or a connection test, whose `url` scheme, host or
+port, Bitwarden `region`, `apiUrl` or `identityUrl` differs from the saved
+store's needs its credentials entered again, 422 on `….url`; encrypted
+values are refused as credentials), carried by configuration
 backups like other secrets (portable with a passphrase; restoring onto a
 server that has a store of the same name and type keeps that store's
 credentials when the archive's cannot be read).
 
-References: `EnvVar.from: {store, ref}` (site and task variables; the
-variable then has no `value` and `secret` is false; `NODE_OPTIONS` cannot
-be one) and `deploy.git.tokenFrom: {store, ref}` (then `deploy.git.token`
-must be empty). Text form, as NodeHoster Manager and the command line show
+References: `EnvVar.from: {store, ref}` (site, task and deployment slot
+variables, and the variables previews are given, `deploy.previews.env`;
+the variable then has no `value` and `secret` is false; variables
+NodeHoster sets itself cannot be one: `PORT`, `NODE_APP_INSTANCE`,
+`ASPNETCORE_URLS`, `NODE_OPTIONS` and `NODEHOSTER_*`) and
+`deploy.git.tokenFrom: {store, ref}` (then `deploy.git.token` must be
+empty). Text form, as NodeHoster Manager and the command line show
 it: `secretref:<store>/<ref>`. `ref` is, per store type:
 
 | Store | `ref` | Example |
@@ -1135,15 +1151,20 @@ it: `secretref:<store>/<ref>`. `ref` is, per store type:
 
 Saving a site checks that each store exists and each `ref` has its
 store's syntax (422 on `node.env[i].from.store`, `….from.ref`,
-`tasks[i].env[j].from.ref`, `deploy.git.tokenFrom.ref`).
+`tasks[i].env[j].from.ref`, `slots[i].env[j].from.store`,
+`deploy.previews.env[j].from.ref`, `deploy.git.tokenFrom.ref`).
 
 Values are read when an instance starts (every start, restart and
 recycle), a task runs and a deployment builds (install and build commands,
 git clone), kept in memory only, and never returned by any endpoint. A
 value younger than the store's `cacheTtlSec` is reused. When the store
 cannot be read, the last value read is used (event `secret.stale`,
-warning, at most every 10 minutes per store); a secret the store says does
-not exist, or one never read, fails the start (event `secret.failed`,
+warning, at most every 10 minutes per store) — except when the store
+refuses NodeHoster's credentials or access to the secret (HTTP 401/403,
+which can mean they were revoked): then the last value is used only for
+an hour after it was read (event `secret.failed`, error, at most every 10
+minutes per store), after which it is forgotten and starts fail. A secret
+the store says does not exist, or one never read, fails the start (event `secret.failed`,
 error, with the variable and the store's explanation; at most every 10
 minutes per site and kind of start). A recycle that fails this way keeps
 the running instances.
@@ -1153,7 +1174,7 @@ the running instances.
 | GET | `/api/secret-stores` | | `[{name, type, cached, references, lastSuccess?, lastError?, lastErrorAt?, tokenExpires?}]` (admin) |
 | POST | `/api/secret-stores/test` | `{store: SecretStore, ref?}` (masked credentials are the saved store's with the same `id`) | `{ok, detail?, error?}` (admin, audited `secretstore.test`): signs in (Vault: token lookup; Infisical: login and a value-less listing of the environment; Bitwarden: login and decryption of the organization key) and reads `ref` if given, reporting its length only |
 | POST | `/api/secret-stores/resolve` | `{store, ref}` | `{ok, detail?, error?}` (admin, audited `secretstore.resolve`): reads the reference from the saved store now; the value is never returned |
-| POST | `/api/sites/{id}/secrets/check` | | `[{field, variable?, task?, ref: {store, ref}, ok, error?}]` (operator on the site): reads every reference of the site now |
+| POST | `/api/sites/{id}/secrets/check` | | `[{field, variable?, task?, slot?, preview?, ref: {store, ref}, ok, error?}]` (operator on the site): reads every reference of the site now, its slots' and its preview settings' included |
 
 ## Log search
 
