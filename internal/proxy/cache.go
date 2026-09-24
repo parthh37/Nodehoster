@@ -199,10 +199,14 @@ func (c *responseCache) bypassed(r *http.Request) bool {
 // hasCredentials: requests with Authorization or cookies may get answers
 // meant for one user; only responses marked public are shared with them.
 // The session affinity cookie is NodeHoster's own and does not count. A
-// verified client certificate is a credential too (clients cannot send
-// that header themselves).
+// client certificate is a credential too, verified or not: the answer to
+// one that failed verification may say why (clients cannot send these
+// headers themselves).
 func (c *responseCache) hasCredentials(r *http.Request) bool {
 	if r.Header.Get("Authorization") != "" || r.Header.Get(hdrClientCert) != "" {
+		return true
+	}
+	if v := r.Header.Get(hdrClientVerify); v != "" && v != "NONE" {
 		return true
 	}
 	for _, ck := range r.Cookies() {
@@ -213,12 +217,18 @@ func (c *responseCache) hasCredentials(r *http.Request) bool {
 	return false
 }
 
-// baseKey identifies the resource: scheme, host, path and the query as
-// configured.
+// baseKey identifies the resource: the binding (protocol, address and
+// port: bindings of a site on other ports may have other client
+// certificate policies, and applications may answer them differently),
+// host, path and the query as configured.
 func (c *responseCache) baseKey(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
+	}
+	binding := ""
+	if rt, ok := r.Context().Value(routeKey{}).(*route); ok {
+		binding = rt.binding.String() + " "
 	}
 	q := ""
 	switch c.varyByQuery {
@@ -234,7 +244,7 @@ func (c *responseCache) baseKey(r *http.Request) string {
 	default:
 		q = r.URL.Query().Encode() // sorted, so ?a=1&b=2 and ?b=2&a=1 share an entry
 	}
-	return scheme + "://" + strings.ToLower(r.Host) + r.URL.EscapedPath() + "?" + q
+	return binding + scheme + "://" + strings.ToLower(r.Host) + r.URL.EscapedPath() + "?" + q
 }
 
 // variantBase adds the configured vary headers to the base key.

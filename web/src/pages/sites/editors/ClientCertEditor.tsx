@@ -111,7 +111,7 @@ export function ClientCertEditor({
               label="Require a certificate for paths"
               path={`${p}.requirePaths`}
               prefix
-              hint="Requests under these paths without a valid certificate get 403. TLS 1.3 cannot ask for a certificate later, so the handshake accepts and the path is checked here."
+              hint="Requests for these paths or below them, in any letter case, without a valid certificate get 403, also after URL rewrites and over plain HTTP. TLS 1.3 cannot ask for a certificate later, so the handshake accepts and the path is checked here."
             >
               <ListEditor
                 values={policy?.requirePaths}

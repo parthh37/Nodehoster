@@ -350,6 +350,9 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(context.WithValue(r.Context(), ctxRewriteProxy, &res))
 		}
 	}
+	if !rt.clientCertPaths(w, r) {
+		return
+	}
 
 	applyHeaderRules(r.Header, ro.RequestHeaders)
 	rt.dispatch.ServeHTTP(w, r)
@@ -377,12 +380,9 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 		rt.toURL.ServeHTTP(w, r)
 		return
 	}
-	for _, loc := range rt.locations {
-		if r.URL.Path != loc.Path && !strings.HasPrefix(r.URL.Path, strings.TrimSuffix(loc.Path, "/")+"/") {
-			continue
-		}
+	if loc := rt.locationFor(r.URL.Path); loc != nil {
 		if loc.StripPrefix {
-			r.URL.Path = "/" + strings.TrimLeft(strings.TrimPrefix(r.URL.Path, strings.TrimSuffix(loc.Path, "/")), "/")
+			r.URL.Path = loc.strip(r.URL.Path)
 			r.URL.RawPath = ""
 			r.Header.Set("X-Forwarded-Prefix", loc.Path)
 		}
@@ -404,6 +404,23 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt.core.ServeHTTP(w, r)
+}
+
+// locationFor is the location that serves a path (the longest prefix), or
+// nil.
+func (rt *siteRuntime) locationFor(p string) *location {
+	for i := range rt.locations {
+		loc := &rt.locations[i]
+		if p == loc.Path || strings.HasPrefix(p, strings.TrimSuffix(loc.Path, "/")+"/") {
+			return loc
+		}
+	}
+	return nil
+}
+
+// strip is the path a location that strips its prefix passes on.
+func (loc *location) strip(p string) string {
+	return "/" + strings.TrimLeft(strings.TrimPrefix(p, strings.TrimSuffix(loc.Path, "/")), "/")
 }
 
 func applyHeaderRules(h http.Header, rules []model.HeaderRule) {
@@ -491,6 +508,7 @@ func (rt *siteRuntime) forwardHeaders(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("X-Forwarded-Proto", proto)
 	pr.Out.Header.Set("X-Forwarded-Host", in.Host)
 	pr.Out.Header.Set("X-Real-IP", clientIP)
+	copyClientCertHeaders(pr.Out.Header, in.Header)
 }
 
 func (rt *siteRuntime) errorHandler(w http.ResponseWriter, r *http.Request, err error) {

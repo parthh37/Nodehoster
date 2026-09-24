@@ -48,7 +48,11 @@ type ClientCertPolicy struct {
 	// RequirePaths (mode accept): path prefixes answered 403 without a
 	// valid certificate. TLS 1.3 cannot ask for a certificate after the
 	// handshake, so "require for /admin" is a certificate accepted
-	// everywhere and enforced here.
+	// everywhere and enforced per request: segment by segment ("/admin"
+	// and "/admin/" both cover /admin and below it), ignoring case, on the
+	// path as sent and with dot segments resolved, again after URL
+	// rewrites and on the path a location passes on. Over plain HTTP (an
+	// http binding of the same site and host name) such paths get 403 too.
 	RequirePaths []string `json:"requirePaths,omitempty"`
 }
 
@@ -105,11 +109,29 @@ func (p *ClientCertPolicy) validate(field string) error {
 		}
 	}
 	for i, path := range p.RequirePaths {
-		if !strings.HasPrefix(path, "/") {
-			return verr(fmt.Sprintf("%s.requirePaths[%d]", field, i), "must start with /")
+		if err := validRequirePath(path); err != "" {
+			return verr(fmt.Sprintf("%s.requirePaths[%d]", field, i), "%s", err)
 		}
 	}
 	return nil
+}
+
+// validRequirePath checks a requirePaths entry: a plain path, compared
+// with request paths segment by segment and ignoring case (see
+// proxy.pathForms), so nothing that would be read differently there.
+func validRequirePath(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		return "must start with /"
+	}
+	if strings.ContainsFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f || strings.ContainsRune(`\%?#;:`, r) }) {
+		return `must be a plain path, without \ % ? # ; : or control characters`
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg != "" && strings.TrimRight(seg, ". ") == "" {
+			return "must not contain . or .. segments"
+		}
+	}
+	return ""
 }
 
 // ParseCABundle reads the certificates of a PEM bundle: at least one, and

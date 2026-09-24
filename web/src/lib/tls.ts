@@ -57,8 +57,13 @@ export function fingerprintError(f: string): string | null {
   return /^[0-9A-F]{64}$/.test(normalizeFingerprint(f)) ? null : 'A SHA-256 fingerprint is 64 hex digits';
 }
 
+/** Mirrors the server's check of requirePaths entries (model.validRequirePath). */
 export function pathError(p: string): string | null {
-  return p.trim().startsWith('/') ? null : 'Must start with /';
+  const path = p.trim();
+  if (!path.startsWith('/')) return 'Must start with /';
+  if (/[\\%?#;:\u0000-\u001f\u007f]/.test(path)) return 'Must be a plain path, without \\ % ? # ; : or control characters';
+  if (path.split('/').some((seg) => seg !== '' && seg.replace(/[. ]+$/, '') === '')) return 'Must not contain . or .. segments';
+  return null;
 }
 
 /** "Required · 2 CAs · 3 allowed" for a binding's summary; "" when ignored. */

@@ -659,7 +659,9 @@ freshness from `s-maxage`, `max-age`, then `Expires` (minus `Age`), else
 `no-cache`, `Vary: *`, `text/event-stream`, responses with `Set-Cookie`,
 and answers to requests with `Authorization` or cookies — unless the
 response says `public` (a stored `Set-Cookie` is never replayed). The
-session affinity cookie counts as neither. Each `Vary` header (and each
+session affinity cookie counts as neither; a client certificate counts as
+credentials. Entries are kept per binding (protocol, address and port),
+host name, path and query. Each `Vary` header (and each
 of `varyHeaders`) selects a separate variant. Entries are uncompressed:
 when the site compresses, the application is asked without
 `Accept-Encoding` and each client gets its own encoding from the one
@@ -694,10 +696,28 @@ requirePaths[]}` (absent = ignore, as before):
   the whole subject DN (as in `X-Client-Cert-Subject`) or a DNS, email or
   URI subject alternative name, ignoring case; or its SHA-256 fingerprint
   (hex; colons and spaces are removed, stored upper-case).
-- `requirePaths` (with `accept`): path prefixes (`/admin` covers `/admin`
-  and `/admin/...`) answered 403 without a valid certificate. TLS 1.3 has no
-  renegotiation, so a per-path requirement is a certificate accepted at the
-  TLS level and enforced per request.
+- `requirePaths` (with `accept`): path prefixes answered 403 without a
+  valid certificate. TLS 1.3 has no renegotiation, so a per-path
+  requirement is a certificate accepted at the TLS level and enforced per
+  request. Entries are plain paths starting with `/` (no `\ % ? # ; :`,
+  control characters, or `.`/`..` segments; 422
+  `bindings[i].clientCert.requirePaths[j]`) and cover whole segments:
+  `/admin` and `/admin/` both cover `/admin` and `/admin/...`, not
+  `/administrator`; `/` covers everything. Request paths are compared the
+  way the most lenient application or file system behind the proxy could
+  read them: decoded, ignoring case, without empty segments (`//admin`),
+  path parameters (`/admin;x`), what follows a `:` and trailing dots and
+  spaces of segments (Windows); both as sent and with dot segments
+  resolved, so `/x/../admin` and `/admin/../x` are both covered. A path
+  that cannot be compared safely gets `400` when a certificate is missing
+  or invalid: an encoded slash or backslash (`%2F`, `%5C`, passed on
+  encoded to applications that may decode them), a backslash, control
+  characters, a double-encoded path (`%2561`) or a segment of only dots and
+  spaces other than `.` and `..`. Paths are checked again after URL rewrite
+  rules (a rewrite from `/portal/...` to `/admin/...` is covered) and, for
+  a location that strips its prefix, on the path it passes on (a site
+  mounted at `/app` sees `/app/admin` as `/admin`); a rewrite to an
+  absolute URL is not a path of this site and is not checked again.
 
 Bindings sharing an IP address and port have their own policies: the
 handshake asks for a certificate as the binding its SNI name selects says
@@ -720,11 +740,29 @@ The application receives, on every request of such a binding:
 | `X-Client-Cert-Fingerprint` | SHA-256, upper-case hex (as the certificate store shows fingerprints) |
 
 The last three only on `SUCCESS`. Copies of all four sent by clients are
-removed from every request, on every binding. Responses to requests with a
-verified certificate are treated like responses to requests with
-credentials by the response cache (stored only when marked `public`).
-Refusals: `403` ("A client certificate is required." / "... not accepted
-here (reason)", the site's custom 403 page if it has one).
+removed from every request, on every binding: also spelled with
+underscores (`X_Client_Verify`, which IIS server variables, WSGI/ASGI and
+other CGI-style servers read as the same variable), and their names are
+removed from a client's `Connection` header, so that no proxy drops
+NodeHoster's own headers as hop-by-hop ones. The headers are set again on
+every request forwarded to an application or URL (node instances, upstreams
+and load-balanced servers, `url` locations, rewrites to absolute URLs,
+WebSocket upgrades), over HTTP/1.1, HTTP/2 and HTTP/3. Responses to
+requests that presented a certificate, verified or not, are treated like
+responses to requests with credentials by the response cache (stored only
+when marked `public`), and the cache keeps entries per binding, so bindings
+on other ports never share them. Refusals: `403` ("A client certificate is
+required." / "... not accepted here (reason)", the site's custom 403 page
+if it has one), `400` for a path that cannot be checked (see
+`requirePaths`).
+
+Plain HTTP cannot carry a certificate. When a site also has `http`
+bindings, a request over one of them for a host name one of the site's
+`https` bindings with a policy covers is refused as that policy would
+refuse a request without a certificate: every path under `require`,
+`requirePaths` under `accept` (`403` "A client certificate is required,
+which needs HTTPS."). A site with `httpsRedirect` redirects such requests
+to HTTPS instead. ACME HTTP-01 challenges are answered before this check.
 
 ## OCSP stapling
 

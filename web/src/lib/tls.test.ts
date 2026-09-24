@@ -51,9 +51,14 @@ describe('fingerprints and paths', () => {
     expect(fingerprintError('abcd')).not.toBeNull();
     expect(fingerprintError('zz'.repeat(32))).not.toBeNull();
   });
-  it('wants absolute paths', () => {
+  it('wants absolute plain paths', () => {
     expect(pathError('/admin')).toBeNull();
+    expect(pathError('/admin/')).toBeNull();
+    expect(pathError('/')).toBeNull();
     expect(pathError('admin')).not.toBeNull();
+    for (const p of ['/a\\b', '/a%2fb', '/a?x', '/a#x', '/a;x', '/a:x', '/a/../b', '/./a', '/a/...']) {
+      expect(pathError(p)).not.toBeNull();
+    }
   });
 });
 

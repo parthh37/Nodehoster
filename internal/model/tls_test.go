@@ -102,6 +102,19 @@ func TestClientCertValidation(t *testing.T) {
 			t.Errorf("%s: got %v", field, err)
 		}
 	}
+
+	// requirePaths are compared canonically, so only plain paths.
+	for path, ok := range map[string]bool{
+		"/admin": true, "/admin/": true, "/": true, "/api/v1.2/x": true,
+		"/a\\b": false, "/a%2Fb": false, "/a?x": false, "/a#x": false, "/a;x": false, "/a:x": false,
+		"/a/../b": false, "/./a": false, "/a/...": false, "/a/. ": false, "/a\x00": false,
+	} {
+		s := httpsSite(Binding{Protocol: "https", Host: "a.example.com", ClientCert: &ClientCertPolicy{Mode: "accept", CAPEM: ca, RequirePaths: []string{path}}})
+		err := s.Validate()
+		if ve, isVE := err.(*ValidationError); ok != (err == nil) || (!ok && (!isVE || ve.Field != "bindings[0].clientCert.requirePaths[0]")) {
+			t.Errorf("%q: got %v", path, err)
+		}
+	}
 }
 
 func TestParseCABundle(t *testing.T) {
