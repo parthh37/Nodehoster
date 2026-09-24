@@ -325,7 +325,9 @@ func TestHTTPBatching(t *testing.T) {
 		for i := range 250 {
 			sh.Ship(Record{Source: "app", Level: "info", Message: "m" + strconv.Itoa(i), SiteID: "s1"})
 		}
-		waitFor(t, "250 records", func() bool { return c.count() == 250 })
+		// The collector has a batch before the shipper has its answer (and
+		// counts it as sent): wait for both.
+		waitFor(t, "250 records", func() bool { return c.count() == 250 && sh.Status()[0].Sent == 250 })
 		c.mu.Lock()
 		if len(c.batches) < 3 || len(c.batches[0]) > 100 || c.batches[0][0].Message != "m0" || c.batches[0][0].SiteName != "name-s1" || c.headers.Get("Authorization") != "Bearer abc" {
 			t.Errorf("%s: %d batches, first %+v, headers %v", format, len(c.batches), c.batches[0][0], c.headers)
@@ -348,7 +350,7 @@ func TestHTTPRetryBackoffAndPermanentFailure(t *testing.T) {
 	defer sh.Close()
 	sh.Configure([]model.LogTarget{httpTarget(srv.URL, "json")})
 	sh.Ship(Record{Source: "app", Level: "info", Message: "retried"})
-	waitFor(t, "the retried record", func() bool { return c.count() == 1 })
+	waitFor(t, "the retried record", func() bool { return c.count() == 1 && sh.Status()[0].Sent == 1 })
 	c.mu.Lock()
 	gap1, gap2 := c.times[1].Sub(c.times[0]), c.times[2].Sub(c.times[1])
 	c.mu.Unlock()
