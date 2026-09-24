@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -172,6 +173,13 @@ func TestCommandTable(t *testing.T) {
 	if c, _ := find([]string{"site"}); c != nil {
 		t.Fatal("\"site\" alone matched a command")
 	}
+	// The longest name wins: a backup file called "run" needs a path.
+	if c, rest := find([]string{"backup", "run"}); c == nil || c.Name != "backup run" || len(rest) != 0 {
+		t.Fatalf("backup run = %v %v", c, rest)
+	}
+	if c, rest := find([]string{"backup", "./run"}); c == nil || c.Name != "backup" || len(rest) != 1 {
+		t.Fatalf("backup ./run = %v %v", c, rest)
+	}
 	if !Has([]string{"site"}) || !Has([]string{"cert", "list"}) || Has([]string{"run"}) || Has([]string{"service", "start"}) || Has(nil) {
 		t.Fatal("Has does not match the table")
 	}
@@ -201,6 +209,10 @@ func TestUsageErrors(t *testing.T) {
 		{"deploy", "shop", "--zip", "a.zip", "--git"},
 		{"deploy", "shop", "--zip", "a.zip", "--branch", "main"},
 		{"events", "-n", "0"},
+		{"task"},
+		{"task", "run", "jobs"},
+		{"backup", "run", "extra"},
+		{"restore", "a.zip", "--passphrase", "secret"},
 	} {
 		r := s.run(args...).expect(t, ExitUsage)
 		if !strings.HasPrefix(r.stderr, "error: ") || r.stdout != "" {
@@ -460,4 +472,243 @@ func TestAccessDenied(t *testing.T) {
 	if !strings.Contains(r.stderr, "Run as administrator") {
 		t.Fatalf("stderr: %s", r.stderr)
 	}
+}
+
+// backupSettings stores backup settings with one folder destination (none
+// with dest ""), and a passphrase.
+func (s *server) backupSettings(dest, passphrase string) {
+	s.t.Helper()
+	st := s.c.Settings()
+	st.Backup = model.DefaultBackup()
+	st.Backup.Passphrase = passphrase
+	if dest != "" {
+		st.Backup.Destinations = []model.BackupDestination{{ID: "nas", Name: "nas", Type: model.BackupFolder, Enabled: true, Folder: &model.FolderDest{Path: dest}}}
+	}
+	if _, err := s.c.UpdateSettings(context.Background(), st); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+func TestBackupArchiveAndPassphrase(t *testing.T) {
+	s := newServer(t)
+	s.createSite(redirectSite("shop", freePort(t)))
+	dir := t.TempDir()
+
+	// A .zip is the full archive; without a passphrase it restores here.
+	plain := filepath.Join(dir, "plain.zip")
+	r := s.run("backup", plain).expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "Backup archive saved to") || !strings.Contains(r.stdout, "this server's key") {
+		t.Fatalf("backup .zip: %s", r.stdout)
+	}
+	if zr, err := zip.OpenReader(plain); err != nil {
+		t.Fatalf("not a zip: %v", err)
+	} else {
+		zr.Close()
+	}
+	r = s.run("restore", plain, "--yes").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "restored from") || !strings.Contains(r.stdout, "1 site") {
+		t.Fatalf("restore archive: %s", r.stdout)
+	}
+
+	// With a passphrase the archive is encrypted and needs it back.
+	s.backupSettings("", "correct horse battery")
+	enc := filepath.Join(dir, "enc.zip")
+	r = s.run("backup", enc).expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "encrypted with the backup passphrase") {
+		t.Fatalf("backup encrypted: %s", r.stdout)
+	}
+	r = s.run("restore", enc, "--yes").expect(t, ExitError)
+	if !strings.Contains(r.stderr, "--passphrase-file") || !strings.Contains(r.stderr, "NODEHOSTER_BACKUP_PASSPHRASE") {
+		t.Fatalf("restore without passphrase: %s", r.stderr)
+	}
+	wrong := filepath.Join(dir, "wrong.txt")
+	os.WriteFile(wrong, []byte("wrong\n"), 0o600)
+	r = s.run("restore", enc, "--yes", "--passphrase-file", wrong).expect(t, ExitError)
+	if !strings.Contains(r.stderr, "passphrase") {
+		t.Fatalf("restore with a wrong passphrase: %s", r.stderr)
+	}
+	// The file's first line, without its line ending, is the passphrase.
+	right := filepath.Join(dir, "pass.txt")
+	os.WriteFile(right, []byte("correct horse battery\r\n"), 0o600)
+	r = s.run("restore", enc, "--yes", "--passphrase-file", right, "--json").expect(t, ExitOK)
+	var res model.RestoreResult
+	if err := json.Unmarshal([]byte(r.stdout), &res); err != nil || res.Format != "archive" || !res.Encrypted || res.Sites != 1 {
+		t.Fatalf("restore --json: %v %s", err, r.stdout)
+	}
+	t.Setenv("NODEHOSTER_BACKUP_PASSPHRASE", "correct horse battery")
+	r = s.run("restore", enc, "--yes").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "encrypted") {
+		t.Fatalf("restore with the environment's passphrase: %s", r.stdout)
+	}
+	s.run("restore", enc, "--yes", "--passphrase-file", filepath.Join(dir, "none.txt")).expect(t, ExitError)
+}
+
+func TestBackupRunAndHistory(t *testing.T) {
+	defer func(d time.Duration) { pollInterval = d }(pollInterval)
+	pollInterval = 20 * time.Millisecond
+	s := newServer(t)
+	r := s.run("backup", "history").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "No backups") {
+		t.Fatalf("empty history: %s", r.stdout)
+	}
+	// Without a destination the backup fails, and says why.
+	r = s.run("backup", "run").expect(t, ExitError)
+	if !strings.Contains(r.stderr, "no backup destination") {
+		t.Fatalf("backup run without destination: %s", r.stderr)
+	}
+
+	dest := t.TempDir()
+	s.backupSettings(dest, "")
+	r = s.run("backup", "run").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "DESTINATION") || !strings.Contains(r.stdout, "nas") || !strings.Contains(r.stdout, "ok") {
+		t.Fatalf("backup run: %s", r.stdout)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dest, "nodehoster-backup-*.zip")); len(files) != 1 {
+		t.Fatalf("destination has %v", files)
+	}
+	r = s.run("backup", "run", "--json").expect(t, ExitOK)
+	var run model.BackupRun
+	if err := json.Unmarshal([]byte(r.stdout), &run); err != nil || run.Status != model.BackupSuccess || len(run.Destinations) != 1 {
+		t.Fatalf("backup run --json: %v %s", err, r.stdout)
+	}
+
+	r = s.run("backup", "history", "-n", "2").expect(t, ExitOK)
+	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "STARTED") || !strings.Contains(lines[1], "success") || !strings.Contains(lines[1], "nas ok") {
+		t.Fatalf("history:\n%s", r.stdout)
+	}
+	r = s.run("backup", "history", "--json").expect(t, ExitOK)
+	var hist []model.BackupRun
+	if json.Unmarshal([]byte(r.stdout), &hist) != nil || len(hist) != 3 || hist[0].ID != run.ID {
+		t.Fatalf("history --json: %s", r.stdout)
+	}
+	// A file named like a subcommand needs a path.
+	here := t.TempDir()
+	r = s.run("backup", filepath.Join(here, "history")).expect(t, ExitOK)
+	if _, err := os.Stat(filepath.Join(here, "history")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskCommands(t *testing.T) {
+	s := newServer(t)
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "ok.js"), []byte(`console.log("hello from the task")`), 0o644)
+	os.WriteFile(filepath.Join(root, "fail.js"), []byte(`console.error("it broke"); process.exit(3)`), 0o644)
+	os.WriteFile(filepath.Join(root, "slow.js"), []byte(`setTimeout(() => {}, 60000)`), 0o644)
+	task := func(name, script, schedule, overlap string) model.ScheduledTask {
+		return model.ScheduledTask{Name: name, Script: script, Schedule: schedule, Enabled: true, Overlap: overlap}
+	}
+	s.createSite(&model.Site{Name: "jobs", Type: model.SiteWorker, Node: &model.NodeConfig{AppRoot: root, Script: "worker.js", Instances: 1},
+		Tasks: []model.ScheduledTask{
+			task("ok", "ok.js", "@daily", ""), task("fail", "fail.js", "", ""),
+			task("slow", "slow.js", "", ""), task("slowq", "slow.js", "", model.OverlapQueue),
+		}})
+	s.createSite(redirectSite("web", freePort(t)))
+
+	r := s.run("task", "list", "jobs").expect(t, ExitOK)
+	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], "NAME") || !strings.Contains(lines[1], "@daily") || !strings.Contains(lines[2], "on demand") {
+		t.Fatalf("task list:\n%s", r.stdout)
+	}
+	r = s.run("task", "list", "web").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "no scheduled tasks") {
+		t.Fatalf("task list of a site without tasks: %s", r.stdout)
+	}
+	r = s.run("task", "run", "jobs", "nope").expect(t, ExitError)
+	if !strings.Contains(r.stderr, `no task named "nope"`) {
+		t.Fatalf("unknown task: %s", r.stderr)
+	}
+
+	// The test server's Node.js version is not installed: the run fails to
+	// start, which is a failed run (exit 1) with its log shown.
+	r = s.run("task", "run", "jobs", "OK").expect(t, ExitError)
+	if !strings.Contains(r.stdout, "could not start") || !strings.Contains(r.stderr, "failed") || !strings.Contains(r.stderr, "not installed") {
+		t.Fatalf("run without Node.js:\nstdout %s\nstderr %s", r.stdout, r.stderr)
+	}
+	r = s.run("task", "runs", "jobs", "ok", "--json").expect(t, ExitOK)
+	var runs []model.TaskRun
+	if json.Unmarshal([]byte(r.stdout), &runs) != nil || len(runs) != 1 || runs[0].TaskName != "ok" || runs[0].Status != model.RunFailed {
+		t.Fatalf("task runs --json: %s", r.stdout)
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	st := s.c.Settings()
+	st.DefaultNodeVersion = "" // the node on PATH
+	if _, err := s.c.UpdateSettings(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	r = s.run("task", "run", "jobs", "ok").expect(t, ExitOK)
+	if strings.Count(r.stdout, "hello from the task") != 1 || !strings.Contains(r.stdout, "succeeded.") {
+		t.Fatalf("task run:\n%s", r.stdout)
+	}
+	// With --json the output goes to stderr and stdout is the run.
+	r = s.run("task", "run", "jobs", "fail", "--json").expect(t, ExitError)
+	var failed model.TaskRun
+	if err := json.Unmarshal([]byte(r.stdout), &failed); err != nil || failed.Status != model.RunFailed || failed.ExitCode == nil || *failed.ExitCode != 3 ||
+		!strings.Contains(r.stderr, "it broke") || !strings.Contains(r.stderr, "exit code 3") {
+		t.Fatalf("failing task --json: %v\nstdout %s\nstderr %s", err, r.stdout, r.stderr)
+	}
+
+	// A run in progress: another is refused (overlap skip), then cancelled.
+	r = s.run("task", "run", "jobs", "slow", "--no-wait", "--json").expect(t, ExitOK)
+	var started runStarted
+	if json.Unmarshal([]byte(r.stdout), &started) != nil || started.Run == nil || started.Queued {
+		t.Fatalf("run --no-wait --json: %s", r.stdout)
+	}
+	r = s.run("task", "run", "jobs", "slow").expect(t, ExitError)
+	if !strings.Contains(r.stderr, "was not started") || !strings.Contains(r.stderr, "already running") {
+		t.Fatalf("second run: %s", r.stderr)
+	}
+	r = s.run("task", "cancel", "jobs", started.Run.ID).expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "is being stopped") {
+		t.Fatalf("cancel: %s", r.stdout)
+	}
+	s.waitRuns(t, "jobs")
+	r = s.run("task", "cancel", "jobs", started.Run.ID).expect(t, ExitError)
+	if !strings.Contains(r.stderr, "not in progress") {
+		t.Fatalf("cancel of a finished run: %s", r.stderr)
+	}
+
+	// With overlap "queue" the second run waits for the first.
+	r = s.run("task", "run", "jobs", "slowq", "--no-wait").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "started") {
+		t.Fatalf("slowq: %s", r.stdout)
+	}
+	r = s.run("task", "run", "jobs", "slowq").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "is queued") {
+		t.Fatalf("queued run: %s", r.stdout)
+	}
+	r = s.run("task", "list", "jobs").expect(t, ExitOK)
+	if !strings.Contains(r.stdout, "1 running, 1 queued") {
+		t.Fatalf("task list with a queued run:\n%s", r.stdout)
+	}
+
+	r = s.run("task", "runs", "jobs", "-n", "3").expect(t, ExitOK)
+	if lines := strings.Split(strings.TrimSpace(r.stdout), "\n"); len(lines) != 4 || !strings.HasPrefix(lines[0], "RUN") || !strings.Contains(r.stdout, "manual (") {
+		t.Fatalf("task runs:\n%s", r.stdout)
+	}
+	s.run("task", "runs", "jobs", "-n", "0").expect(t, ExitUsage)
+}
+
+// waitRuns waits until none of a site's task runs is in progress.
+func (s *server) waitRuns(t *testing.T, site string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		r := s.run("task", "runs", site, "--json").expect(t, ExitOK)
+		var runs []model.TaskRun
+		json.Unmarshal([]byte(r.stdout), &runs)
+		busy := false
+		for _, run := range runs {
+			busy = busy || run.Status == model.RunRunning
+		}
+		if !busy {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("task runs did not finish")
 }

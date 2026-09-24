@@ -57,7 +57,8 @@ prompt, like NodeHoster Manager). <site> is a site name or ID:
 %s
   --json prints the API's JSON instead of tables, for scripts. Add --help
   after a command for its flags. Exit codes: 0 done, 1 failed (including a
-  failed deployment, or the service not running), 2 wrong usage.
+  failed deployment, task run or backup, or the service not running), 2
+  wrong usage.
 
 The data directory defaults to %s
 (override with --data or the NODEHOSTER_DATA environment variable).

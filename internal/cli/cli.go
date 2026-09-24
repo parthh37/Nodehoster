@@ -69,7 +69,7 @@ func register(cmds ...*Command) { commands = append(commands, cmds...) }
 
 // groupOrder is the order of the help; groups not listed follow, in the
 // order they were registered.
-var groupOrder = []string{"site", "deploy", "rollback", "releases", "logs", "events", "cert", "backup", "restore"}
+var groupOrder = []string{"site", "deploy", "rollback", "releases", "logs", "events", "task", "cert", "backup", "restore"}
 
 // Commands lists the table in usage order.
 func Commands() []*Command {

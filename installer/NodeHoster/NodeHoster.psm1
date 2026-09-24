@@ -98,6 +98,14 @@ function ConvertTo-NHSite($Site) {
   }
 }
 
+function ConvertTo-NHTaskRun($Run) {
+  foreach ($r in $Run) {
+    if ($null -eq $r) { continue }
+    Add-Member -InputObject $r -NotePropertyName StartedAt -NotePropertyValue ([datetime] $r.startedAt) -Force
+    Add-NHType $r 'NodeHoster.TaskRun'
+  }
+}
+
 function ConvertTo-NHLogLine($Line, [string] $Site) {
   foreach ($l in $Line) {
     [pscustomobject]@{
@@ -115,6 +123,9 @@ Update-TypeData -TypeName NodeHoster.Site -DefaultDisplayPropertySet Name, Type,
 Update-TypeData -TypeName NodeHoster.Deployment -DefaultDisplayPropertySet Id, Source, Status, StartedAt, User, Message -Force
 Update-TypeData -TypeName NodeHoster.Event -DefaultDisplayPropertySet Time, Level, Type, SiteId, Message -Force
 Update-TypeData -TypeName NodeHoster.Certificate -DefaultDisplayPropertySet Name, Domains, Status, NotAfter, AutoRenew, Id -Force
+Update-TypeData -TypeName NodeHoster.Task -DefaultDisplayPropertySet Site, Name, Schedule, Enabled, NextRunAt, LastStatus -Force
+Update-TypeData -TypeName NodeHoster.TaskRun -DefaultDisplayPropertySet Id, TaskName, Status, StartedAt, Trigger, ExitCode, Error -Force
+Update-TypeData -TypeName NodeHoster.BackupRun -DefaultDisplayPropertySet StartedAt, Trigger, Status, File, Size, Error -Force
 
 <#
 .SYNOPSIS
@@ -468,5 +479,155 @@ function Get-NHCertificate {
   }
 }
 
+<#
+.SYNOPSIS
+Gets a NodeHoster site's scheduled tasks, with their next run and last result.
+.PARAMETER Name
+The site's name or ID. Accepts pipeline input.
+.PARAMETER Task
+A task name; wildcards are allowed. Default: all.
+.EXAMPLE
+Get-NHTask shop
+.EXAMPLE
+Get-NHSite | Get-NHTask | Where-Object LastStatus -eq 'failed'
+#>
+function Get-NHTask {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name,
+    [Parameter(Position = 1)]
+    [SupportsWildcards()]
+    [string] $Task = '*'
+  )
+  process {
+    foreach ($n in $Name) {
+      try {
+        foreach ($t in @(Invoke-NHCli @('task', 'list', $n))) {
+          if ($null -eq $t -or -not (($t.name -like $Task) -or ($t.id -eq $Task))) { continue }
+          $next = $null
+          if ($t.PSObject.Properties['nextRunAt'] -and $t.nextRunAt) { $next = [datetime] $t.nextRunAt }
+          $last = $null
+          if ($t.PSObject.Properties['lastRun'] -and $t.lastRun) { $last = $t.lastRun.status }
+          Add-Member -InputObject $t -NotePropertyName Site -NotePropertyValue $n -Force
+          Add-Member -InputObject $t -NotePropertyName NextRunAt -NotePropertyValue $next -Force
+          Add-Member -InputObject $t -NotePropertyName LastStatus -NotePropertyValue $last -Force
+          Add-NHType $t 'NodeHoster.Task'
+        }
+      } catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Runs a NodeHoster scheduled task now.
+.DESCRIPTION
+Starts a run of the task, shows its output as it runs, and returns the
+finished run. A run that does not succeed (failed, timed out, cancelled) is
+an error. With -NoWait, returns the run as soon as it has started. When the
+task's overlap policy is "queue" and a run is in progress, the new run waits
+for it: you get a warning and no run.
+.PARAMETER Name
+The site's name or ID. Accepts sites from Get-NHSite on the pipeline.
+.PARAMETER Task
+The task's name or ID.
+.PARAMETER NoWait
+Returns once the run has started instead of waiting for it to end.
+.EXAMPLE
+Start-NHTask shop nightly-report
+.EXAMPLE
+Start-NHTask shop cleanup -NoWait
+#>
+function Start-NHTask {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string] $Name,
+    [Parameter(Mandatory, Position = 1)]
+    [string] $Task,
+    [switch] $NoWait
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess("$Name/$Task", 'run task')) { return }
+    $cliArgs = @('task', 'run', $Name, $Task)
+    if ($NoWait) {
+      $res = Invoke-NHCli ($cliArgs + '--no-wait')
+    } else {
+      $lines = @(Invoke-NHCliLive $cliArgs)
+      $res = ConvertFrom-Json -InputObject ($lines -join "`n")
+    }
+    # {run, queued} when the run did not start right away (or with -NoWait).
+    if ($res.PSObject.Properties['queued']) {
+      if (-not $res.run) {
+        Write-Warning "Task $Task of $Name is queued: it runs when the current run ends."
+        return
+      }
+      $res = $res.run
+    }
+    ConvertTo-NHTaskRun $res
+  }
+}
+
+<#
+.SYNOPSIS
+Gets recent runs of a NodeHoster site's scheduled tasks, newest first.
+.PARAMETER Name
+The site's name or ID. Accepts pipeline input.
+.PARAMETER Task
+Only this task's runs (name or ID).
+.PARAMETER Count
+How many runs (default 20).
+.EXAMPLE
+Get-NHTaskRun shop -Task nightly-report -Count 5
+.EXAMPLE
+Get-NHTaskRun shop | Where-Object Status -ne 'succeeded'
+#>
+function Get-NHTaskRun {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name,
+    [Parameter(Position = 1)]
+    [string] $Task,
+    [ValidateRange(1, 500)]
+    [int] $Count = 20
+  )
+  process {
+    foreach ($n in $Name) {
+      $cliArgs = @('task', 'runs', $n)
+      if ($Task) { $cliArgs += $Task }
+      try { ConvertTo-NHTaskRun @(Invoke-NHCli ($cliArgs + @('-n', "$Count"))) }
+      catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Runs a NodeHoster backup to the configured destinations now.
+.DESCRIPTION
+Makes a backup archive as the backup settings say (contents, passphrase),
+copies it to every enabled destination, waits for it to finish and returns
+the result, with one entry per destination in its destinations property.
+A backup that did not reach every destination is an error.
+.EXAMPLE
+Start-NHBackup
+.EXAMPLE
+(Start-NHBackup).destinations | Format-Table name, ok, error
+#>
+function Start-NHBackup {
+  [CmdletBinding(SupportsShouldProcess)]
+  param()
+  if (-not $PSCmdlet.ShouldProcess('backup destinations', 'run a backup')) { return }
+  $run = Invoke-NHCli @('backup', 'run')
+  Add-Member -InputObject $run -NotePropertyName StartedAt -NotePropertyValue ([datetime] $run.startedAt) -Force
+  Add-NHType $run 'NodeHoster.BackupRun'
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
-  Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate
+  Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
+  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup
