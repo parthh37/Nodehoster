@@ -35,36 +35,61 @@ func runDialogAs(self **walk.Dialog, owner walk.Form, title string, size Size, c
 		self = &dlg
 	}
 	var ok, cancel *walk.PushButton
+	var body, footer *walk.Composite
 	var icon Property
 	if ic := appIcon(); ic != nil {
 		icon = ic
 	}
+	// The content scrolls above a bar with the buttons, which stays in
+	// view however small the screen: a long dialog on a scaled display
+	// used to put OK and Cancel below the task bar.
 	err := Dialog{
 		AssignTo:      self,
 		Title:         title,
 		Icon:          icon,
-		MinSize:       size,
+		MinSize:       Size{Width: min(size.Width, 360), Height: 160},
 		DefaultButton: &ok,
 		CancelButton:  &cancel,
-		Layout:        VBox{Margins: Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}, Spacing: 8},
-		Children: append(children,
-			VSpacer{Size: 4},
-			Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-				HSpacer{},
-				PushButton{AssignTo: &ok, Text: "OK", MinSize: Size{Width: 84}, OnClicked: func() {
-					if onOK == nil || onOK(*self) {
-						(*self).Accept()
-					}
-				}},
-				PushButton{AssignTo: &cancel, Text: "Cancel", MinSize: Size{Width: 84}, OnClicked: func() { (*self).Cancel() }},
-			}},
-		),
+		Background:    SolidColorBrush{Color: colorCard},
+		Layout:        VBox{MarginsZero: true, SpacingZero: true},
+		Children: []Widget{
+			// Both scroll bars: a ScrollView with only the vertical one
+			// does not grow across, and would center the content at its
+			// narrowest. The horizontal one only shows when the dialog is
+			// made narrower than its content.
+			ScrollView{
+				Background: SolidColorBrush{Color: colorCard},
+				Layout:     VBox{MarginsZero: true, SpacingZero: true},
+				Children: []Widget{
+					Composite{
+						AssignTo: &body,
+						Layout:   VBox{Margins: Margins{Left: 22, Top: 18, Right: 22, Bottom: 18}, Spacing: 10},
+						Children: children,
+					},
+				},
+			},
+			divider(colorBorder),
+			Composite{
+				AssignTo:   &footer,
+				Background: SolidColorBrush{Color: colorSurface},
+				Layout:     HBox{Margins: Margins{Left: 22, Top: 14, Right: 22, Bottom: 14}, Spacing: 8},
+				Children: []Widget{
+					HSpacer{},
+					PushButton{AssignTo: &ok, Text: "OK", MinSize: Size{Width: 96, Height: 30}, OnClicked: func() {
+						if onOK == nil || onOK(*self) {
+							(*self).Accept()
+						}
+					}},
+					PushButton{AssignTo: &cancel, Text: "Cancel", MinSize: Size{Width: 96, Height: 30}, OnClicked: func() { (*self).Cancel() }},
+				},
+			},
+		},
 	}.Create(owner)
 	if err != nil {
 		walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError)
 		return false
 	}
-	return (*self).Run() == walk.DlgCmdOK
+	return runModal(*self, owner, size, body, footer) == walk.DlgCmdOK
 }
 
 // intro heads a dialog: its tile and what it is for.
@@ -142,7 +167,7 @@ func textDialog(owner walk.Form, title, icon, text string) {
 		walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError)
 		return
 	}
-	dlg.Run()
+	runModal(dlg, owner, Size{Width: 860, Height: 560}, nil, nil)
 }
 
 // browseFolder lets the user pick a folder into le.

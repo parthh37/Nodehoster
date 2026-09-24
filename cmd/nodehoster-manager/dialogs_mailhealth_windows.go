@@ -246,7 +246,7 @@ func mailHealthDialog(m *manager) {
 		return
 	}
 	run()
-	dlg.Run()
+	runModal(dlg, m.mw, Size{Width: 800, Height: 560}, nil, nil)
 }
 
 // checkResult is a check's status as shown in the Result column.
