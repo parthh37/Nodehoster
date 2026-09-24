@@ -441,7 +441,9 @@ processes is the same for all of them; what differs is how they start:
   elsewhere): ASP.NET Core's generic host, uvicorn and Hypercorn shut down
   gracefully on it, Deno and Bun run their `SIGBREAK` listeners, and
   anything still running after the shutdown timeout is killed with its Job
-  Object.
+  Object. (The event is sent by a short-lived `nodehoster.exe` that
+  attaches to the instance's console: only for a process in the instance's
+  Job Object, and as the site's run-as account when it has one.)
 - **Metrics**: CPU and memory of the whole process tree for every runtime;
   heap and event-loop lag only where the agent reports them (Node.js, and
   Bun's heap), so the consoles show those columns only then.
