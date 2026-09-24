@@ -16,7 +16,7 @@ import (
 // be signalled at once. Resource limits are Windows-only (Job Objects).
 type osProc struct{}
 
-func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, _ string) (func(), error) {
+func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, _, _ string) (func(), error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if runAs.Enabled {
 		u, err := user.Lookup(runAs.Username)

@@ -84,6 +84,11 @@ function Wait-Console {
   return $false
 }
 
+# The SIDs (names are localized) that path's access rules admit.
+function AclSids($path) {
+  @((Get-Acl $path).Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value })
+}
+
 function Check-Running($what) {
   $svc = Get-Service NodeHoster
   Check ($svc.Status -eq "Running") "${what}: the service is running"
@@ -94,6 +99,12 @@ function Check-Running($what) {
   $sum = Invoke-Pipe "NodeHoster.Status" "/status"
   Check ($sum -match '"sites":\[') "${what}: the status pipe answers"
   Check ((Get-ItemProperty $UninstallKey).DisplayVersion -eq $Version) "${what}: Programs and Features lists $Version"
+  # Only SYSTEM and Administrators, not the local users %ProgramData% admits.
+  foreach ($f in "nodehoster.db", "master.key", "admin-key.pem") {
+    $other = @(AclSids "$Data\$f" | Where-Object { $_ -ne "S-1-5-18" -and $_ -ne "S-1-5-32-544" })
+    Check ($other.Count -eq 0) "${what}: only SYSTEM and Administrators can open $f $other"
+  }
+  Check ((AclSids "$Data\node") -contains "S-1-5-32-545") "${what}: local users can read node\ (for sites with a run-as identity)"
 }
 
 Write-Host "Install"

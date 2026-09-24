@@ -5,12 +5,14 @@ package procmgr
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
 
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/winacl"
 	"golang.org/x/sys/windows"
 )
 
@@ -81,22 +83,57 @@ func logonUser(username, password string) (windows.Token, error) {
 	return 0, fmt.Errorf("log on as %s: %w", username, lastErr)
 }
 
-// prepare configures the command before it starts.
-func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, password string) (func(), error) {
+// prepare configures the command before it starts. siteDir is the site's
+// folder under the data directory (sites\<id>).
+func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, password, siteDir string) (func(), error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 		HideWindow:    true,
 	}
 	cleanup := func() {}
-	if runAs.Enabled {
-		tok, err := logonUser(runAs.Username, password)
-		if err != nil {
-			return cleanup, err
-		}
-		cmd.SysProcAttr.Token = syscall.Token(tok)
-		cleanup = func() { tok.Close() }
+	if !runAs.Enabled {
+		return cleanup, siteAccess(siteDir, nil)
 	}
-	return cleanup, nil
+	tok, err := logonUser(runAs.Username, password)
+	if err != nil {
+		return cleanup, err
+	}
+	u, err := tok.GetTokenUser()
+	if err == nil {
+		err = siteAccess(siteDir, u.User.Sid)
+	}
+	if err != nil {
+		tok.Close()
+		return cleanup, fmt.Errorf("give %s access to the site folder: %w", runAs.Username, err)
+	}
+	cmd.SysProcAttr.Token = syscall.Token(tok)
+	return func() { tok.Close() }, nil
+}
+
+// siteAccess gives a site's run-as account Modify access to the site's own
+// folder, like an application pool identity on its site: it reads its
+// releases and writes its shared files and npm cache there. The data
+// directory above admits only SYSTEM and Administrators (config.Paths), so
+// the account cannot see other sites or the server's own files.
+//
+// NodeHoster owns the folder's explicit permissions: when the site's
+// identity changes or is turned off, the previous account's access goes
+// with it. With no run-as account, node runs as the service and needs no
+// grant. An application folder outside the data directory is the
+// administrator's to share, as in IIS.
+func siteAccess(siteDir string, sid *windows.SID) error {
+	if sid == nil {
+		if _, err := os.Stat(siteDir); err != nil {
+			return nil // nothing was ever granted
+		}
+		return winacl.Set(siteDir, winacl.Inherited)
+	}
+	// It may not exist yet when the application lives elsewhere; npm
+	// still puts its cache here.
+	if err := os.MkdirAll(siteDir, 0o750); err != nil {
+		return err
+	}
+	return winacl.Set(siteDir, winacl.Modify(sid))
 }
 
 // afterStart places the suspended process in a new job object and resumes it.

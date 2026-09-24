@@ -274,6 +274,28 @@ passphrase instead: the archive holds the configuration, certificates and
 and Node.js versions are not backed up: redeploy after restoring. A backup
 without a passphrase restores on this machine only.
 
+Only SYSTEM and Administrators can open the data directory. At every start
+the server gives it a protected DACL, so it does not inherit the read access
+(and the right to create files) that `%ProgramData%` gives every local user.
+File modes and DPAPI do not protect against local users: any process on the
+machine can unprotect `master.key`, so its file permissions are what keep it
+private, along with the database, `certs\`, `acme\`, `admin-key.pem`, the
+`mail\` spool, the logs and `initial-admin-password.txt`.
+
+Sites that run as another account (the site's **Run as** identity, like an
+application pool identity) read two folders that hold nothing secret:
+`node\` and `run\` (the agent script) are readable, but not writable, by
+local users. When such a site starts, its account is given Modify access
+to the site's own folder, `sites\<id>\` (releases, `shared\`, npm cache),
+and to no other site. NodeHoster manages that folder's explicit
+permissions: changing or turning off the identity removes the previous
+account's access. An application folder outside the data directory is the
+administrator's to share with that account. Applications' output is
+written to `logs\sites\<id>\` by the service, so that folder stays closed.
+
+Run unelevated (for development), the server also admits its own account,
+so it does not lock itself out of a data folder it created.
+
 ## Development
 
 Requirements: Go 1.26+, Node.js 22+.

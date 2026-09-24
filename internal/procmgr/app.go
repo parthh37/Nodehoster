@@ -70,6 +70,7 @@ type slot struct {
 	restarts int
 	lastExit *exitInfo
 	failures int // consecutive failed starts or short-lived runs
+	lostPort int // consecutive runs that ended because the port was taken
 
 	recyclePending atomic.Bool
 }
@@ -355,6 +356,13 @@ func (s *slot) run() {
 			a.m.ports.release(inst.port)
 			a.m.agent.unregister(inst.token)
 			inst.os.release()
+			if s.portLost(inst, uptime) {
+				a.logs.System("instance %d: port %d was taken by another process before the application could listen on it; retrying on another port", s.index, inst.port)
+				s.setCur(nil)
+				a.publish()
+				inst = nil
+				continue
+			}
 			s.mu.Lock()
 			s.cur = nil
 			s.lastExit = &exitInfo{code: inst.exitCode, at: time.Now()}
@@ -411,6 +419,26 @@ func (s *slot) run() {
 			c.reply <- err
 		}
 	}
+}
+
+// portLost reports whether an instance that just exited only failed because
+// another process held its port, in which case the slot starts a new one at
+// once without counting a crash. That happens when something listening on
+// the port answered the readiness check before the application gave up on
+// it. Only the application's own report counts, only for a run no longer
+// than the startup timeout, and at most portRetries times in a row.
+func (s *slot) portLost(inst *Instance, uptime time.Duration) bool {
+	site := s.app.config()
+	lost := site.Node.PortMode != "fixed" && inst.addrInUse.Load() &&
+		uptime <= time.Duration(site.Node.StartupTimeoutSec)*time.Second
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !lost || s.lostPort >= portRetries {
+		s.lostPort = 0
+		return false
+	}
+	s.lostPort++
+	return true
 }
 
 // replace brings up a new instance, moves traffic to it, then retires the
@@ -694,9 +722,27 @@ func (m *Manager) resolveNode(site *model.Site) (NodeRuntime, error) {
 	return m.opts.ResolveNode(version)
 }
 
+// portRetries is how many times spawn moves an instance to another port when
+// its port was taken before the application could listen on it.
+const portRetries = 2
+
 // spawn starts one process and waits until it accepts connections (a
-// worker: until it has stayed up for the settle period).
+// worker: until it has stayed up for the settle period). A start that
+// failed only because the port was lost is retried on a fresh port, so the
+// race between the allocator's check and the application's listen does not
+// reach restart backoff or rapid-fail protection.
 func (a *App) spawn(index int) (*Instance, error) {
+	for attempt := 0; ; attempt++ {
+		inst, err := a.spawnOnce(index)
+		var lost *portLostError
+		if attempt == portRetries || !errors.As(err, &lost) {
+			return inst, err
+		}
+		a.logs.System("instance %d: port %d was taken by another process before the application could listen on it; retrying on another port", index, lost.port)
+	}
+}
+
+func (a *App) spawnOnce(index int) (*Instance, error) {
 	site := a.config()
 	n := site.Node
 	worker := site.Type == model.SiteWorker
@@ -744,12 +790,19 @@ func (a *App) spawn(index int) (*Instance, error) {
 	env.set("NODE_APP_INSTANCE", strconv.Itoa(index)) // pm2 convention
 	cmd.Env = env.list()
 
-	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index}
-	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index}
+	// A worker has no port to lose: its output is not watched for
+	// "address in use", which would be about some other port of its own.
+	portStr, addrInUse := strconv.Itoa(port), new(atomic.Bool)
+	watch := addrInUse
+	if worker {
+		watch = nil
+	}
+	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr, addrInUse: watch}
+	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr, addrInUse: watch}
 	cmd.Stdout, cmd.Stderr = outW, errW
 	cmd.WaitDelay = 5 * time.Second // do not hang on grandchildren holding the pipes
 
-	cleanup, err := prepare(cmd, n.RunAs, a.m.opts.Unseal(n.RunAs.Password))
+	cleanup, err := prepare(cmd, n.RunAs, a.m.opts.Unseal(n.RunAs.Password), filepath.Join(a.m.opts.SitesDir, a.id))
 	defer cleanup()
 	if err != nil {
 		releasePort()
@@ -768,7 +821,7 @@ func (a *App) spawn(index int) (*Instance, error) {
 	}
 
 	inst := &Instance{
-		app: a, index: index, port: port, token: token,
+		app: a, index: index, port: port, token: token, addrInUse: addrInUse,
 		cmd: cmd, os: osp, pid: cmd.Process.Pid, startedAt: time.Now(),
 		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), Slot: index},
 		exited:  make(chan struct{}),
@@ -801,7 +854,16 @@ func (a *App) spawn(index int) (*Instance, error) {
 	}
 
 	if err := a.waitReady(inst, site); err != nil {
+		// Decide before retire releases the port: once it is back in the
+		// pool another instance may bind it and look like the culprit. A
+		// node site without bindings never binds its port, so only its own
+		// output counts; a worker site has no port at all.
+		lost := !worker && n.PortMode != "fixed" && inst.isExited() &&
+			(addrInUse.Load() || (!a.isWorker(site) && !portFree(port)))
 		a.retire(inst)
+		if lost {
+			return nil, &portLostError{port: port, err: err}
+		}
 		return nil, err
 	}
 	inst.setState("ready")
@@ -825,7 +887,7 @@ const settlePeriod = 2 * time.Second
 // is ready once it has stayed up for the settle period.
 func (a *App) waitReady(inst *Instance, site *model.Site) error {
 	timeout := time.Duration(site.Node.StartupTimeoutSec) * time.Second
-	worker := site.Type == model.SiteWorker || (len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID))
+	worker := a.isWorker(site)
 	if worker && timeout < 2*settlePeriod {
 		timeout = 2 * settlePeriod
 	}
@@ -849,6 +911,13 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 		}
 	}
 	return fmt.Errorf("did not start listening on port %d within %s; the application must listen on process.env.PORT", inst.port, timeout)
+}
+
+// isWorker reports whether a site runs in the background without serving
+// HTTP, so its instances need not listen on their port: a worker site, or a
+// node site without bindings that no other site mounts.
+func (a *App) isWorker(site *model.Site) bool {
+	return site.Type == model.SiteWorker || (len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID))
 }
 
 // ---- environment

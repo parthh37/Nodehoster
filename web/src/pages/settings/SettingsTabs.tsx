@@ -641,7 +641,7 @@ export function ProcessTab({ s, update }: SettingsTabProps) {
   return (
     <Card title="Processes, logs and alerts">
       <Sections>
-        <FormSection title="Port range" description="Local ports assigned to Node.js instances in automatic port mode. Keep them free of other services and firewalled from outside.">
+        <FormSection title="Port range" description="Local ports assigned to Node.js instances in automatic port mode. Keep them free of other services, outside the operating system's ephemeral port range (Windows: 49152-65535; Linux: /proc/sys/net/ipv4/ip_local_port_range, usually 32768-60999), and firewalled from outside.">
           <Grid>
             <Field label="From" path="portRangeStart">
               <NumberInput

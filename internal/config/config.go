@@ -41,6 +41,7 @@ type Paths struct {
 	Node     string // node runtimes: node/<version>/
 	Sites    string // sites/<id>/{releases,shared}
 	Mail     string // mail/{queue,failed,pickup}: the SMTP server's spool
+	Run      string // run: the agent script hosted applications load
 	Tmp      string
 }
 
@@ -81,17 +82,19 @@ func NewPaths(data string) Paths {
 		Node:     filepath.Join(data, "node"),
 		Sites:    filepath.Join(data, "sites"),
 		Mail:     filepath.Join(data, "mail"),
+		Run:      filepath.Join(data, "run"),
 		Tmp:      filepath.Join(data, "tmp"),
 	}
 }
 
+// Ensure creates the layout and restricts who may use it; see secure.
 func (p Paths) Ensure() error {
-	for _, d := range []string{p.Data, p.Logs, p.SiteLogs, p.Certs, p.ACME, p.Node, p.Sites, p.Mail, p.Tmp} {
+	for _, d := range []string{p.Data, p.Logs, p.SiteLogs, p.Certs, p.ACME, p.Node, p.Sites, p.Mail, p.Run, p.Tmp} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return fmt.Errorf("create %s: %w", d, err)
 		}
 	}
-	return nil
+	return p.secure()
 }
 
 func DefaultBootstrap() Bootstrap {

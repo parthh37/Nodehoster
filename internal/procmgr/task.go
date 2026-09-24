@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -65,7 +66,7 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = 5 * time.Second
 
-	cleanup, err := prepare(cmd, n.RunAs, m.opts.Unseal(n.RunAs.Password))
+	cleanup, err := prepare(cmd, n.RunAs, m.opts.Unseal(n.RunAs.Password), filepath.Join(m.opts.SitesDir, site.ID))
 	defer cleanup()
 	if err != nil {
 		return nil, err

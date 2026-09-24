@@ -667,7 +667,9 @@ func TestStreamsEndWhenTheCredentialIsWithdrawn(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
 				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+path, nil)
-				withdraw := func() { expect(t, e.do(http.MethodDelete, "/api/tokens/"+tok.Info.ID, nil, sess...), http.StatusNoContent) }
+				withdraw := func() {
+					expect(t, e.do(http.MethodDelete, "/api/tokens/"+tok.Info.ID, nil, sess...), http.StatusNoContent)
+				}
 				if via == "token deleted" {
 					req.Header.Set("Authorization", "Bearer "+tok.Token)
 				} else {
