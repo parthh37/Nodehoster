@@ -15,6 +15,7 @@ import {
   Monitor,
   Moon,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   Users,
@@ -49,12 +50,14 @@ const nav: NavItem[] = [
   { to: '/node', label: 'Node.js', icon: Hexagon },
   { to: '/mail', label: 'Mail', icon: Mail },
   { to: '/events', label: 'Events', icon: Activity },
+  { to: '/firewall', label: 'Firewall', icon: ShieldAlert },
 ];
 
 // A user allowed on selected sites only sees their sites and their events.
 const siteNav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/events', label: 'Events', icon: Activity },
+  { to: '/firewall', label: 'Firewall', icon: ShieldAlert },
 ];
 
 const adminNav: NavItem[] = [

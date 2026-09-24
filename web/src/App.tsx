@@ -12,6 +12,7 @@ import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
 import { EventsPage } from '@/pages/EventsPage';
+import { WafEventsPage } from '@/pages/waf/WafEventsPage';
 import { MailPage } from '@/pages/mail/MailPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { UsersPage } from '@/pages/UsersPage';
@@ -137,6 +138,7 @@ const router = createBrowserRouter([
         ),
       },
       { path: 'events', element: <EventsPage /> },
+      { path: 'firewall', element: <WafEventsPage /> },
       {
         path: 'settings/:tab?',
         element: (

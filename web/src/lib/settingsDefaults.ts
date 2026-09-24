@@ -5,6 +5,7 @@ import type { IPBanSettings, MailSettings, MimeSettings, Settings, SSOSettings }
 import { normalizeBackup } from './backup';
 import { normalizeLogShipping } from './logShipping';
 import { normalizeUpdates } from './updates';
+import { normalizeWAFSettings } from './waf';
 
 export function defaultMail(): MailSettings {
   return {
@@ -88,6 +89,7 @@ export function normalizeSettings(s: Settings): Settings {
     backup: normalizeBackup(s.backup),
     logShipping: normalizeLogShipping(s.logShipping),
     updates: normalizeUpdates(s.updates),
+    waf: normalizeWAFSettings(s.waf),
   };
 }
 
@@ -98,6 +100,7 @@ export function defaultIPBan(): IPBanSettings {
     authFailures: { threshold: 10, windowSec: 300 },
     notFound: { threshold: 50, windowSec: 60 },
     rateLimited: { threshold: 30, windowSec: 60 },
+    wafBlocks: { threshold: 5, windowSec: 60 },
     trapPaths: ['/wp-login.php', '/xmlrpc.php', '/wp-admin', '/.env', '/.git/', '/phpmyadmin', '/pma', '/cgi-bin/', '/vendor/phpunit'],
     banMinutes: 15,
     maxBanMinutes: 1440,
@@ -115,6 +118,7 @@ export function normalizeIPBan(b: Partial<IPBanSettings> | null | undefined): IP
     authFailures: { ...d.authFailures, ...b.authFailures },
     notFound: { ...d.notFound, ...b.notFound },
     rateLimited: { ...d.rateLimited, ...b.rateLimited },
+    wafBlocks: { ...d.wafBlocks, ...b.wafBlocks },
     trapPaths: b.trapPaths ?? [],
     allowList: b.allowList ?? [],
   };

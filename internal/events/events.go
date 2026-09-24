@@ -52,10 +52,14 @@ const (
 // administrator did).
 const SecurityBanned = "security.banned"
 
+// SecurityWAF: the web application firewall blocked a request (at most
+// 10 a minute; the rest are summarized).
+const SecurityWAF = "security.waf"
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, SecurityWAF}
 
 type Bus struct {
 	store    *store.Store

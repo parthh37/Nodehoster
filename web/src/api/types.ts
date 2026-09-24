@@ -2,6 +2,8 @@
 // the `json` tags. Times are RFC 3339 strings. Fields tagged `omitempty` are
 // optional here.
 
+import type { WAFConfig, WAFSettings } from './wafTypes';
+
 export const SECRET = '__SECRET__';
 
 // ---------------------------------------------------------------- sites
@@ -289,6 +291,8 @@ export interface RoutingConfig {
   affinity: AffinityConfig;
   cache: CacheConfig;
   banning: SiteBanning;
+  /** Web application firewall; absent on sites saved before it existed (off). */
+  waf?: WAFConfig;
 }
 
 /** The site's part in automatic IP banning. */
@@ -645,6 +649,7 @@ export interface Settings {
   backup: BackupSettings;
   logShipping: LogShippingSettings;
   updates: UpdateSettings;
+  waf: WAFSettings;
 }
 
 /** Automatic updates from the signed release feed (model.UpdateSettings). */
@@ -748,6 +753,8 @@ export interface IPBanSettings {
   authFailures: BanRule;
   notFound: BanRule;
   rateLimited: BanRule;
+  /** Requests the web application firewall blocked. */
+  wafBlocks: BanRule;
   trapPaths: string[] | null;
   banMinutes: number;
   maxBanMinutes: number;

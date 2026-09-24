@@ -35,4 +35,7 @@ export const qk = {
   backupFiles: (destId: string) => ['backups', 'files', destId] as const,
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
   logShippingStatus: ['logshipping', 'status'] as const,
+  wafRules: ['waf', 'rules'] as const,
+  wafEvents: (filter: object) => ['waf', 'events', filter] as const,
+  siteWaf: (id: string) => ['sites', id, 'waf'] as const,
 };

@@ -47,7 +47,8 @@ IIS Manager, with a status icon in the notification area.
 - **MIME types** like IIS: a built-in table (the Windows registry is never consulted, so `.js` is never served as `text/plain`), server-wide and per-site mappings, and unknown extensions either served as `application/octet-stream` or refused with 404
 - Request/response header rules, **IP & domain restrictions** (CIDR allow/deny)
 - Basic authentication, per-client **rate limiting**
-- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
+- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections, requests the firewall blocked and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
+- **Web application firewall** like Azure Application Gateway's WAF, per site: SQL and NoSQL injection, cross-site scripting, path traversal, remote file inclusion, command injection (Unix and Windows), Node.js attacks (prototype pollution, template injection, `child_process`), PHP and Java (Log4Shell) payloads, scanners and protocol abuse, in the path, query string, cookies, headers and form/JSON/multipart bodies, after undoing double URL encoding, `%u`, HTML entities and full-width tricks. OWASP-CRS-style anomaly scoring with paranoia levels 1–3; **detect** mode logs what would be blocked, **block** answers 403 with a request ID; new sites start in detect, existing sites stay off until turned on. Exclusions by rule, category, path, argument, cookie or header, created from a blocked request in one click; blocks count towards IP banning. Pure Go (RE2, linear time), a few microseconds for an ordinary request, nothing at all for a site with it off
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
 
@@ -78,7 +79,7 @@ IIS Manager, with a status icon in the notification area.
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
 - **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
-- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
+- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|waf|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
 - **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
@@ -182,8 +183,8 @@ never update themselves. Upgrades never change the setting.
 **Start → NodeHoster Manager** opens the desktop console (it asks for
 administrator rights, like IIS Manager). The left pane lists the server,
 its sites (with their state on their icons), certificates, SMTP e-mail,
-Node.js versions, web console users, banned addresses, the event and audit
-logs and backups; the middle pane shows the selected one (the server's
+Node.js versions, web console users, banned addresses, the web application
+firewall, the event and audit logs and backups; the middle pane shows the selected one (the server's
 home is a dashboard of the service, CPU, memory and disk); the right pane
 has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
 edit its bindings, environment, URL Rewrite rules, MIME types and basic
@@ -191,7 +192,8 @@ settings, browse it, follow its log live (pause, filter, save), see a
 deployment's output and roll back a release, run or cancel a scheduled
 task, purge its response cache, install Node.js versions, reset a web
 console user's password or two-factor authentication, ban and unban
-addresses, manage the mail queue, change where the web console listens,
+addresses, switch a site's firewall between off, detect and block, see the
+requests it blocked and exclude the rules behind a false positive, manage the mail queue, change where the web console listens,
 back up to a file, run a scheduled backup now and see its history, restore
 from a backup, and start or stop the service.
 
@@ -240,6 +242,11 @@ nodehoster task list <site>                  scheduled tasks, next run, last res
 nodehoster task run <site> <task> [--no-wait]  run now, showing its output until it ends
 nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
 nodehoster cert list | cert renew <id|name|domain>
+nodehoster waf list                          each site's firewall mode, paranoia, exclusions, blocks
+nodehoster waf mode <site> off|detect|block [--paranoia 1-3] [--threshold 5]
+nodehoster waf events [<site>] [-n 50] [--action blocked] [--ip x] [--rule 942100] [--id <request-id>]
+nodehoster waf exclude <site> [--path /admin/] [--rule 942100] [--category sqli] [--arg content] [--cookie x] [--header x]
+nodehoster waf rules [--category sqli]
 nodehoster backup <file>                     .zip: the full archive (encrypted with the backup
                                              passphrase, if set); any other name: the configuration (JSON)
 nodehoster backup run | backup history [-n 10]  back up to the destinations now; recent backups
@@ -269,7 +276,8 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
 `Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Start-NHBackup`, `Get-NHWafEvent`, `Set-NHWafMode`, `Add-NHWafExclusion`.
+They take site names from the pipeline:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -400,6 +408,7 @@ cmd/nodehoster-manager desktop manager and status icon (Win32, walk)
 internal/core         composition root; site lifecycle
 internal/procmgr      process supervisor (+ agent/ injected into apps)
 internal/proxy        listeners, binding match, request pipeline, load balancing
+internal/waf          web application firewall: rules, normalisation, inspection, events
 internal/certs        ACME (lego), import/export, renewal
 internal/deploy       zip/git deployments and releases
 internal/nodeversions Node.js runtime installer

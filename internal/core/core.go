@@ -36,6 +36,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/tasks"
 	"github.com/parthh37/nodehoster/internal/update"
+	"github.com/parthh37/nodehoster/internal/waf"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -56,6 +57,7 @@ type Core struct {
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
 	Bans      *ipban.Manager
+	WAF       *waf.Recorder // web application firewall events and counters
 	Tasks     *tasks.Scheduler
 	Ship      *logship.Shipper
 	StartedAt time.Time
@@ -113,6 +115,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
 	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
+	c.settings.WAF.ApplyDefaults()   // ... and before the web application firewall
 	c.settings.Updates.ApplyDefaults()
 	c.UpdateFeed = update.NewFeed(update.DefaultFeed)
 
@@ -120,6 +123,9 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
 	if err := c.openBans(ctx); err != nil {
 		return nil, fmt.Errorf("load IP bans: %w", err)
+	}
+	if err := c.openWAF(ctx); err != nil {
+		return nil, fmt.Errorf("web application firewall: %w", err)
 	}
 	c.Bus.OnEmit = func(e model.Event) {
 		if c.Ship.Wants(model.LogSourceEvent) {
@@ -153,6 +159,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans, Ship: c.Ship,
+		WAF: c.WAF,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
@@ -219,6 +226,7 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
 	c.wg.Go(func() { c.updateLoop(ctx) })
+	c.wg.Go(func() { c.wafLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -308,6 +316,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	}
 	in.IPBan.ApplyDefaults()
 	if err := in.IPBan.Validate(); err != nil {
+		return cur, err
+	}
+	in.WAF.ApplyDefaults()
+	if err := in.WAF.Validate(); err != nil {
 		return cur, err
 	}
 	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
@@ -621,6 +633,9 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	if err := rewrite.Validate(in.Routing); err != nil {
 		return err
 	}
+	if err := waf.Validate(in.Routing.WAF, in.Type); err != nil {
+		return err
+	}
 	if m := c.Settings().Mail; m.Enabled {
 		for i, b := range in.Bindings {
 			if b.Port == m.Port && (b.IP == "" || m.ListenIP == "" || b.IP == m.ListenIP) {
@@ -751,6 +766,7 @@ func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*mod
 	defer c.sitesMu.Unlock()
 	in.ID = uuid.NewString()
 	in.ActiveRelease = ""
+	c.applyWAFDefaults(in)
 	if err := c.prepare(in, nil); err != nil {
 		return nil, err
 	}
@@ -880,6 +896,7 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 		c.reload()
 		return err
 	}
+	c.forgetWAF(id)
 	if deleteFiles {
 		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
 		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))

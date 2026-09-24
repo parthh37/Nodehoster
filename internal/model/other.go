@@ -101,6 +101,7 @@ type Settings struct {
 	Backup             BackupSettings      `json:"backup"`
 	LogShipping        LogShippingSettings `json:"logShipping"`
 	Updates            UpdateSettings      `json:"updates"`
+	WAF                WAFSettings         `json:"waf"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

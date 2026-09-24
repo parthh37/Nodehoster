@@ -355,6 +355,7 @@ type RoutingConfig struct {
 	Affinity         AffinityConfig    `json:"affinity"`
 	Cache            CacheConfig       `json:"cache"`
 	Banning          SiteBanning       `json:"banning"`
+	WAF              WAFConfig         `json:"waf"`
 }
 
 // CacheConfig is an in-memory response cache in front of a node or proxy

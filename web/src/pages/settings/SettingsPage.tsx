@@ -50,6 +50,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('mime')) return 'mime';
   if (field.startsWith('sso')) return 'sso';
   if (field.startsWith('ipBan')) return 'security';
+  if (field.startsWith('waf')) return 'security';
   if (field.startsWith('backup')) return 'backup';
   if (field.startsWith('logShipping')) return 'logshipping';
   if (field.startsWith('updates')) return 'updates';

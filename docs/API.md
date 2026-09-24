@@ -518,6 +518,84 @@ addresses, or a browser on the server itself).
 createdBy?}`. Server-wide only: site-scoped callers get 403. Manual bans and
 unbans are audited (`ban.add`, `ban.remove`).
 
+`ipBan.wafBlocks` (default 5 in 60 s) counts requests a site's web
+application firewall blocked (below); detections in detect mode never count.
+
+## Web application firewall
+
+Per site, `routing.waf` = `{mode, paranoiaLevel?, anomalyThreshold?,
+inspectBodyKB?, exclusions?[]}`:
+
+- `mode`: `off` | `detect` (log what would be blocked, block nothing) |
+  `block`. Absent (sites saved before the firewall existed) is off. A site
+  created without one gets the server's defaults, `Settings.waf` =
+  `{defaultMode, defaultParanoiaLevel, defaultAnomalyThreshold,
+  eventRetentionDays}` (defaults `detect`, 1, 5, 30), except redirect sites
+  and background workers, which start off (a worker cannot have it on).
+- Rules (IDs in the OWASP CRS ranges: 913 scanners, 920 protocol, 930 path
+  traversal/LFI, 931 RFI, 932 command injection, 933 PHP, 934 Node.js, 941
+  XSS, 942 SQL/NoSQL injection, 944 Java) each belong to a paranoia level
+  (1-3, default 1) and add their severity to the request's anomaly score:
+  critical 5, error 4, warning 3, notice 2. A request whose score reaches
+  `anomalyThreshold` (default 5: one critical match) is blocked (or
+  detected). Each rule counts once per request; inspection stops once the
+  threshold is reached.
+- Inspected, after decoding (repeated URL decoding, `%uXXXX`, HTML
+  entities, JavaScript escapes, overlong UTF-8, full-width forms,
+  lowercase, NUL removal; SQL comments for the SQL rules): the path, query
+  string arguments (names and values, parsed leniently), cookies,
+  `User-Agent` and `Referer` (injection rules on these from paranoia level
+  2), every other header but `Authorization` for Log4Shell, Shellshock and
+  OGNL, uploaded file names, and bodies up to `inspectBodyKB` (default 128,
+  at most 4096) that are `application/x-www-form-urlencoded`, JSON (keys
+  as argument names, dotted: `post.body`), `multipart/form-data` (text
+  fields; file contents are not inspected), text (`text/*`, GraphQL) or,
+  from paranoia level 2, XML. The rest of a body, and binary or compressed
+  bodies, stream to the site uninspected; what was read is replayed to it
+  first, so it receives every byte.
+- `exclusions[]` = `{path?, ruleIds?[], categories?[], args?[], cookies?[],
+  headers?[], comment?}`: under `path` (a prefix; absent = the whole site),
+  with `args`/`cookies`/`headers` (names, case-insensitive, a trailing `*`
+  matches a prefix) those are not inspected by the listed rules and
+  categories (all rules if none); without names the listed rules and
+  categories are off; with nothing listed the firewall is off under
+  `path`. Categories: `sqli`, `xss`, `lfi`, `rfi`, `rce`, `nodejs`, `php`,
+  `java`, `scanner`, `protocol`.
+
+It runs after IP restrictions, maintenance mode, rate limiting, basic
+authentication and the body size limit, and before URL rewriting (it sees
+what the client sent). A blocked request gets the site's 403 error page,
+or the built-in one showing the request ID, and an `X-Request-Id` header.
+Blocks count towards automatic IP banning (`ipBan.wafBlocks`) unless the
+site is exempt (`routing.banning.exempt`). A mounted site (a location of
+kind `site`) is covered by the firewall of the site it is mounted in.
+
+Blocked and detected requests are saved as `WAFEvent` = `{seq, id, time,
+siteId, action: blocked|detected, clientIp, method, host, path (no query
+string), userAgent?, score, threshold, paranoiaLevel, matches[]}` with
+`WAFMatch` = `{ruleId, category, severity, score, message, in:
+path|arg|argName|cookie|header|file|body|request|query, name?, snippet?}`;
+`snippet` is the matched text (decoded, at most 120 bytes, control
+characters escaped), `[redacted]` for arguments and cookies whose names
+look like passwords, tokens or session IDs. Events are kept
+`eventRetentionDays`, at most 100,000; at most 200 a second are saved (the
+rest are counted, `nodehoster_waf_events_dropped_total`). Blocks raise
+`security.waf` events (warning; at most 10 a minute, the rest summarized).
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/waf/rules` | any signed-in user | `WAFRuleInfo[]` = `{id, category, severity, score, paranoiaLevel, message}` |
+| GET | `/api/waf/events?siteId=&action=&ip=&rule=&category=&requestId=&since=&before=&limit=` | viewer (site-scoped: their sites) | `WAFEvent[]`, newest first; `before` is a `seq` for the next page, `limit` ≤ 1000 (100) |
+| GET | `/api/sites/{id}/waf/events?…` | viewer on the site | the same, for one site |
+| GET | `/api/sites/{id}/waf` | viewer on the site | `{config: WAFConfig, stats: {inspected, blocked, detected, matches: {category: n}}}`; counters since the service started |
+| PUT | `/api/sites/{id}/waf` | admin | body `WAFConfig`; replaces the site's firewall, the rest of the site unchanged; audited `waf.update` |
+| POST | `/api/sites/{id}/waf/exclusions` | admin | body `WAFExclusion`; 201 `{config, stats}`, 409 if the site already has it; audited `waf.exclusion.add` |
+
+`/metrics` adds, for sites with the firewall on,
+`nodehoster_waf_inspected_total{site,type}`,
+`nodehoster_waf_requests_total{site,type,action="blocked|detected"}` and
+`nodehoster_waf_rule_matches_total{site,type,category}`.
+
 ## Mail (SMTP server)
 
 The SMTP server's configuration is `Settings.mail`. Secrets follow the

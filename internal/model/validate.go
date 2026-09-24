@@ -595,6 +595,7 @@ func DefaultSettings() Settings {
 		Backup:             DefaultBackup(),
 		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 		Updates:            DefaultUpdates(),
+		WAF:                DefaultWAF(),
 	}
 }
 

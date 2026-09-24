@@ -317,6 +317,7 @@ export const EVENT_TYPES = [
   'cert.expiring',
   'server.started',
   'security.banned',
+  'security.waf',
   'backup.completed',
   'backup.failed',
   'update.available',
