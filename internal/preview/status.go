@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -127,7 +128,9 @@ func isHex(s string) bool {
 }
 
 // Report sets a commit status. The token is sent only to the endpoint
-// StatusURL derives from repo and never appears in an error.
+// StatusURL derives from repo, never over plain http to another machine
+// (an http repository on this one is fine), never on to another host a
+// redirect points at, and never appears in an error.
 func (r *Reporter) Report(ctx context.Context, provider, repo, token string, st Status) error {
 	if token == "" {
 		return errors.New("no token to report the status with")
@@ -135,6 +138,13 @@ func (r *Reporter) Report(ctx context.Context, provider, repo, token string, st 
 	endpoint, err := StatusURL(provider, repo, st.Commit)
 	if err != nil {
 		return err
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" && !isLoopback(u.Hostname()) {
+		return fmt.Errorf("the repository is reached over plain http: the token is not sent to %s unencrypted; use an https repository address", u.Host)
 	}
 	desc := st.Description
 	if len(desc) > 140 { // GitHub's limit
@@ -171,7 +181,21 @@ func (r *Reporter) Report(ctx context.Context, provider, repo, token string, st 
 	case Gitea:
 		req.Header.Set("Authorization", "token "+token)
 	}
-	resp, err := r.Client.Do(req)
+	client := *r.Client
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		// Custom headers such as GitLab's PRIVATE-TOKEN follow redirects
+		// wherever they lead: only the same host, never downgraded.
+		switch {
+		case len(via) >= 5:
+			return errors.New("too many redirects")
+		case !strings.EqualFold(next.URL.Host, u.Host):
+			return fmt.Errorf("refusing to follow a redirect to another host (%s)", next.URL.Host)
+		case next.URL.Scheme != u.Scheme && next.URL.Scheme != "https":
+			return errors.New("refusing to follow a redirect to plain http")
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
@@ -193,6 +217,16 @@ func (r *Reporter) Report(ctx context.Context, provider, repo, token string, st 
 		text = m.Message
 	}
 	return fmt.Errorf("%s answered HTTP %d: %s", provider, resp.StatusCode, text)
+}
+
+// isLoopback reports whether host is this machine: localhost or a
+// loopback address.
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // redactURL hides credentials a repository URL may carry.
