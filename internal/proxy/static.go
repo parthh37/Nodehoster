@@ -5,8 +5,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // staticHandler serves files like an IIS static site: default documents,
@@ -81,7 +83,8 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // alternate data stream, so neither may appear in a request path. A folder
 // moved from IIS keeps its web.config (connection strings, machineKey):
 // it is refused in any case and with the trailing dots or spaces Windows
-// ignores in file names.
+// ignores in file names. So is anything shaped like an NTFS 8.3 short
+// name (see shortNameAlias).
 func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	if strings.ContainsAny(urlPath, "\\:\x00") {
 		return "", "", false
@@ -94,6 +97,9 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 		if strings.EqualFold(strings.TrimRight(seg, ". "), "web.config") {
 			return "", "", false
 		}
+		if shortNameAlias(seg) {
+			return "", "", false
+		}
 	}
 	root, err := filepath.Abs(h.root)
 	if err != nil {
@@ -104,6 +110,22 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 		return "", "", false
 	}
 	return full, clean, true
+}
+
+// shortName is the shape of an 8.3 short name Windows generates: a base
+// ending in "~" and digits, and an extension of at most three characters.
+var shortName = regexp.MustCompile(`^[^.]*~[0-9]+(\.[^.]{0,3})?$`)
+
+// shortNameAlias reports whether a path segment may be the 8.3 short name
+// of another file. On an NTFS volume that still generates them, WEB~1.CON
+// opens web.config and ENV~1 opens .env, past the checks on the names
+// above, the way IIS's tilde short-name disclosure works. Refused on every
+// system, as the site's files may be served from Windows whatever the
+// build; a name longer than 8.3 (photo~2023.jpeg) is never a short name.
+func shortNameAlias(seg string) bool {
+	seg = strings.TrimRight(seg, ". ") // ignored by Windows, as above
+	base, _, _ := strings.Cut(seg, ".")
+	return utf8.RuneCountInString(base) <= 8 && shortName.MatchString(seg)
 }
 
 // setCache applies the site's Cache-Control unless the response already
