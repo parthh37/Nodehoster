@@ -242,6 +242,7 @@ func mailHealthDialog(m *manager) {
 		},
 	}.Create(m.mw)
 	if err != nil {
+		createdHooks(true)
 		walk.MsgBox(m.mw, title, err.Error(), walk.MsgBoxIconError)
 		return
 	}
