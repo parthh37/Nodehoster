@@ -34,7 +34,7 @@ IIS Manager, with a status icon in the notification area.
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - **Other runtimes** under the same process manager, like IIS hosting more than ASP.NET: **Bun**, **Deno**, **Python** (a script, `python -m` a module, or an ASGI/WSGI app on uvicorn, Hypercorn or Waitress), **.NET** (ASP.NET Core on Kestrel: `dotnet app.dll` or a self-contained `.exe`, like the ASP.NET Core Module's out-of-process hosting) and any **custom command** that listens on `PORT`. Instances, restarts, rapid-fail protection, recycling, Job Objects, run-as identity, secrets, logs, CPU/memory, deployments and scheduled tasks work the same for all of them — see [Runtimes](#runtimes)
-- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 verified), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, PATH, standard folders) and picked per site
+- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 checked against the release's own checksums: see [Runtimes](#runtimes)), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, registry, PATH, Program Files) and picked per site; only programs no one but administrators can change are ever run
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 - **Secret stores** like Azure App Service's Key Vault references: a variable (or a git deploy token) can come from **HashiCorp Vault / OpenBao** (KV v1/v2, token or AppRole with automatic renewal, namespaces), **Infisical** (cloud or self-hosted, Universal Auth) or **Bitwarden Secrets Manager** (cloud US/EU or self-hosted; pure Go, no SDK to install). Read at every instance start, recycle, task run and build, cached in memory for a few minutes, never written anywhere; the last known value keeps sites starting while a store is down; optional zero-downtime recycle when a secret changes
 
@@ -466,6 +466,17 @@ processes is the same for all of them; what differs is how they start:
 | **.NET** | `dotnet <app.dll>` or `<app.exe>` (self-contained) | the `dotnet.exe` found on the server; the app's runtimeconfig picks the framework |
 | **Custom command** | any program with its arguments | — |
 
+- **What the Bun and Deno checksums prove**: a version is downloaded over
+  HTTPS from the project's GitHub release, and its SHA-256 is compared with
+  the one GitHub reports for the asset or the checksum file in the same
+  release (`SHASUMS256.txt`, `*.sha256sum`). That catches a corrupt or
+  truncated download, not a release replaced by someone with access to the
+  project's GitHub account or its build: the checksum comes from the same
+  place as the zip. Deno does not sign its releases; Bun publishes a
+  PGP signature of `SHASUMS256.txt` (`SHASUMS256.txt.asc`) that NodeHoster
+  does not check. Install from the Runtimes page what you would install by
+  hand from the same release, and pin versions per site rather than taking
+  the newest on every server.
 - **Deno** grants a program nothing it is not told to: the consoles start a
   Deno site with `--allow-net --allow-env --allow-read` (edit them under
   Arguments); a task in `deno.json` sets its own.
@@ -479,7 +490,9 @@ processes is the same for all of them; what differs is how they start:
   elsewhere): ASP.NET Core's generic host, uvicorn and Hypercorn shut down
   gracefully on it, Deno and Bun run their `SIGBREAK` listeners, and
   anything still running after the shutdown timeout is killed with its Job
-  Object.
+  Object. (The event is sent by a short-lived `nodehoster.exe` that
+  attaches to the instance's console: only for a process in the instance's
+  Job Object, and as the site's run-as account when it has one.)
 - **Metrics**: CPU and memory of the whole process tree for every runtime;
   heap and event-loop lag only where the agent reports them (Node.js, and
   Bun's heap), so the consoles show those columns only then.
@@ -495,7 +508,21 @@ processes is the same for all of them; what differs is how they start:
   `dotnet publish -c Release -o publish` and the application to
   `publish\MyApp.dll`, or deploy a ready-built app. A step is skipped when
   the release has nothing for it (`package.json`, `deno.json`,
-  `requirements.txt`/`pyproject.toml`).
+  `requirements.txt`/`pyproject.toml`). The virtual environment and the
+  default pip install run Python in isolated mode (`-I`), by the
+  environment's full path, so a `venv.py`, `pip.py` or `python.bat` in the
+  release is not what runs; an install or build command of your own runs as
+  you wrote it (`python -m ...` there imports from the release first, as
+  Python always does).
+- **Who runs the install and build commands**: the site's **Run as**
+  account when it has one, like its instances (see
+  [Data directory](#data-directory)), and the service (SYSTEM) otherwise. These
+  commands run the application's own code (package scripts, NuGet build
+  targets, `setup.py`), and use caches in the site's folder (`.npm-cache`,
+  `.bun-cache`, `.deno-cache`, `.pip-cache`, `.nuget`) that a run-as
+  account can change. **Give a site that builds code you do not fully
+  trust, such as pull request previews, a run-as account**: without one,
+  that code runs as SYSTEM.
 - **Scheduled tasks** and **background workers** run with the site's
   runtime: a Python site's task is `python <script>` in its virtual
   environment; package scripts are for Node.js, Bun and Deno.
@@ -504,6 +531,19 @@ processes is the same for all of them; what differs is how they start:
   the ASP.NET Core Hosting Bundle from dotnet.microsoft.com; the Runtimes
   page shows what was found and links there when nothing was.
   `nodehoster deps` lists every runtime a site uses as required.
+- **Only programs administrators control are run.** The service runs as
+  SYSTEM, and runs what it finds (to ask an interpreter its version, and in
+  deployments). So an interpreter, `dotnet.exe`, or a `bun`/`deno` on PATH
+  is used only when no account but SYSTEM, Administrators and
+  TrustedInstaller can change it, its folder (for Python also `Lib`,
+  `site-packages` and `DLLs`) or the folders leading to it. Python in
+  `C:\Python312` fails this (a folder made in `C:\` lets every signed-in
+  user change what it holds), as does a runtime in a user's profile on the
+  machine's PATH: install for all users, into Program Files, or remove the
+  other accounts' write access. What is refused is left off the Runtimes
+  page with the reason in the server log; a site that names it by path
+  (`runtimeVersion`, or the server default) fails to start and deploy with
+  that reason. Only administrators can set either.
 
 ### Migrating from IIS/iisnode or PM2
 
@@ -614,6 +654,17 @@ permissions: changing or turning off the identity removes the previous
 account's access. An application folder outside the data directory is the
 administrator's to share with that account. Applications' output is
 written to `logs\sites\<id>\` by the service, so that folder stays closed.
+
+A deployment of such a site runs its install and build commands (and
+Python's `-m venv`) as that account too, in a Job Object, with `TEMP` in
+`sites\<id>\.tmp`: what those commands run, and the package caches in the
+site's folder that the account can change, never run as SYSTEM. The
+service still extracts the upload or clones the repository and links the
+shared paths, into a release folder the account cannot open until then,
+and opens it for the commands. If you turn a site's run-as account off,
+delete the caches in its folder (`.npm-cache`, `.bun-cache`,
+`.deno-cache`, `.pip-cache`, `.nuget`, `.dotnet`): the account could have
+changed them, and SYSTEM would now build with them.
 
 Run unelevated (for development), the server also admits its own account,
 so it does not lock itself out of a data folder it created.

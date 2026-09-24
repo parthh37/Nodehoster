@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -21,10 +20,18 @@ var pyVersionRe = regexp.MustCompile(`^\d+\.\d+(\.\d+)?$`)
 const maxInterpreters = 16
 
 // Python lists the Python interpreters on this server, newest first: those
-// the py launcher knows (`py -0p`: every python.org and Microsoft Store-free
-// installation registered for all users), python and python3 on PATH, and
-// the standard folders (a Windows service keeps the PATH it started with,
-// so an interpreter installed later is not on it until a restart).
+// the py launcher knows (`py -0p`: every python.org installation registered
+// for all users), those registered in HKLM (PEP 514, which the launcher
+// reads too: found even without it), python and python3 on PATH, and the
+// standard folders (a Windows service keeps the PATH it started with, so an
+// interpreter installed later is not on it until a restart).
+//
+// Only interpreters no one but administrators can change are offered, or
+// even run to ask their version (see usable): NodeHoster runs them as
+// SYSTEM, so one that any local user can replace, or add a DLL or a module
+// next to, lets that user run code as SYSTEM. A folder such as C:\Python312
+// inherits from C:\ that every signed-in user may change what it holds;
+// Python installed there is left out, and the server log says why.
 func (m *Manager) Python() []Interpreter {
 	d := m.cached("python", func() detection {
 		type cand struct{ path, source string }
@@ -58,12 +65,15 @@ func (m *Manager) Python() []Interpreter {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if m.goos == "windows" {
-			if py, err := m.lookPath("py"); err == nil {
+			if py := m.pyLauncher(); py != "" {
 				if out, err := m.output(ctx, py, "-0p"); err == nil {
 					for _, e := range parsePyList(string(out)) {
 						add(e, "py")
 					}
 				}
+			}
+			for _, p := range m.registryPythons() {
+				add(p, "registry")
 			}
 		}
 		for _, name := range []string{"python3", "python"} {
@@ -83,6 +93,9 @@ func (m *Manager) Python() []Interpreter {
 			if len(list) == maxInterpreters {
 				break
 			}
+			if m.usable(model.RuntimePython, c.path) != nil {
+				continue
+			}
 			vctx, vcancel := context.WithTimeout(ctx, 10*time.Second)
 			out, err := m.output(vctx, c.path, "--version")
 			vcancel()
@@ -98,7 +111,28 @@ func (m *Manager) Python() []Interpreter {
 	return append([]Interpreter(nil), d.python...)
 }
 
-// pythonFolders are where Python installers put interpreters for all users.
+// pyLauncher is the py launcher to ask for the interpreters it knows: the
+// one installed for all users in the Windows folder, else the one on PATH,
+// whichever only administrators can change ("" when there is none).
+func (m *Manager) pyLauncher() string {
+	var cands []string
+	if root := m.getenv("SystemRoot"); root != "" {
+		cands = append(cands, filepath.Join(root, "py.exe"))
+	}
+	if p, err := m.lookPath("py"); err == nil {
+		cands = append(cands, p)
+	}
+	for _, p := range cands {
+		if m.stat(p) == nil && m.usable("py", p) == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// pythonFolders are where Python installers put interpreters for all users:
+// Program Files on Windows. Not the root of the system drive, where any
+// local user can create C:\Python313 before Python is installed there.
 func (m *Manager) pythonFolders() []string {
 	if m.goos != "windows" {
 		return []string{"/usr/local/bin/python3.*[0-9]", "/usr/bin/python3.*[0-9]"}
@@ -109,13 +143,44 @@ func (m *Manager) pythonFolders() []string {
 			out = append(out, filepath.Join(pf, "Python3*", "python.exe"))
 		}
 	}
-	if sd := m.getenv("SystemDrive"); sd != "" {
-		out = append(out, filepath.Join(sd+`\`, "Python3*", "python.exe"))
-	}
 	return out
 }
 
-// pythonVersion asks an interpreter given by path for its version.
+// pythonDirs are the folders of a Python installation, besides the
+// interpreter's own, whose contents every interpreter started runs: the
+// standard library, its extension modules, and site-packages (a .pth file
+// there runs code at startup). A Linux layout has none of these.
+func pythonDirs(exe string) []string {
+	home := filepath.Dir(exe)
+	return []string{filepath.Join(home, "Lib"), filepath.Join(home, "Lib", "site-packages"), filepath.Join(home, "DLLs")}
+}
+
+// usable reports whether NodeHoster may run a program it found or was given
+// by path (rt names the runtime, or "py" for the launcher): only when no
+// one but administrators can change it (winacl.CheckProgram). What is
+// refused is logged once per program, since detection runs often.
+func (m *Manager) usable(rt, exe string) error {
+	var dirs []string
+	if rt == model.RuntimePython {
+		dirs = pythonDirs(exe)
+	}
+	err := m.trusted(exe, dirs...)
+	if err == nil {
+		return nil
+	}
+	err = fmt.Errorf("%s is not used: %w (NodeHoster runs it as the service; install it for all users, in Program Files, or allow only administrators to change its folder)", exe, err)
+	m.mu.Lock()
+	first := !m.refused[exe]
+	m.refused[exe] = true
+	m.mu.Unlock()
+	if first {
+		m.log.Warn("runtime not used: other accounts than administrators can change it", "runtime", rt, "error", err)
+	}
+	return err
+}
+
+// pythonVersion asks an interpreter given by path, which the caller has
+// checked with usable, for its version.
 func (m *Manager) pythonVersion(exe string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -187,27 +252,29 @@ func parsePythonVersion(out string) string {
 	return v
 }
 
-// Dotnet finds the .NET host and its runtimes, or returns nil.
+// Dotnet finds the .NET host and its runtimes, or returns nil: the host on
+// PATH, else the one in the standard folder, the first that only
+// administrators can change (see usable).
 func (m *Manager) Dotnet() *Dotnet {
 	d := m.cached("dotnet", func() detection {
-		host := ""
+		var cands []string
 		if p, err := m.lookPath("dotnet"); err == nil {
-			host = p
 			if !model.RuntimeVersionIsPath(p) {
-				host, _ = filepath.Abs(p)
+				p, _ = filepath.Abs(p)
 			}
-		} else {
-			for _, p := range m.dotnetFolders() {
-				if _, err := os.Stat(p); err == nil {
-					host = p
-					break
-				}
+			cands = append(cands, p)
+		}
+		for _, p := range m.dotnetFolders() {
+			if m.stat(p) == nil {
+				cands = append(cands, p)
 			}
 		}
-		if host == "" {
-			return detection{}
+		for _, host := range cands {
+			if m.usable(model.RuntimeDotnet, host) == nil {
+				return detection{dotnet: &Dotnet{Host: host, Runtimes: m.dotnetRuntimes(host)}}
+			}
 		}
-		return detection{dotnet: &Dotnet{Host: host, Runtimes: m.dotnetRuntimes(host)}}
+		return detection{}
 	})
 	if d.dotnet == nil {
 		return nil
@@ -231,6 +298,8 @@ func (m *Manager) dotnetFolders() []string {
 	return out
 }
 
+// dotnetRuntimes asks a host, which the caller has checked with usable,
+// for its runtimes.
 func (m *Manager) dotnetRuntimes(host string) []DotnetRuntime {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

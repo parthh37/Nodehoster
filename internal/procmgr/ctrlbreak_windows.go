@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -45,6 +46,7 @@ var (
 	procAttachConsole         = kernel32.NewProc("AttachConsole")
 	procFreeConsole           = kernel32.NewProc("FreeConsole")
 	procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
+	procIsProcessInJob        = kernel32.NewProc("IsProcessInJob")
 )
 
 // ctrlBreakHelper returns the program that runs CtrlBreakCommand: this
@@ -83,6 +85,13 @@ func (p *osProc) interrupt(pid int) error {
 	if err := windows.GetExitCodeProcess(h, &code); err != nil || code != stillActive {
 		return errors.New("the process has exited")
 	}
+	tok, err := p.helperToken(h)
+	if err != nil {
+		return err
+	}
+	if tok != 0 {
+		defer tok.Close()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, CtrlBreakCommand, strconv.Itoa(pid))
@@ -91,6 +100,11 @@ func (p *osProc) interrupt(pid int) error {
 		// group of its own, so the event it sends cannot reach it.
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,
+		// The console belongs to the instance, and so to its account when
+		// it runs as the site's run-as account: the helper attaches to it
+		// as that account too, never as SYSTEM, so nothing that account
+		// controls there deals with a SYSTEM process.
+		Token: syscall.Token(tok),
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if msg := strings.TrimSpace(string(out)); msg != "" {
@@ -99,6 +113,34 @@ func (p *osProc) interrupt(pid int) error {
 		return err
 	}
 	return nil
+}
+
+// helperToken checks that the process h (the PID interrupt was given) is
+// still this instance's, inside its job object, and returns a token for the
+// helper: a copy of the instance's own when it runs as another account, 0
+// (the service's own) otherwise. The caller closes it.
+func (p *osProc) helperToken(h windows.Handle) (windows.Token, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.job == 0 {
+		return 0, errors.New("the process has exited")
+	}
+	var in int32
+	if r, _, err := procIsProcessInJob.Call(uintptr(h), uintptr(p.job), uintptr(unsafe.Pointer(&in))); r == 0 {
+		return 0, fmt.Errorf("check the process's job: %w", err)
+	}
+	if in == 0 {
+		return 0, errors.New("the process is not the instance's")
+	}
+	if p.token == 0 {
+		return 0, nil
+	}
+	var dup windows.Token
+	if err := windows.DuplicateTokenEx(p.token, windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|
+		windows.TOKEN_ADJUST_DEFAULT|windows.TOKEN_ADJUST_SESSIONID, nil, windows.SecurityImpersonation, windows.TokenPrimary, &dup); err != nil {
+		return 0, fmt.Errorf("copy the instance's token: %w", err)
+	}
+	return dup, nil
 }
 
 // RunCtrlBreak is the helper's side: attach to the console of the process

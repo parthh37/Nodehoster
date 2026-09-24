@@ -110,7 +110,7 @@ What a site-scoped caller gets:
 | `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
-| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog`, `/api/waf/rules` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog`, `/api/waf/rules` | allowed: catalogs the site pages show, nothing server-specific that matters (`/api/runtimes` without any file system path, from what was last detected) |
 | `GET /api/alerts`, `/api/alerts/history` | only the granted sites' alerts; server alerts are left out, `?siteId=` of another site answers 404 and `?server=1` 403 |
 | `POST`/`DELETE /api/alerts/{alert}/silence` | `operator` on the alert's site (403 with `viewer`); server alerts and other sites' alerts answer 404 |
 | `GET /api/waf/events` | only the granted sites' events; `?siteId=` of another site returns none |
@@ -237,12 +237,18 @@ Ctrl+Break on Windows (SIGTERM elsewhere), then killed after
 Deployments default `deploy.installCommand` per runtime when it is empty
 (`npm ci --omit=dev`, `bun install --production`, `deno install`,
 `python -m pip install -r requirements.txt`, none for dotnet and custom); a
-python release gets its own virtual environment (`python -m venv`) before
-the install command, which runs with it first on `PATH`.
+python release gets its own virtual environment (`python -I -m venv`) before
+the install command, which runs with it first on `PATH`; the default python
+install command runs as `<venv>\Scripts\python.exe -I -X utf8 -m pip install
+-r requirements.txt` (isolated: modules in the release cannot stand in for
+`venv` or `pip`). The environment's creation and the install and build
+commands run as the site's `node.runAs` account when it is enabled (in a Job
+Object, `TEMP`/`TMP` = `sites\<id>\.tmp`; the deployment log says `commands
+run as <account>`), as the service otherwise.
 
 | Method | Path | Role | Response |
 |---|---|---|---|
-| GET | `/api/runtimes` | any signed-in user (a catalog) | `{bun: Managed, deno: Managed, python: Interpreter[], dotnet: {host, runtimes: [{name, version, path}]} \| null, defaults: {bun?, deno?, python?, dotnet?}}`; `Managed` = `{system: {version, path} \| null, installed: [{version, path, status, progress, error?, isDefault}]}` like `/api/node/versions`; `Interpreter` = `{version, path, source: py\|path\|folder, isDefault}`. Detection is cached for a minute |
+| GET | `/api/runtimes` | any signed-in user (a catalog) | `{bun: Managed, deno: Managed, python: Interpreter[], dotnet: {host, runtimes: [{name, version, path}]} \| null, defaults: {bun?, deno?, python?, dotnet?}}`; `Managed` = `{system: {version, path} \| null, installed: [{version, path, status, progress, error?, isDefault}]}` like `/api/node/versions`; `Interpreter` = `{version, path, source: py\|registry\|path\|folder, isDefault}`. Detection runs every interpreter and host it finds, so only a server admin's request starts one (cached for a minute); anyone else gets what the last detection found, however old (nothing before the first). For a site-scoped caller every `path` and `host` is `""`, and a default that is a path is left out |
 | POST | `/api/runtimes/refresh` | admin | the same, detected again now |
 | GET | `/api/runtimes/{bun\|deno}/available` | viewer | `[{version, date}]` stable releases for this platform with a published SHA-256, newest first (GitHub; cached an hour) |
 | POST | `/api/runtimes/{bun\|deno}/versions` | admin | `{version}` → 202; downloaded and verified in the background (events `runtime.installed` / `runtime.failed`; audit `runtime.install`) |
@@ -251,6 +257,20 @@ the install command, which runs with it first on `PATH`.
 Python and .NET are found, never installed (404 for `/api/runtimes/python/...`).
 Server defaults are `settings.runtimes` (`PUT /api/settings`; 422
 `runtimes.<runtime>` for a value a site could not use).
+
+NodeHoster runs what it finds as SYSTEM (to ask its version, and for
+deployments), so it only uses programs that no account but SYSTEM,
+Administrators and TrustedInstaller can change: the program, the files and
+folders next to it (for Python also `Lib`, `Lib\site-packages` and `DLLs`),
+and nothing on the way to it that another account could rename or delete,
+or whose permissions or owner it could change. The others are left out of
+`/api/runtimes` (the server log says why, once), never run, and a
+`runtimeVersion` or server default naming one by path makes the site's
+start and deployments fail with that reason. Python in `C:\Python3xx`
+(which inherits from `C:\` that every signed-in user may change what it
+holds), or Bun/Deno/.NET/Python in a user's profile on the machine PATH, is
+refused; install for all users, into Program Files. Only a server admin can
+set `runtimeVersion` (site `POST`/`PUT`) or `settings.runtimes`.
 
 ### Background workers
 

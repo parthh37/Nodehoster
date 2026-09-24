@@ -71,10 +71,15 @@ type Deployer struct {
 	mu      sync.Mutex
 	running map[string]string // siteID -> deployment id
 	logs    map[string]*depLog
+
+	// runAsAccount runs a command as a site's run-as account
+	// (procmgr.RunAs); tests, which cannot log on as another account,
+	// replace it.
+	runAsAccount func(ctx context.Context, cmd *exec.Cmd, runAs model.RunAsConfig, password, siteDir string) error
 }
 
 func New(opts Options) *Deployer {
-	return &Deployer{opts: opts, running: map[string]string{}, logs: map[string]*depLog{}}
+	return &Deployer{opts: opts, running: map[string]string{}, logs: map[string]*depLog{}, runAsAccount: procmgr.RunAs}
 }
 
 // depLog is a deployment's output: written to a file and streamed live.
@@ -347,6 +352,15 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 	if err := os.MkdirAll(filepath.Dir(dep.ReleaseDir), 0o750); err != nil {
 		return err
 	}
+	// The service fills the release; a run-as account, which can change
+	// what is in the site's folder, cannot reach it until the commands
+	// that run as that account (see createClosedRelease).
+	ra, asAccount := runAs(site)
+	if asAccount {
+		if err := createClosedRelease(dep.ReleaseDir); err != nil {
+			return fmt.Errorf("create the release folder: %w", err)
+		}
+	}
 	if err := fetch(); err != nil {
 		return err
 	}
@@ -361,7 +375,20 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 	if err != nil {
 		return err
 	}
-	if env, err = d.prepareVenv(ctx, site, workDir, env, l); err != nil {
+	if asAccount {
+		if err := openRelease(dep.ReleaseDir); err != nil {
+			return fmt.Errorf("give %s access to the release: %w", ra.Username, err)
+		}
+		// The service's temporary folder may be closed to the account.
+		tmp := filepath.Join(d.opts.SitesDir, site.ID, ".tmp")
+		if err := os.MkdirAll(tmp, 0o750); err != nil {
+			return err
+		}
+		env = append(env, "TEMP="+tmp, "TMP="+tmp, "TMPDIR="+tmp)
+		l.printf("commands run as %s", ra.Username)
+	}
+	env, python, err := d.prepareVenv(ctx, site, workDir, env, l)
+	if err != nil {
 		return err
 	}
 	for _, step := range []struct{ name, cmd string }{
@@ -375,9 +402,13 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 			l.printf("%s", msg)
 			continue
 		}
-		l.printf("%s: %s", step.name, step.cmd)
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		err := runShell(cctx, l, workDir, env, step.cmd)
+		cmd, shown := shellCommand(cctx, step.cmd), step.cmd
+		if c := isolatedInstall(cctx, site, step.cmd, python); step.name == "install" && c != nil {
+			cmd, shown = c, strings.Join(c.Args, " ")
+		}
+		l.printf("%s: %s", step.name, shown)
+		err := d.siteCommand(cctx, site, l, workDir, env, cmd)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("%s command failed: %w", step.name, err)
@@ -580,11 +611,37 @@ func runCmd(ctx context.Context, out io.Writer, dir string, env []string, name s
 	return cmd.Run()
 }
 
-func runShell(ctx context.Context, out io.Writer, dir string, env []string, command string) error {
-	if runtime.GOOS == "windows" {
-		return runShellWindows(ctx, out, dir, env, command)
+// runAs is the run-as account of a site that has one: its instances and
+// its deployments' commands run as that account.
+func runAs(site *model.Site) (model.RunAsConfig, bool) {
+	if site.RunsNode() && site.Node.RunAs.Enabled {
+		return site.Node.RunAs, true
 	}
-	return runCmd(ctx, out, dir, env, "sh", "-c", command)
+	return model.RunAsConfig{}, false
+}
+
+// siteCommand runs a command of a site's deployment in dir: the virtual
+// environment's creation, the install and build commands. They run the
+// application's own code (package scripts, build targets, setup.py), so
+// for a site with a run-as account they run as that account, like its
+// instances, in a Job Object; the caches they use in the site's folder are
+// the account's to change, and must not be trusted by SYSTEM. Without one
+// they run as the service, as the site's instances do.
+func (d *Deployer) siteCommand(ctx context.Context, site *model.Site, out io.Writer, dir string, env []string, cmd *exec.Cmd) error {
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, env, out, out
+	cmd.WaitDelay = 10 * time.Second
+	if ra, ok := runAs(site); ok {
+		return d.runAsAccount(ctx, cmd, ra, d.opts.Box.MustUnseal(ra.Password), filepath.Join(d.opts.SitesDir, site.ID))
+	}
+	return cmd.Run()
+}
+
+// program is the command running a program with arguments, without a
+// console window.
+func program(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	hideWindow(cmd)
+	return cmd
 }
 
 func fileExists(p string) bool {

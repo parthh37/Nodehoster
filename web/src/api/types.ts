@@ -1045,7 +1045,7 @@ export interface ManagedRuntime {
 export interface PythonInterpreter {
   version: string;
   path: string;
-  /** py (the py launcher) | path | folder */
+  /** py (the py launcher) | registry | path | folder */
   source: string;
   isDefault: boolean;
 }

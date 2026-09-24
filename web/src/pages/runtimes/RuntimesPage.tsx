@@ -344,7 +344,9 @@ function PythonCard({ report, isAdmin, onDefault }: { report: RuntimeReport; isA
                     )}
                   </div>
                 </Td>
-                <Td className="text-xs text-zinc-500">{p.source === 'py' ? 'py launcher' : p.source === 'path' ? 'PATH' : 'standard folder'}</Td>
+                <Td className="text-xs text-zinc-500">
+                  {p.source === 'py' ? 'py launcher' : p.source === 'registry' ? 'registry' : p.source === 'path' ? 'PATH' : 'standard folder'}
+                </Td>
                 <Td>
                   <Mono className="text-zinc-500">{p.path}</Mono>
                 </Td>

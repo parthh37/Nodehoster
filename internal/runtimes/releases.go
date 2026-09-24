@@ -30,6 +30,14 @@ type Available struct {
 // source describes where a managed runtime's releases come from: GitHub
 // releases of its project, one zip per platform, with a SHA-256 either in
 // the release's asset metadata or in a checksum file next to the zip.
+//
+// The checksum comes from the same release as the zip, so it catches a
+// corrupt or truncated download, not a release someone with access to the
+// project's GitHub account or build replaced, zip and checksum alike.
+// Deno does not sign its releases. Bun publishes a PGP signature of
+// SHASUMS256.txt (SHASUMS256.txt.asc), not checked here: that would take an
+// OpenPGP implementation and Bun's key pinned in NodeHoster. The README
+// says as much.
 type source struct {
 	label      string
 	repo       string

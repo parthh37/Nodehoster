@@ -1,10 +1,14 @@
 // Package runtimes provides the runtimes other than Node.js that sites can
 // run with. Bun and Deno are installed side by side into the data folder,
 // like Node.js versions (nodeversions), from their official GitHub
-// releases with the published SHA-256 checked; each site can pin a
-// version. Python and .NET are found where they are installed (the py
-// launcher, PATH, the standard folders) and never installed by NodeHoster:
-// they come with system-wide installers and updates of their own.
+// releases with the published SHA-256 checked (which catches a corrupt
+// download; the checksum comes from the same release, so it is no proof of
+// who built it); each site can pin a version. Python and .NET are found
+// where they are installed (the py launcher, the registry, PATH, the
+// standard folders) and never installed by NodeHoster: they come with
+// system-wide installers and updates of their own. NodeHoster runs what it
+// finds as SYSTEM, so it only uses (and only ever runs) programs no one but
+// administrators can change.
 package runtimes
 
 import (
@@ -23,6 +27,7 @@ import (
 
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 // Installed is a managed Bun or Deno version (or an install in progress
@@ -52,7 +57,7 @@ type Managed struct {
 type Interpreter struct {
 	Version   string `json:"version"`
 	Path      string `json:"path"`
-	Source    string `json:"source"` // py (the py launcher) | path | folder
+	Source    string `json:"source"` // py (the py launcher) | registry | path | folder
 	IsDefault bool   `json:"isDefault"`
 }
 
@@ -101,10 +106,18 @@ type Manager struct {
 	output       func(ctx context.Context, exe string, args ...string) ([]byte, error)
 	getenv       func(string) string
 	glob         func(string) ([]string, error)
+	stat         func(string) error
+	// trusted checks that only administrators can change a program found
+	// on the server before it is run (winacl.CheckProgram).
+	trusted func(exe string, dirs ...string) error
+	// registryPythons lists the interpreters registered for all users
+	// (HKLM, PEP 514); Windows only.
+	registryPythons func() []string
 
-	mu    sync.Mutex
-	jobs  map[string]*Installed // runtime/version -> install in progress or failed
-	avail map[string]availCache
+	mu      sync.Mutex
+	jobs    map[string]*Installed // runtime/version -> install in progress or failed
+	avail   map[string]availCache
+	refused map[string]bool // programs not used, already logged
 
 	detectMu sync.Mutex
 	detected map[string]*detectEntry // bun, deno, python, dotnet
@@ -113,8 +126,9 @@ type Manager struct {
 // detectEntry is one kind of detection, run by one caller at a time: a
 // slow Python detection does not hold up resolving Bun or .NET.
 type detectEntry struct {
-	mu sync.Mutex
-	d  detection
+	mu   sync.Mutex
+	d    detection
+	last detection // d, readable under detectMu while a detection runs
 }
 
 type availCache struct {
@@ -146,9 +160,16 @@ func New(dir, tmp string, log *slog.Logger) *Manager {
 		output:   runOutput,
 		getenv:   os.Getenv,
 		glob:     filepath.Glob,
-		jobs:     map[string]*Installed{},
-		avail:    map[string]availCache{},
-		detected: map[string]*detectEntry{},
+		stat: func(p string) error {
+			_, err := os.Stat(p)
+			return err
+		},
+		trusted:         winacl.CheckProgram,
+		registryPythons: registryPythons,
+		jobs:            map[string]*Installed{},
+		avail:           map[string]availCache{},
+		refused:         map[string]bool{},
+		detected:        map[string]*detectEntry{},
 	}
 }
 
@@ -158,13 +179,33 @@ func runOutput(ctx context.Context, exe string, args ...string) ([]byte, error) 
 	return cmd.Output()
 }
 
-// Report gathers the state of every runtime.
+// Report gathers the state of every runtime, detecting what was not
+// detected within the last minute.
 func (m *Manager) Report(defaults model.RuntimeDefaults) Report {
+	return m.report(defaults, m.System(model.RuntimeBun), m.System(model.RuntimeDeno), m.Python(), m.Dotnet())
+}
+
+// CachedReport is Report from what the last detections found, however old,
+// without running one: for callers who may not make the server run
+// programs (a detection runs every interpreter it finds). What was never
+// detected is reported as not found.
+func (m *Manager) CachedReport(defaults model.RuntimeDefaults) Report {
+	var dotnet *Dotnet
+	if d := m.peek(model.RuntimeDotnet).dotnet; d != nil {
+		c := *d
+		c.Runtimes = append([]DotnetRuntime(nil), d.Runtimes...)
+		dotnet = &c
+	}
+	return m.report(defaults, m.peek(model.RuntimeBun).system, m.peek(model.RuntimeDeno).system,
+		append([]Interpreter{}, m.peek(model.RuntimePython).python...), dotnet)
+}
+
+func (m *Manager) report(defaults model.RuntimeDefaults, bun, deno *System, python []Interpreter, dotnet *Dotnet) Report {
 	r := Report{
-		Bun:      Managed{System: m.System(model.RuntimeBun), Installed: m.List(model.RuntimeBun, defaults.Bun)},
-		Deno:     Managed{System: m.System(model.RuntimeDeno), Installed: m.List(model.RuntimeDeno, defaults.Deno)},
-		Python:   m.Python(),
-		Dotnet:   m.Dotnet(),
+		Bun:      Managed{System: bun, Installed: m.List(model.RuntimeBun, defaults.Bun)},
+		Deno:     Managed{System: deno, Installed: m.List(model.RuntimeDeno, defaults.Deno)},
+		Python:   python,
+		Dotnet:   dotnet,
 		Defaults: defaults,
 	}
 	if in, err := pickPython(r.Python, defaults.Python); err == nil {
@@ -173,6 +214,45 @@ func (m *Manager) Report(defaults model.RuntimeDefaults) Report {
 		}
 	}
 	return r
+}
+
+// WithoutPaths is the report with every file system path left out (and
+// defaults that are paths), for a caller who may know which runtimes the
+// server has but not where they are: a user with access to some sites.
+func (r Report) WithoutPaths() Report {
+	strip := func(m Managed) Managed {
+		c := Managed{Installed: make([]Installed, len(m.Installed))}
+		if m.System != nil {
+			c.System = &System{Version: m.System.Version}
+		}
+		for i, in := range m.Installed {
+			in.Path = ""
+			c.Installed[i] = in
+		}
+		return c
+	}
+	out := r
+	out.Bun, out.Deno = strip(r.Bun), strip(r.Deno)
+	out.Python = make([]Interpreter, len(r.Python))
+	for i, in := range r.Python {
+		in.Path = ""
+		out.Python[i] = in
+	}
+	if r.Dotnet != nil {
+		d := &Dotnet{Runtimes: make([]DotnetRuntime, len(r.Dotnet.Runtimes))}
+		for i, rt := range r.Dotnet.Runtimes {
+			rt.Path = ""
+			d.Runtimes[i] = rt
+		}
+		out.Dotnet = d
+	}
+	if model.RuntimeVersionIsPath(out.Defaults.Python) {
+		out.Defaults.Python = ""
+	}
+	if model.RuntimeVersionIsPath(out.Defaults.Dotnet) {
+		out.Defaults.Dotnet = ""
+	}
+	return out
 }
 
 // Refresh forgets what was detected, so the next look runs the detection
@@ -214,10 +294,17 @@ func (m *Manager) resolveManaged(rt, version string) (procmgr.RuntimeExe, error)
 	return procmgr.RuntimeExe{Version: version, Exe: exe}, nil
 }
 
+// resolvePython finds a site's interpreter: the newest detected of a
+// version, or the one an administrator set by path. That one is refused,
+// like those detection leaves out, when other accounts than administrators
+// can change it: the site's deployments run it as SYSTEM.
 func (m *Manager) resolvePython(version string) (procmgr.RuntimeExe, error) {
 	if model.RuntimeVersionIsPath(version) {
-		if _, err := os.Stat(version); err != nil {
+		if m.stat(version) != nil {
 			return procmgr.RuntimeExe{}, fmt.Errorf("the Python interpreter %s does not exist", version)
+		}
+		if err := m.usable(model.RuntimePython, version); err != nil {
+			return procmgr.RuntimeExe{}, err
 		}
 		return procmgr.RuntimeExe{Version: m.pythonVersion(version), Exe: version}, nil
 	}
@@ -228,10 +315,16 @@ func (m *Manager) resolvePython(version string) (procmgr.RuntimeExe, error) {
 	return procmgr.RuntimeExe{Version: in.Version, Exe: in.Path}, nil
 }
 
+// resolveDotnet finds the .NET host: the one detected, or the one an
+// administrator set by path, refused like Python's when other accounts
+// than administrators can change it.
 func (m *Manager) resolveDotnet(host string) (procmgr.RuntimeExe, error) {
 	if host != "" {
-		if _, err := os.Stat(host); err != nil {
+		if m.stat(host) != nil {
 			return procmgr.RuntimeExe{}, fmt.Errorf("the .NET host %s does not exist", host)
+		}
+		if err := m.usable(model.RuntimeDotnet, host); err != nil {
+			return procmgr.RuntimeExe{}, err
 		}
 		return procmgr.RuntimeExe{Exe: host, Version: newestNetCore(m.dotnetRuntimes(host))}, nil
 	}
@@ -254,12 +347,20 @@ func newestNetCore(list []DotnetRuntime) string {
 	return best
 }
 
-// System reports the bun or deno found on PATH, if any.
+// System reports the bun or deno found on PATH, if any, when only
+// administrators can change it (see usable): one a user installed in their
+// profile and added to the machine's PATH is not run as SYSTEM.
 func (m *Manager) System(rt string) *System {
 	return m.cached(rt, func() detection {
 		d := detection{}
 		p, err := m.lookPath(rt)
 		if err != nil {
+			return d
+		}
+		if !model.RuntimeVersionIsPath(p) {
+			p, _ = filepath.Abs(p)
+		}
+		if m.usable(rt, p) != nil {
 			return d
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -272,8 +373,7 @@ func (m *Manager) System(rt string) *System {
 		if v == "" {
 			return d
 		}
-		abs, _ := filepath.Abs(p)
-		d.system = &System{Version: v, Path: abs}
+		d.system = &System{Version: v, Path: p}
 		return d
 	}).system
 }
@@ -296,7 +396,21 @@ func (m *Manager) cached(key string, detect func() detection) detection {
 	d := detect()
 	d.at = time.Now()
 	e.d = d
+	m.detectMu.Lock()
+	e.last = d
+	m.detectMu.Unlock()
 	return d
+}
+
+// peek is the last detection of a kind, however old, without running one;
+// zero when there was none since the last Refresh.
+func (m *Manager) peek(key string) detection {
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
+	if e := m.detected[key]; e != nil {
+		return e.last
+	}
+	return detection{}
 }
 
 var errNotManaged = errors.New("only Bun and Deno are installed by NodeHoster")

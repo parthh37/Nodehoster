@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -90,45 +91,75 @@ func (d *Deployer) runtimeEnv(site *model.Site, env []string) ([]string, error) 
 // prepareVenv creates a python site's virtual environment in the release
 // (each release has its own, so a rollback gets the packages it was
 // deployed with and a running release is never changed under it) and
-// activates it for the install and build commands. Nothing is created
-// when the release has nothing to install.
-func (d *Deployer) prepareVenv(ctx context.Context, site *model.Site, workDir string, env []string, l *depLog) ([]string, error) {
+// activates it for the install and build commands; python is the
+// environment's interpreter. Nothing is created when the release has
+// nothing to install (python is "").
+func (d *Deployer) prepareVenv(ctx context.Context, site *model.Site, workDir string, env []string, l *depLog) (_ []string, python string, _ error) {
 	if siteRuntime(site) != model.RuntimePython || missingManifest(model.RuntimePython, workDir) != "" {
-		return env, nil
+		return env, "", nil
 	}
 	venv := model.DefaultVenv
 	if p := site.Node.Python; p != nil && p.Venv != "" {
 		venv = p.Venv
 	}
 	dir := filepath.Join(workDir, filepath.FromSlash(strings.ReplaceAll(venv, `\`, "/")))
-	scripts := filepath.Join(dir, "bin")
+	scripts, python := filepath.Join(dir, "bin"), "python"
 	if runtime.GOOS == "windows" {
-		scripts = filepath.Join(dir, "Scripts")
+		scripts, python = filepath.Join(dir, "Scripts"), "python.exe"
 	}
 	if d.opts.ResolveRuntime == nil {
-		return nil, fmt.Errorf("%s is not available on this server", model.RuntimeLabel(model.RuntimePython))
+		return nil, "", fmt.Errorf("%s is not available on this server", model.RuntimeLabel(model.RuntimePython))
 	}
 	exe, err := d.opts.ResolveRuntime(model.RuntimePython, site.Node.RuntimeVersion)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// A release is new, so an environment already in it came with the
 	// upload or the repository: made on another computer, for another
 	// interpreter. It is replaced rather than trusted.
-	args := []string{"-m", "venv", dir}
+	args := venvArgs(dir)
 	if fileExists(filepath.Join(dir, "pyvenv.cfg")) {
-		args = []string{"-m", "venv", "--clear", dir}
+		args = append(args[:len(args)-1], "--clear", dir)
 		l.printf("venv: replacing the virtual environment that came with the release")
 	}
-	l.printf("venv: %s -m venv %s", exe.Exe, venv)
+	l.printf("venv: %s -I -m venv %s", exe.Exe, venv)
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	err = runCmd(cctx, l, workDir, env, exe.Exe, args...)
+	err = d.siteCommand(cctx, site, l, workDir, env, program(cctx, exe.Exe, args...))
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("create the virtual environment: %w", err)
+		return nil, "", fmt.Errorf("create the virtual environment: %w", err)
 	}
 	env = prependPath(env, scripts)
-	return append(env, "VIRTUAL_ENV="+dir), nil
+	return append(env, "VIRTUAL_ENV="+dir), filepath.Join(scripts, python), nil
+}
+
+// Python puts the current folder first on sys.path for `python -m`, and
+// the commands NodeHoster runs for a Python release run in the release: a
+// venv.py or pip.py in the upload or the repository would be what
+// `python -m venv` or `python -m pip` runs, before the install step has
+// even looked at requirements.txt. Isolated mode (-I: no current folder or
+// script folder on sys.path, no PYTHON* variables, no user site-packages;
+// Python 3.4 and later) keeps them out; -X utf8 stands in for PYTHONUTF8,
+// which -I ignores. And cmd.exe looks for a program in the current folder
+// before PATH, so the interpreter is run by its full path, not through the
+// shell: a python.bat in the release is not it either.
+
+// venvArgs are the interpreter's arguments that create a virtual
+// environment in dir (venv runs ensurepip isolated itself).
+func venvArgs(dir string) []string {
+	return []string{"-I", "-m", "venv", dir}
+}
+
+// isolatedInstall is the command the install step runs: for a python
+// site whose install command is the default one (python -m pip install -r
+// requirements.txt, NodeHoster's own), the virtual environment's
+// interpreter python in isolated mode; nil for any other command, which
+// runs through the shell as it is set.
+func isolatedInstall(ctx context.Context, site *model.Site, command, python string) *exec.Cmd {
+	if siteRuntime(site) != model.RuntimePython || python == "" || command != model.DefaultInstallCommand(model.RuntimePython) {
+		return nil
+	}
+	return program(ctx, python, "-I", "-X", "utf8", "-m", "pip", "install", "-r", "requirements.txt")
 }
 
 // installSkipMessage says why the install step is skipped for a release
