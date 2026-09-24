@@ -207,7 +207,7 @@ function StoreDialog({
     setRef('');
     setResult(null);
   }, [value]);
-  const problem = storeProblem(d, others);
+  const problem = storeProblem(d, others, value);
   const err = (field: string) => (touched && problem?.field === field ? problem.message : null);
   const refErr = ref.trim() ? refProblem(d.type, ref) : null;
   const test = useMutation({
@@ -256,7 +256,7 @@ function StoreDialog({
             <Field
               label={d.type === 'vault' ? 'Address' : 'Server URL'}
               error={err('url')}
-              hint={d.type === 'vault' ? 'Vault or OpenBao, e.g. https://vault.example.com:8200' : `Empty for Infisical Cloud (${DEFAULT_INFISICAL_URL}); EU: https://eu.infisical.com`}
+              hint={d.type === 'vault' ? 'Vault or OpenBao over https (http:// only on localhost), e.g. https://vault.example.com:8200' : `Empty for Infisical Cloud (${DEFAULT_INFISICAL_URL}); EU: https://eu.infisical.com. Self-hosted: https (http:// only on localhost).`}
             >
               <Input mono value={d.url} onChange={(e) => setD({ ...d, url: e.target.value.trim() })} placeholder={d.type === 'vault' ? 'https://vault.example.com:8200' : DEFAULT_INFISICAL_URL} />
             </Field>
@@ -343,7 +343,7 @@ function StoreDialog({
               />
             </Field>
             {bwMode === 'selfhosted' && (
-              <Field label="Server URL" error={err('url')} hint="The base URL of the Bitwarden server; its API and identity server are at /api and /identity.">
+              <Field label="Server URL" error={err('url')} hint="The base URL of the Bitwarden server, https (http:// only on localhost); its API and identity server are at /api and /identity.">
                 <Input mono value={d.url} onChange={(e) => setD({ ...d, url: e.target.value.trim() })} placeholder="https://bitwarden.example.com" />
               </Field>
             )}
@@ -376,7 +376,14 @@ function StoreDialog({
           </Callout>
         )}
         {(d.vault?.token === SECRET || d.vault?.secretId === SECRET || d.infisical?.clientSecret === SECRET || d.bitwarden?.accessToken === SECRET) && (
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">Stored credentials are used for the test until you replace them.</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Stored credentials are used for the test until you replace them, and only with the server they were entered for.
+          </p>
+        )}
+        {touched && problem && (problem.field === 'bitwarden.apiUrl' || problem.field === 'bitwarden.identityUrl') && (
+          <p className="text-xs text-red-600 dark:text-red-400">
+            {problem.field === 'bitwarden.apiUrl' ? 'API URL' : 'Identity URL'}: {problem.message}
+          </p>
         )}
       </div>
     </Dialog>

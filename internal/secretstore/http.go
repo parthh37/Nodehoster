@@ -42,7 +42,23 @@ func newHTTPClient(caPEM string) (*http.Client, error) {
 	}
 	tr.ResponseHeaderTimeout = requestTimeout
 	tr.MaxIdleConnsPerHost = 4
-	return &http.Client{Transport: tr, Timeout: requestTimeout}, nil
+	return &http.Client{Transport: tr, Timeout: requestTimeout, CheckRedirect: checkRedirect}, nil
+}
+
+// checkRedirect follows a redirect only to the same scheme, host and port.
+// Requests carry credentials in headers Go keeps on redirects
+// (X-Vault-Token, bearer tokens) and in bodies it sends again on a 307 or
+// 308 (AppRole secret IDs, client secrets): a redirect to another server,
+// or from https to http, would hand them over.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("the store redirected too many times")
+	}
+	from := via[0].URL
+	if !strings.EqualFold(req.URL.Scheme, from.Scheme) || !strings.EqualFold(req.URL.Host, from.Host) {
+		return fmt.Errorf("the store redirected to %s://%s, another server: NodeHoster does not send credentials there (use that address as the store's URL if it is the right one)", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
 }
 
 // expiry publishes when a provider's session ends, for Status, without
@@ -183,6 +199,25 @@ func errMsg(raw []byte) string {
 		msg = msg[:300] + "…"
 	}
 	return msg
+}
+
+// refusedError marks a refusal of NodeHoster's credentials that is not a
+// 401 or 403 (Bitwarden's identity server answers 400 invalid_client).
+type refusedError struct{ error }
+
+func (e refusedError) Unwrap() error { return e.error }
+
+// IsRefused reports whether err is the store refusing NodeHoster's
+// credentials or access to a secret (HTTP 401 or 403): the credentials
+// were revoked or expired, or the policy changed. Unlike an outage, the
+// last known value is then only used for a while (AuthFailGrace).
+func IsRefused(err error) bool {
+	var r refusedError
+	if errors.As(err, &r) {
+		return true
+	}
+	s := statusOf(err)
+	return s == http.StatusUnauthorized || s == http.StatusForbidden
 }
 
 // statusOf is the HTTP status of a store's error answer, or 0.

@@ -7,6 +7,8 @@ import {
   normalizeSecretStores,
   parseRefText,
   refProblem,
+  reservedEnvName,
+  sameStoreServer,
   storeHealth,
   storeProblem,
   storeSummary,
@@ -87,6 +89,34 @@ describe('stores', () => {
     bw.bitwarden.region = '';
     expect(storeProblem(bw)?.field).toBe('bitwarden.region');
     expect(storeProblem({ ...bw, url: 'https://bw.example.com' })).toBeNull();
+  });
+
+  it('wants https except on this machine', () => {
+    expect(storeProblem(vault({ url: 'http://vault.example.com:8200' }))?.message).toMatch(/https/);
+    expect(storeProblem(vault({ url: 'http://10.0.0.5:8200' }))?.field).toBe('url');
+    expect(storeProblem(vault({ url: 'http://127.0.0.1:8200' }))).toBeNull();
+    expect(storeProblem(vault({ url: 'http://localhost:8200' }))).toBeNull();
+    expect(storeProblem(vault({ url: 'http://[::1]:8200' }))).toBeNull();
+    const bw = { ...newStore('bitwarden'), name: 'bw' };
+    bw.bitwarden = { ...bw.bitwarden!, accessToken: TOKEN, apiUrl: 'http://bw.example.com/api', identityUrl: 'https://bw.example.com/identity' };
+    expect(storeProblem(bw)?.field).toBe('bitwarden.apiUrl');
+  });
+
+  it('asks for saved credentials again when the server changes', () => {
+    const saved = vault({ id: 'v1', vault: { ...vault().vault!, token: '__SECRET__' } });
+    expect(sameStoreServer(saved, { ...saved, url: 'https://VAULT.example.com:8200' })).toBe(true);
+    expect(storeProblem({ ...saved, cacheTtlSec: 60 }, [], saved)).toBeNull();
+    expect(storeProblem({ ...saved, url: 'https://evil.example.com' }, [], saved)?.field).toBe('vault.token');
+    // Entered again: fine.
+    expect(storeProblem({ ...saved, url: 'https://evil.example.com', vault: { ...saved.vault!, token: 'new' } }, [], saved)).toBeNull();
+    const bw = { ...newStore('bitwarden'), id: 'b1', name: 'bw' };
+    bw.bitwarden = { ...bw.bitwarden!, accessToken: '__SECRET__' };
+    expect(storeProblem({ ...bw, bitwarden: { ...bw.bitwarden, region: 'eu' } }, [], bw)?.field).toBe('bitwarden.accessToken');
+  });
+
+  it('knows the variables NodeHoster sets', () => {
+    for (const n of ['PORT', 'port', 'NODE_OPTIONS', 'ASPNETCORE_URLS', 'NODE_APP_INSTANCE', 'NODEHOSTER_AGENT_TOKEN']) expect(reservedEnvName(n)).toBe(true);
+    expect(reservedEnvName('DATABASE_URL')).toBe(false);
   });
 
   it('summarizes stores', () => {

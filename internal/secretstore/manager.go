@@ -66,6 +66,11 @@ const (
 	pruneEvery    = time.Hour
 	eventEvery    = 10 * time.Minute // at most one stale-value event per store this often
 	recordGrace   = 10 * time.Minute // a start's record survives this long before its site must be running
+	// AuthFailGrace is how long after it was last read a value is still
+	// used when its store refuses NodeHoster's credentials (401 or 403):
+	// unlike an outage, a refusal can mean access was revoked on purpose,
+	// so the last known value is not used for ever.
+	AuthFailGrace = time.Hour
 )
 
 type Options struct {
@@ -74,13 +79,16 @@ type Options struct {
 	Unseal func(string) (string, error)
 	// Event reports an event (level info, warning or error).
 	Event func(level, typ, siteID, msg string)
-	// Watched returns the references of every running site's processes
-	// (site ID → references): those whose change recycles the site.
+	// Watched returns the references of every running group of processes
+	// (key → references): those whose change recycles the group. A key is
+	// what ResolveOptions.Key records under: a site's production, or one
+	// of its deployment slots (model.SlotKey).
 	Watched func() map[string][]model.SecretRef
-	// Changed is called when secrets a running site started with have
-	// changed in their store (refs in text form): the site is recycled.
-	// It is called from Run's goroutine and must not block for long.
-	Changed func(siteID string, refs []string)
+	// Changed is called when secrets a running group of processes started
+	// with have changed in their store (refs in text form): the group is
+	// recycled. It is called from Run's goroutine and must not block for
+	// long.
+	Changed func(key string, refs []string)
 	// References lists every reference in the configuration; values no
 	// longer referenced are forgotten.
 	References func() []model.SecretRef
@@ -123,7 +131,7 @@ type Manager struct {
 	mu        sync.Mutex
 	stores    map[string]*storeState
 	cache     map[refKey]*entry
-	started   map[string]siteRecord // site → the values its processes started with
+	started   map[string]siteRecord // key (site or slot) → the values its processes started with
 	lastEvent map[string]time.Time
 	lastPrune time.Time
 }
@@ -279,10 +287,12 @@ type ResolveOptions struct {
 	// Fresh reads every value from its store even when a recent one is in
 	// memory (checks and tests); an unreachable store still falls back.
 	Fresh bool
-	// Record remembers the values as those SiteID's processes run with,
-	// for recycling the site when one changes.
+	// Record remembers the values as those Key's processes run with, for
+	// recycling them when one changes. Key is a site's production or one
+	// of its deployment slots (model.SlotKey): each has its own record, so
+	// that a slot starting does not replace what production started with.
 	Record bool
-	SiteID string
+	Key    string
 }
 
 // ResolveError is a reference that could not be read.
@@ -297,8 +307,10 @@ func (e *ResolveError) Unwrap() error { return e.Err }
 // Resolve reads references. Values in memory younger than their store's
 // cache TTL are used as they are; others are read from the store, and when
 // that fails for any reason other than the secret not existing, the last
-// value read is used (with a secret.stale event). Without one, the
-// reference fails. The first failure is returned.
+// value read is used (with a secret.stale event) — when the store refused
+// the credentials, only for AuthFailGrace after that value was read (with
+// a secret.failed event). Without one, the reference fails. The first
+// failure is returned.
 func (m *Manager) Resolve(ctx context.Context, refs []model.SecretRef, o ResolveOptions) (map[model.SecretRef]string, error) {
 	byStore := map[string][]string{}
 	for _, r := range refs {
@@ -321,8 +333,8 @@ func (m *Manager) Resolve(ctx context.Context, refs []model.SecretRef, o Resolve
 			out[model.SecretRef{Store: name, Ref: ref}] = v
 		}
 	}
-	if o.Record && o.SiteID != "" {
-		m.record(o.SiteID, out)
+	if o.Record && o.Key != "" {
+		m.record(o.Key, out)
 	}
 	return out, nil
 }
@@ -380,6 +392,7 @@ func (m *Manager) resolveStore(ctx context.Context, name string, refs []string, 
 	current := m.stores[name] == st // not reconfigured meanwhile
 	var stale []string
 	var outage error
+	refused := false
 	for i, ref := range need {
 		k := refKey{name, ref}
 		r := res[i]
@@ -396,7 +409,22 @@ func (m *Manager) resolveStore(ctx context.Context, name string, refs []string, 
 			return nil, &ResolveError{model.SecretRef{Store: name, Ref: ref}, r.err}
 		default:
 			outage = r.err
-			if e := m.cache[k]; e != nil && current {
+			e := m.cache[k]
+			// A refusal of the credentials may be a revocation: the last
+			// value is only used for AuthFailGrace after it was read, and
+			// then forgotten (a later outage does not bring it back).
+			if IsRefused(r.err) {
+				refused = true
+				if e != nil && now.Sub(e.fetched) >= AuthFailGrace {
+					delete(m.cache, k)
+					if current {
+						st.lastErr, st.lastErrAt = r.err.Error(), now
+					}
+					m.mu.Unlock()
+					return nil, &ResolveError{model.SecretRef{Store: name, Ref: ref}, fmt.Errorf("store %q refused NodeHoster's credentials and the last value read is more than %s old: %w", name, AuthFailGrace, r.err)}
+				}
+			}
+			if e != nil && current {
 				e.used = now
 				vals[ref] = e.value
 				stale = append(stale, ref)
@@ -412,9 +440,16 @@ func (m *Manager) resolveStore(ctx context.Context, name string, refs []string, 
 	if outage != nil && current {
 		st.lastErr, st.lastErrAt = outage.Error(), now
 	}
-	report := len(stale) > 0 && m.allowEventLocked("stale\x00"+name, now)
+	kind := "stale"
+	if refused {
+		kind = "refused"
+	}
+	report := len(stale) > 0 && m.allowEventLocked(kind+"\x00"+name, now)
 	m.mu.Unlock()
-	if report {
+	if report && refused {
+		m.opts.Log.Error("secret store refused the credentials; using last known values for a while", "store", name, "refs", len(stale), "err", outage)
+		m.opts.Event("error", events.SecretFailed, "", fmt.Sprintf("Secret store %q refused NodeHoster's credentials (%v); the last known value of %d secret(s) was used, but only for %s after it was read: then processes that need it cannot start", name, outage, len(stale), AuthFailGrace))
+	} else if report {
 		m.opts.Log.Warn("secret store unreachable; using last known values", "store", name, "refs", len(stale), "err", outage)
 		m.opts.Event("warning", events.SecretStale, "", fmt.Sprintf("Secret store %q could not be read (%v); the last known value of %d secret(s) was used", name, outage, len(stale)))
 	}
@@ -459,21 +494,23 @@ func (m *Manager) allowEventLocked(key string, now time.Time) bool {
 	return true
 }
 
-// record remembers what a site's processes started with.
-func (m *Manager) record(siteID string, vals map[model.SecretRef]string) {
+// record remembers what key's processes (a site's or a slot's) started
+// with.
+func (m *Manager) record(key string, vals map[model.SecretRef]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	hs := make(map[refKey][32]byte, len(vals))
 	for r, v := range vals {
 		hs[refKey{r.Store, r.Ref}] = m.hash(v)
 	}
-	m.started[siteID] = siteRecord{at: m.opts.Now(), hashes: hs}
+	m.started[key] = siteRecord{at: m.opts.Now(), hashes: hs}
 }
 
-// Forget drops what is remembered about a site (deleted or stopped).
-func (m *Manager) Forget(siteID string) {
+// Forget drops what is remembered about key's processes (deleted or
+// stopped).
+func (m *Manager) Forget(key string) {
 	m.mu.Lock()
-	delete(m.started, siteID)
+	delete(m.started, key)
 	m.mu.Unlock()
 }
 
@@ -621,8 +658,9 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 }
 
-// watch reads the store's secrets that running sites started with, and
-// has every site whose value changed recycled.
+// watch reads the store's secrets that running sites and slots started
+// with (keyed as Options.Watched), and has every one whose value changed
+// recycled.
 func (m *Manager) watch(ctx context.Context, name string, st *storeState) {
 	if m.opts.Watched == nil {
 		return

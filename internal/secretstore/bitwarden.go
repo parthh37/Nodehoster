@@ -106,7 +106,7 @@ func (c *bitwarden) login(ctx context.Context) error {
 	h.Set("Device-Type", bwDeviceTypeSDK)
 	if err := do(ctx, c.hc, http.MethodPost, c.identity+"/connect/token", h, formBody(form.Encode()), &out); err != nil {
 		if s := statusOf(err); s == http.StatusBadRequest || s == http.StatusUnauthorized {
-			return fmt.Errorf("the access token was refused (revoked, expired, or for another server): %w", err)
+			return refusedError{fmt.Errorf("the access token was refused (revoked, expired, or for another server): %w", err)}
 		}
 		return fmt.Errorf("signing in to %s: %w", c.identity, err)
 	}

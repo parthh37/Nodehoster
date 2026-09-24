@@ -13,7 +13,7 @@ import { Badge } from '@/components/Badge';
 import { ENV_NAME_RE } from '@/lib/siteDefaults';
 import { looksSecret, parseDotEnv } from '@/lib/dotenv';
 import { cn } from '@/lib/cn';
-import { parseRefText, withSource } from '@/lib/secretStores';
+import { parseRefText, reservedEnvName, withSource } from '@/lib/secretStores';
 import { SecretRefInput, useSecretStores } from './SecretRefInput';
 import type { SiteEditorProps } from './types';
 
@@ -241,7 +241,13 @@ function EnvRow({
   const rowErr = useFieldError(path, false);
   const valueErr = useFieldError(`${path}.value`);
   const clientNameErr =
-    v.name && !ENV_NAME_RE.test(v.name) ? 'Letters, digits and _; cannot start with a digit' : dupe ? 'Duplicate name' : null;
+    v.name && !ENV_NAME_RE.test(v.name)
+      ? 'Letters, digits and _; cannot start with a digit'
+      : dupe
+        ? 'Duplicate name'
+        : v.from && reservedEnvName(v.name)
+          ? `${v.name} is set by NodeHoster: it cannot come from a secret store`
+          : null;
   const err = nameErr || clientNameErr || rowErr || valueErr;
   const reserved = !!portAssigned && v.name.toUpperCase() === 'PORT';
   const isStoredSecret = v.value === SECRET;

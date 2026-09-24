@@ -488,22 +488,31 @@ variable editor choose **From secret store** (the vault icon), pick the
 store and name the secret; **Test** asks the server to read it and says
 whether it resolves, without ever showing the value. NodeHoster Manager and
 the command line show a reference as `secretref:<store>/<secret>`, and
-typing that as a variable's value (or pasting it in a `.env`) makes one. A
-git deploy token can be a reference too (**Deployment settings → Read the
-access token from a secret store**).
+typing that as a variable's value (or pasting it in a `.env`) makes one.
+Deployment slots' own variables, the variables previews are given and
+tasks' variables can be references as well; variables NodeHoster sets
+itself (`PORT`, `NODE_APP_INSTANCE`, `ASPNETCORE_URLS`, `NODE_OPTIONS`,
+`NODEHOSTER_*`) cannot. A git deploy token can be a reference too
+(**Deployment settings → Read the access token from a secret store**).
 
-Add stores in **Settings → Secret stores** (administrators). Credentials
+Add stores in **Settings → Secret stores** (administrators). Store URLs
+must be `https://` (`http://` only for a store on the machine itself), and
+NodeHoster does not follow a redirect to another server. Credentials
 are encrypted at rest like other secrets and travel in passphrase-protected
-backups. Each store has a **cache time** (default 5 minutes: a recycle of
-eight instances asks the store once) and, optionally, a **watch interval**:
-every running site whose secret changed is recycled without downtime.
+backups; they are only ever sent to the server they were entered for, so
+changing a store's address means entering them again. Each store has a
+**cache time** (default 5 minutes: a recycle of eight instances asks the
+store once) and, optionally, a **watch interval**: every running site or
+deployment slot whose secret changed is recycled without downtime.
 Values live only in memory. If a store is unreachable when a process
-starts, the last value read is used and a `secret.stale` event says so; a
-secret never read (after a service restart, say) or deleted from the store
-fails the start with a `secret.failed` event naming the variable, and a
-recycle that fails keeps the running instances. Self-hosted servers with a
-private CA: paste the CA certificate in the store; certificate checks
-cannot be turned off.
+starts, the last value read is used and a `secret.stale` event says so; if
+the store refuses NodeHoster's credentials (revoked or expired), the last
+value is used for at most an hour after it was read, with a
+`secret.failed` event. A secret never read (after a service restart, say)
+or deleted from the store fails the start with a `secret.failed` event
+naming the variable, and a recycle that fails keeps the running
+instances. Self-hosted servers with a private CA: paste the CA certificate
+in the store; certificate checks cannot be turned off.
 
 - **HashiCorp Vault / OpenBao**: the address, the KV mount (`secret`) and
   version (2 unless it is a v1 engine), and either a token or AppRole

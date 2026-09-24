@@ -130,7 +130,13 @@ func TestSlotsEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "server.js"), []byte(slotServer("v0")), 0o644)
 	port := freePort(t)
-	site := e.createSite(admin, slotSiteBody(root, port))
+	body := slotSiteBody(root, port)
+	// A secret both production and the slot set, to different values.
+	node := body["node"].(map[string]any)
+	node["env"] = append(node["env"].([]map[string]any), map[string]any{"name": "API_KEY", "value": "prod-key", "secret": true})
+	slot := body["slots"].([]map[string]any)[0]
+	slot["env"] = append(slot["env"].([]map[string]any), map[string]any{"name": "API_KEY", "value": "staging-key", "secret": true})
+	site := e.createSite(admin, body)
 	id := site.ID
 
 	// The slot's secret is sealed at rest and masked in the API.
@@ -170,6 +176,14 @@ func TestSlotsEndToEnd(t *testing.T) {
 	if len(pv.Blockers) != 0 || pv.SlotRelease != v2.ID || pv.ProductionRelease != v1.ID ||
 		!strings.Contains(strings.Join(pv.Changes, "\n"), "DB") || strings.Contains(strings.Join(pv.Changes, "\n"), "s3cret") {
 		t.Fatalf("preview = %+v", pv)
+	}
+	// Which secret values differ is only told to an administrator.
+	if ch := strings.Join(pv.Changes, "\n"); strings.Contains(ch, "API_KEY") || !strings.Contains(ch, "1 secret variable(s)") {
+		t.Fatalf("viewer's preview names the secret: %q", ch)
+	}
+	pv = decodeJSON[model.SwapPreview](t, e.do(http.MethodGet, "/api/sites/"+id+"/slots/staging/swap", nil, admin...))
+	if ch := strings.Join(pv.Changes, "\n"); !strings.Contains(ch, "API_KEY") || strings.Contains(ch, "key") {
+		t.Fatalf("administrator's preview: %q", ch)
 	}
 
 	// Only operators swap.

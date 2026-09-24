@@ -350,7 +350,10 @@ func (c *Core) SlotAction(id, slot, action string) error {
 }
 
 // SwapPreview says what swapping a slot into production would do.
-func (c *Core) SwapPreview(s *model.Site, slot string) (model.SwapPreview, error) {
+// revealSecrets (an administrator asks) names the secret variables whose
+// values differ between the slot and production; otherwise they are only
+// counted.
+func (c *Core) SwapPreview(s *model.Site, slot string, revealSecrets bool) (model.SwapPreview, error) {
 	slot = model.NormalizeSlot(slot)
 	sl := s.FindSlot(slot)
 	if sl == nil {
@@ -378,8 +381,11 @@ func (c *Core) SwapPreview(s *model.Site, slot string) (model.SwapPreview, error
 	n := prep.Node.Instances
 	if !c.Procs.Running(key) {
 		p.Changes = append(p.Changes, fmt.Sprintf("Start %s with production's settings (it is stopped, so its instances start cold).", slot))
-	} else if diff := c.envDiff(own.Node.Env, prep.Node.Env); len(diff) > 0 || own.Node.Instances != n {
+	} else if diff, secretDiff := c.envDiff(own.Node.Env, prep.Node.Env, revealSecrets); len(diff) > 0 || secretDiff > 0 || own.Node.Instances != n {
 		what := "its instances"
+		if secretDiff > 0 {
+			diff = append(diff, fmt.Sprintf("%d secret variable(s)", secretDiff))
+		}
 		if len(diff) > 0 {
 			what += " with production's values of " + strings.Join(diff, ", ")
 		}
@@ -427,37 +433,49 @@ func orNone(r string) string {
 	return r
 }
 
-// envDiff names the variables whose value differs between two lists.
-// Secrets are compared decrypted; their values never leave this function.
-func (c *Core) envDiff(a, b []model.EnvVar) []string {
+// envDiff compares two lists of variables. names are the variables that
+// differ in what the site's configuration shows its viewers anyway: a
+// plain value, a secret store reference, whether one is secret, being in
+// one list only. Variables secret in both lists are compared decrypted
+// (their values never leave this function); they are named only when
+// reveal is set (an administrator), otherwise counted in secrets, so that
+// the preview does not tell a viewer which secret values differ.
+func (c *Core) envDiff(a, b []model.EnvVar, reveal bool) (names []string, secrets int) {
 	val := func(e model.EnvVar) string {
-		if e.Secret {
+		switch {
+		case e.From != nil:
+			return "f:" + e.From.String()
+		case e.Secret:
 			v, _ := c.Box.Unseal(e.Value)
 			return "s:" + v
 		}
 		return "p:" + e.Value
 	}
-	index := func(list []model.EnvVar) map[string]string {
-		m := map[string]string{}
+	index := func(list []model.EnvVar) map[string]model.EnvVar {
+		m := map[string]model.EnvVar{}
 		for _, e := range list {
-			m[e.Name] = val(e)
+			m[e.Name] = e
 		}
 		return m
 	}
 	x, y := index(a), index(b)
-	var out []string
-	for k, v := range x {
-		if w, ok := y[k]; !ok || w != v {
-			out = append(out, k)
+	for k, e := range x {
+		f, ok := y[k]
+		switch {
+		case ok && val(e) == val(f):
+		case ok && !reveal && e.Secret && f.Secret && e.From == nil && f.From == nil:
+			secrets++
+		default:
+			names = append(names, k)
 		}
 	}
 	for k := range y {
 		if _, ok := x[k]; !ok {
-			out = append(out, k)
+			names = append(names, k)
 		}
 	}
-	slices.Sort(out)
-	return out
+	slices.Sort(names)
+	return names, secrets
 }
 
 // StartSwap begins swapping a slot into production and returns at once;
@@ -472,7 +490,7 @@ func (c *Core) StartSwap(id, slot, user string, auto bool) (*model.SwapProgress,
 	if err != nil {
 		return nil, err
 	}
-	pv, err := c.SwapPreview(s, slot)
+	pv, err := c.SwapPreview(s, slot, false)
 	if err != nil {
 		return nil, err
 	}

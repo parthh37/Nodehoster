@@ -126,6 +126,10 @@ func secretsCheck(e *Env, args []string) error {
 			switch {
 			case c.Task != "":
 				what += " (task " + c.Task + ")"
+			case c.Slot != "":
+				what += " (slot " + c.Slot + ")"
+			case c.Preview:
+				what += " (previews)"
 			case what == "":
 				what = "git token"
 			}
