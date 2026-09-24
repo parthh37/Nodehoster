@@ -160,6 +160,7 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/runs/{run}/cancel", a.cancelRun)
 		r.Post("/sites/{id}/previews", a.createPreview)
 		r.Post("/sites/{id}/previews/{preview}/redeploy", a.redeployPreview)
+		r.Post("/sites/{id}/previews/{preview}/approve", a.approvePreview)
 		r.Delete("/sites/{id}/previews/{preview}", a.deletePreview)
 		r.Post("/sites/{id}/secrets/check", a.checkSiteSecrets)
 		r.Post("/sites/{id}/slots/{slot}/swap", a.swapSlot)

@@ -45,7 +45,7 @@ func TestDeployRefFetchesTheRef(t *testing.T) {
 		s.Deploy.Git = model.GitSource{Repo: repo, Branch: "fix/login", Token: sealed}
 	})
 	finished := make(chan *model.Deployment, 1)
-	dep, err := h.d.DeployRef(context.Background(), site, "refs/pull/42/head", "preview", "webhook", func(d *model.Deployment) { finished <- d })
+	dep, err := h.d.DeployRef(context.Background(), site, "refs/pull/42/head", "", "preview", "webhook", func(d *model.Deployment) { finished <- d })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestDeployRefFailureCallsDone(t *testing.T) {
 		s.Deploy.Git = model.GitSource{Repo: "https://git.example.invalid/org/app.git", Branch: "x"}
 	})
 	finished := make(chan *model.Deployment, 1)
-	dep, err := h.d.DeployRef(context.Background(), site, "refs/heads/deleted", "preview", "webhook", func(d *model.Deployment) { finished <- d })
+	dep, err := h.d.DeployRef(context.Background(), site, "refs/heads/deleted", "", "preview", "webhook", func(d *model.Deployment) { finished <- d })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +133,12 @@ func TestDeployRefRefusesBadRefs(t *testing.T) {
 		s.Deploy.Git = model.GitSource{Repo: "https://git.example.invalid/org/app.git"}
 	})
 	for _, ref := range []string{"", "main", "--upload-pack=x", "refs/heads/a..b", "refs/heads/-x/../y"} {
-		if _, err := h.d.DeployRef(context.Background(), site, ref, "preview", "u", nil); err == nil {
+		if _, err := h.d.DeployRef(context.Background(), site, ref, "", "preview", "u", nil); err == nil {
 			t.Errorf("DeployRef(%q) was accepted", ref)
 		}
 	}
 	nogit := h.staticSite(t, "nogit", nil)
-	if _, err := h.d.DeployRef(context.Background(), nogit, "refs/heads/x", "preview", "u", nil); err == nil || !strings.Contains(err.Error(), "no git repository") {
+	if _, err := h.d.DeployRef(context.Background(), nogit, "refs/heads/x", "", "preview", "u", nil); err == nil || !strings.Contains(err.Error(), "no git repository") {
 		t.Errorf("error = %v", err)
 	}
 }
@@ -160,7 +160,7 @@ func TestDeployRefTokenFromSecretStore(t *testing.T) {
 	site := h.staticSite(t, "private", func(s *model.Site) {
 		s.Deploy.Git = model.GitSource{Repo: "https://git.example.invalid/org/app.git", Branch: "fix/login", TokenFrom: &ref}
 	})
-	dep, err := h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "preview", "webhook", nil)
+	dep, err := h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "", "preview", "webhook", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +182,47 @@ func TestDeployRefTokenFromSecretStore(t *testing.T) {
 
 	// A store that cannot be read fails the deployment before git runs.
 	h.d.opts.SecretToken = func(*model.Site, model.SecretRef) (string, error) { return "", errors.New("vault is sealed") }
-	dep, err = h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "preview", "webhook", nil)
+	dep, err = h.d.DeployRef(context.Background(), site, "refs/heads/fix/login", "", "preview", "webhook", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := h.wait(t, dep); got.Status != "failed" || !strings.Contains(got.Message, "vault is sealed") {
 		t.Errorf("deployment = %s (%s)", got.Status, got.Message)
+	}
+}
+
+// TestDeployRefPinnedCommit: a deployment pinned to a commit (an approved
+// preview) fails before anything is built when the ref has moved on.
+func TestDeployRefPinnedCommit(t *testing.T) {
+	h := newHarness(t)
+	installFakeGit(t)
+	site := h.staticSite(t, "pinned", func(s *model.Site) {
+		s.Deploy.Git = model.GitSource{Repo: "https://git.example.invalid/org/app.git", Branch: "x"}
+	})
+	// The fake git's head is 0123456789abcdef...
+	for _, tc := range []struct {
+		commit string
+		ok     bool
+	}{
+		{"0123456789ABCDEF0123456789abcdef01234567", true},
+		{"0123456", true},
+		{"fedcba9876543210fedcba9876543210fedcba98", false},
+	} {
+		finished := make(chan *model.Deployment, 1)
+		dep, err := h.d.DeployRef(context.Background(), site, "refs/pull/7/head", tc.commit, "preview", "u", func(d *model.Deployment) { finished <- d })
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := <-finished
+		h.wait(t, dep)
+		if tc.ok && d.Status != "succeeded" || !tc.ok && (d.Status != "failed" || !strings.Contains(d.Message, "approved commit")) {
+			t.Errorf("pinned to %s: %s (%s)", tc.commit, d.Status, d.Message)
+		}
+		if !tc.ok && d.Commit != "0123456789abcdef0123456789abcdef01234567" {
+			t.Errorf("the commit found is not reported: %q", d.Commit)
+		}
+	}
+	if _, err := h.d.DeployRef(context.Background(), site, "refs/pull/7/head", "not-a-commit", "preview", "u", nil); err == nil {
+		t.Error("a malformed commit was accepted")
 	}
 }

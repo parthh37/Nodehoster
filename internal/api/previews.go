@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/preview"
 )
@@ -71,6 +74,52 @@ func (a *API) redeployPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.c.RedeployPreview(p, user(r).Username)
 	a.audit(r, "preview.redeploy", s.Name, p.Preview.URL+suffix(err))
+	if errors.Is(err, core.ErrAwaitingApproval) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, a.c.PreviewView(r.Context(), p))
+}
+
+// approvePreview approves the commit a preview holds (a pull request from
+// a fork, or any with requireApproval "all"): it is then built and
+// deployed. The body may name the commit reviewed ({"commit": "..."}); a
+// push since then answers 422, to be reviewed in turn.
+func (a *API) approvePreview(w http.ResponseWriter, r *http.Request) {
+	s := a.site(w, r)
+	if s == nil {
+		return
+	}
+	p := a.preview(w, r, s)
+	if p == nil {
+		return
+	}
+	var in struct {
+		Commit string `json:"commit"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &in); err != nil {
+			a.fail(w, err)
+			return
+		}
+	}
+	err := a.c.ApprovePreview(p, user(r).Username, in.Commit)
+	detail := p.Preview.URL + " at " + p.Preview.Commit
+	if p.Preview.Kind == model.PreviewPR {
+		detail = fmt.Sprintf("pull request #%d at %s", p.Preview.Number, p.Preview.Commit)
+		if p.Preview.Fork {
+			detail = fmt.Sprintf("pull request #%d from a fork at %s", p.Preview.Number, p.Preview.Commit)
+		}
+	}
+	a.audit(r, "preview.approve", s.Name, detail+suffix(err))
+	if errors.Is(err, core.ErrNotAwaitingApproval) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		a.fail(w, err)
 		return

@@ -39,13 +39,17 @@ func (e *env) previewParent(admin []opt, name string) siteResp {
 }
 
 func prPayload(action string, number int, fork bool) []byte {
+	return prPayloadAt(action, number, fork, "0123456789abcdef0123456789abcdef01234567")
+}
+
+func prPayloadAt(action string, number int, fork bool, sha string) []byte {
 	head := `{"id":1,"full_name":"org/app"}`
 	if fork {
 		head = `{"id":2,"full_name":"someone/app"}`
 	}
 	return []byte(fmt.Sprintf(`{"action":%q,"number":%d,"pull_request":{"title":"T","user":{"login":"dev"},
-	  "head":{"ref":"topic-%d","sha":"0123456789abcdef0123456789abcdef01234567","repo":%s},
-	  "base":{"ref":"main","repo":{"id":1,"full_name":"org/app"}}}}`, action, number, number, head))
+	  "head":{"ref":"topic-%d","sha":%q,"repo":%s},
+	  "base":{"ref":"main","repo":{"id":1,"full_name":"org/app"}}}}`, action, number, number, sha, head))
 }
 
 func (e *env) hook(siteID, event string, body []byte) *httptest.ResponseRecorder {
@@ -299,6 +303,54 @@ func TestPreviewSettingsMasked(t *testing.T) {
 	expect(t, rec, http.StatusUnprocessableEntity)
 	if f := decodeJSON[map[string]string](t, rec)["field"]; f != "deploy.git.branch" {
 		t.Errorf("field = %q", f)
+	}
+}
+
+// TestPreviewApproveEndpoint: a fork's pull request waits for an operator
+// to approve its head commit; approving is audited, needs the operator
+// role and names the commit reviewed.
+func TestPreviewApproveEndpoint(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	parent := e.previewParent(admin, "shop")
+	in := parent.Site
+	in.Deploy.Previews.AllowForks = true
+	expect(t, e.do(http.MethodPut, "/api/sites/"+parent.ID, in, admin...), http.StatusOK)
+	other := e.createSite(admin, redirectSite("other", 0))
+	e.scoped("op", grant(parent.ID, model.RoleOperator))
+	e.scoped("viewer", grant(parent.ID, model.RoleViewer))
+	e.scoped("stranger", grant(other.ID, model.RoleOperator))
+	op, viewer, stranger := session(e.login("op")), session(e.login("viewer")), session(e.login("stranger"))
+
+	expect(t, e.hook(parent.ID, "pull_request", prPayload("opened", 9, true)), http.StatusAccepted)
+	p := e.previews(op, parent.ID, 1)[0]
+	if p.State != model.PreviewAwaitingApproval || !p.Preview.Fork || p.LastDeployment != nil {
+		t.Fatalf("preview = %+v", p)
+	}
+	approve := "/api/sites/" + parent.ID + "/previews/" + p.ID + "/approve"
+	expect(t, e.do(http.MethodPost, approve, nil, viewer...), http.StatusForbidden)
+	expect(t, e.do(http.MethodPost, approve, nil, stranger...), http.StatusNotFound)
+	expect(t, e.do(http.MethodPost, "/api/sites/"+other.ID+"/previews/"+p.ID+"/approve", nil, admin...), http.StatusNotFound)
+	expect(t, e.do(http.MethodPost, "/api/sites/"+parent.ID+"/previews/"+p.ID+"/redeploy", nil, op...), http.StatusConflict)
+	expect(t, e.do(http.MethodPost, approve, map[string]string{"commit": "fedcba9876"}, op...), http.StatusUnprocessableEntity)
+	rec := e.do(http.MethodPost, approve, map[string]string{"commit": "0123456"}, op...)
+	expect(t, rec, http.StatusAccepted)
+	p = e.previews(op, parent.ID, 1)[0]
+	// The repository does not exist: the approved deployment fails.
+	if p.State != model.PreviewFailed || p.Preview.ApprovedBy != "op" || p.Preview.AwaitingApproval || p.LastDeployment == nil {
+		t.Errorf("after approval = %+v", p)
+	}
+	expect(t, e.do(http.MethodPost, approve, nil, op...), http.StatusConflict)
+	if !contains(e.auditActions(), "op:preview.approve") {
+		t.Errorf("audit = %v", e.auditActions())
+	}
+	// A new push waits again.
+	const next = "89abcdef0123456789abcdef0123456789abcdef"
+	expect(t, e.hook(parent.ID, "pull_request", prPayloadAt("synchronize", 9, true, next)), http.StatusAccepted)
+	p = e.previews(op, parent.ID, 1)[0]
+	if p.State != model.PreviewAwaitingApproval || p.Preview.Commit != next {
+		t.Errorf("after a push = %+v", p)
 	}
 }
 

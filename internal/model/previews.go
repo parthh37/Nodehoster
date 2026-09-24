@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,8 +31,21 @@ type PreviewConfig struct {
 	// production branch (Deploy.Git.Branch) never gets one.
 	Branches []string `json:"branches,omitempty"`
 	// AllowForks builds pull requests from forks. Off by default: anyone
-	// can open one, and its code would run on this server.
+	// can open one, and its code runs on this server (with the service's
+	// privileges unless the site runs as a separate account). Even then a
+	// fork's preview is only built once an operator approves it, and again
+	// at each new push (see RequireApproval).
 	AllowForks bool `json:"allowForks"`
+	// RequireApproval is which pull request previews wait for an operator
+	// to approve their head commit before anything is fetched or built:
+	// "forks" (the default: pull requests from forks) or "all" (every pull
+	// request). Branch previews are never held.
+	RequireApproval string `json:"requireApproval,omitempty"`
+	// InheritSecrets gives same-repository previews the parent's secret
+	// variables, those read from secret stores and its slot settings. Off
+	// by default: previews get those only through Env. Fork previews never
+	// get them, whatever this says.
+	InheritSecrets bool `json:"inheritSecrets"`
 	// MaxPreviews caps this site's previews. A new one beyond it evicts
 	// the preview pushed to least recently.
 	MaxPreviews int `json:"maxPreviews"`
@@ -90,6 +104,14 @@ type PreviewInfo struct {
 	// Ready is set once a deployment has succeeded: the preview then
 	// starts automatically.
 	Ready bool `json:"ready,omitempty"`
+	// AwaitingApproval: Commit is waiting for an operator to approve it
+	// (see PreviewConfig.RequireApproval); nothing of it has been fetched.
+	// A preview that was never approved has no binding yet.
+	AwaitingApproval bool `json:"awaitingApproval,omitempty"`
+	// ApprovedCommit is the commit last approved, and ApprovedBy who did:
+	// only that commit is deployed (the ref is checked before building).
+	ApprovedCommit string `json:"approvedCommit,omitempty"`
+	ApprovedBy     string `json:"approvedBy,omitempty"`
 }
 
 const (
@@ -99,6 +121,10 @@ const (
 	PreviewCertAuto     = CertModeAuto
 	PreviewCertManual   = CertModeManual
 	PreviewCertWildcard = "wildcard"
+
+	// PreviewConfig.RequireApproval
+	PreviewApproveForks = "forks"
+	PreviewApproveAll   = "all"
 
 	DefaultMaxPreviews = 10
 	MaxPreviewsLimit   = 100
@@ -112,9 +138,12 @@ const (
 const (
 	PreviewPending   = "pending"   // created, nothing deployed yet
 	PreviewDeploying = "deploying" // a deployment is running or queued
-	PreviewReady     = "ready"
-	PreviewFailed    = "failed" // the last deployment failed
-	PreviewDeleting  = "deleting"
+	// PreviewAwaitingApproval: the head commit waits for an operator's
+	// approval (POST .../approve) before it is fetched and built.
+	PreviewAwaitingApproval = "awaiting-approval"
+	PreviewReady            = "ready"
+	PreviewFailed           = "failed" // the last deployment failed
+	PreviewDeleting         = "deleting"
 )
 
 // PreviewView is a preview as GET /sites/{id}/previews lists it.
@@ -147,11 +176,15 @@ func SplitHostPattern(p string) (label, suffix string) {
 func (p *PreviewConfig) applyDefaults() {
 	p.HostPattern = strings.ToLower(strings.TrimSpace(p.HostPattern))
 	p.Protocol = strings.ToLower(strings.TrimSpace(p.Protocol))
+	p.RequireApproval = strings.ToLower(strings.TrimSpace(p.RequireApproval))
 	if p.IP == "*" {
 		p.IP = ""
 	}
 	if !p.Enabled {
 		return
+	}
+	if p.RequireApproval == "" {
+		p.RequireApproval = PreviewApproveForks
 	}
 	if p.Protocol == "" {
 		p.Protocol = "http"
@@ -262,7 +295,60 @@ func (s *Site) validatePreviews() error {
 			return verr(fmt.Sprintf("%s.allowIps[%d]", f, i), "%v", err)
 		}
 	}
+	switch p.RequireApproval {
+	case PreviewApproveForks, PreviewApproveAll:
+	default:
+		return verr(f+".requireApproval", "must be forks or all")
+	}
+	// https previews get the site's client certificate policy (see
+	// PreviewClientCert); an http binding cannot ask for a certificate, so
+	// such previews need another lock.
+	if p.Protocol == "http" && s.RequiresClientCert() && !p.BasicAuth.Enabled && len(p.AllowIPs) == 0 {
+		return verr(f+".protocol", "the site requires client certificates (mutual TLS), which http previews cannot ask for: use https previews, or protect them with basic authentication or an IP allow list")
+	}
 	return nil
+}
+
+// RequiresClientCert reports whether a production binding of the site
+// refuses clients without a certificate: mode require, or accept with
+// paths that require one.
+func (s *Site) RequiresClientCert() bool {
+	for _, b := range s.Bindings {
+		if b.Slot == "" && b.Protocol == "https" && b.ClientCert.Active() &&
+			(b.ClientCert.Mode == ClientCertRequire || len(b.ClientCert.RequirePaths) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// PreviewClientCert is the client certificate policy an https preview
+// binding on ip:port gets from its parent: that of the parent's
+// production https binding on the same address and port asking for one,
+// else of the first one asking for one; nil when none does. The result is
+// a copy.
+func (s *Site) PreviewClientCert(ip string, port int) *ClientCertPolicy {
+	var found *ClientCertPolicy
+	for _, b := range s.Bindings {
+		if b.Slot != "" || b.Protocol != "https" || !b.ClientCert.Active() {
+			continue
+		}
+		if b.Port == port && strings.TrimPrefix(b.IP, "*") == strings.TrimPrefix(ip, "*") {
+			found = b.ClientCert
+			break
+		}
+		if found == nil {
+			found = b.ClientCert
+		}
+	}
+	if found == nil {
+		return nil
+	}
+	cp := *found
+	cp.AllowedSubjects = slices.Clone(found.AllowedSubjects)
+	cp.AllowedFingerprints = slices.Clone(found.AllowedFingerprints)
+	cp.RequirePaths = slices.Clone(found.RequirePaths)
+	return &cp
 }
 
 // PreviewVars are the variables NodeHoster sets in every preview.

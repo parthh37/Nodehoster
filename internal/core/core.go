@@ -878,6 +878,7 @@ func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*mode
 	c.Procs.Apply(in)
 	c.Tasks.Apply(in)
 	c.reload()
+	c.dropDisallowedForks(in)
 	return in, nil
 }
 
