@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -41,10 +42,7 @@ func mailHealthDialog(m *manager) {
 	defer cancel()
 
 	current := func() *healthRow {
-		if list.tv == nil {
-			return nil
-		}
-		if i := list.tv.CurrentIndex(); i >= 0 && i < len(rows) {
+		if i := list.current(); i >= 0 && i < len(rows) {
 			return &rows[i]
 		}
 		return nil
@@ -78,6 +76,20 @@ func mailHealthDialog(m *manager) {
 		detail.SetText(strings.Join(parts, "\r\n\r\n"))
 	}
 	list.onSelect = showSelected
+	list.icon = func(row, col int) walk.Image {
+		if row >= len(rows) || col != 2 {
+			return nil
+		}
+		switch rows[row].check.Status {
+		case model.CheckFail:
+			return img(desktop.IconError)
+		case model.CheckWarn:
+			return img(desktop.IconWarning)
+		case model.CheckPass:
+			return img(desktop.IconOK)
+		}
+		return img(desktop.IconInfo)
+	}
 	list.color = func(row, col int) (walk.Color, bool) {
 		if row >= len(rows) || col != 2 {
 			return 0, false
@@ -211,19 +223,19 @@ func mailHealthDialog(m *manager) {
 		CancelButton:  &closeBtn,
 		Layout:        VBox{},
 		Children: []Widget{
-			Label{Text: "Checks what receiving mail servers judge: this server's address, reverse DNS, host name, port 25 and blacklists, and the SPF, DKIM and DMARC records of each sending domain."},
+			intro(desktop.IconCheckList, "Checks what receiving mail servers judge: this server's address, reverse DNS, host name, port 25 and blacklists, and the SPF, DKIM and DMARC records of each sending domain."),
 			Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 				Label{Text: "Extra domain:"},
 				LineEdit{AssignTo: &domain, CueBanner: "example.com (the configured sending domains are always checked)"},
-				PushButton{AssignTo: &runBtn, Text: "Run checks", OnClicked: run},
+				PushButton{AssignTo: &runBtn, Text: "Run checks", Image: img(desktop.IconCheckList), OnClicked: run},
 			}},
 			Label{AssignTo: &status, Text: " "},
-			list.view(nil, col("Scope", 150), col("Check", 150), col("Result", 60), col("Detail", 360)),
+			list.view(nil, col("Scope", 150), col("Check", 150), col("Result", 80), col("Detail", 360)),
 			TextEdit{AssignTo: &detail, ReadOnly: true, VScroll: true, MinSize: Size{Height: 110}, MaxSize: Size{Height: 160},
 				Font: Font{Family: "Consolas", PointSize: 9}},
 			Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-				PushButton{AssignTo: &copyName, Text: "Copy record name", Enabled: false, OnClicked: func() { copyFix(true) }},
-				PushButton{AssignTo: &copyValue, Text: "Copy record value", Enabled: false, OnClicked: func() { copyFix(false) }},
+				PushButton{AssignTo: &copyName, Text: "Copy record name", Image: img(desktop.IconCopy), Enabled: false, OnClicked: func() { copyFix(true) }},
+				PushButton{AssignTo: &copyValue, Text: "Copy record value", Image: img(desktop.IconCopy), Enabled: false, OnClicked: func() { copyFix(false) }},
 				HSpacer{},
 				PushButton{AssignTo: &closeBtn, Text: "Close", OnClicked: func() { dlg.Cancel() }},
 			}},

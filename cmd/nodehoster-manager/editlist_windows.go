@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -45,10 +46,7 @@ func (l *editList[T]) refresh() {
 
 // index is the selected row, or -1.
 func (l *editList[T]) index() int {
-	if l.t.tv == nil {
-		return -1
-	}
-	if i := l.t.tv.CurrentIndex(); i >= 0 && i < len(*l.items) {
+	if i := l.t.current(); i >= 0 && i < len(*l.items) {
 		return i
 	}
 	return -1
@@ -62,8 +60,8 @@ func (l *editList[T]) current() *T {
 }
 
 func (l *editList[T]) selectRow(i int) {
-	if l.t.tv != nil && i >= 0 && i < len(*l.items) {
-		l.t.tv.SetCurrentIndex(i)
+	if i >= 0 && i < len(*l.items) {
+		l.t.selectModel(i)
 	}
 }
 
@@ -109,20 +107,44 @@ func (l *editList[T]) move(delta int) {
 	l.selectRow(j)
 }
 
-// view declares the table with the buttons to its right.
+// view declares the table with the buttons to its right. The Delete key
+// removes the selected row.
 func (l *editList[T]) view(onActivate func(), cols []TableViewColumn, buttons ...Widget) Composite {
-	tv := l.t.view(onActivate, cols...)
-	if l.minHeight > 0 {
-		tv.MinSize = Size{Height: l.minHeight}
-	}
+	tv := l.t.viewWith(tableOpts{onActivate: onActivate, onDelete: l.remove, minHeight: l.minHeight}, cols...)
 	return Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 		tv,
 		Composite{Layout: VBox{MarginsZero: true}, Children: append(buttons, VSpacer{})},
 	}}
 }
 
+// buttonIcons gives the usual buttons of dialogs their icon.
+var buttonIcons = []struct{ prefix, icon string }{
+	{"Add", desktop.IconAdd},
+	{"Edit", desktop.IconEdit},
+	{"Remove", desktop.IconRemove},
+	{"Move up", desktop.IconUp},
+	{"Move down", desktop.IconDown},
+	{"Import", desktop.IconImport},
+	{"Browse", desktop.IconBrowse},
+	{"Copy", desktop.IconCopy},
+	{"Enable", desktop.IconToggle},
+	{"Disable", desktop.IconToggle},
+	{"Load from file", desktop.IconUpload},
+	{"Run checks", desktop.IconCheckList},
+}
+
+func buttonIcon(text string) walk.Image {
+	for _, b := range buttonIcons {
+		if strings.HasPrefix(text, b.prefix) {
+			return img(b.icon)
+		}
+	}
+	return nil
+}
+
+// button is a push button with the icon its text calls for.
 func button(text string, fn func()) PushButton {
-	return PushButton{Text: text, OnClicked: fn}
+	return PushButton{Text: text, Image: buttonIcon(text), OnClicked: fn}
 }
 
 // ---- multi-line text fields

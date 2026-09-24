@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -69,7 +70,8 @@ func accessDialog(m *manager, title string, role model.Role, grants []model.Site
 			box.SetEnabled(scope.CurrentIndex() == len(accessRoles)-1)
 		}
 	}
-	ok := runDialogAs(&dlg, m.mw, title, Size{Width: 520, Height: 360}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, title, Size{Width: 560, Height: 400}, []Widget{
+		intro(desktop.IconIDCard, "What the user may do in the web console: a role on the whole server, or permissions on selected sites."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Access:"},
 			ComboBox{AssignTo: &scope, Model: accessNames, CurrentIndex: max(slices.Index(accessRoles, role), 0), OnCurrentIndexChanged: onScope},
@@ -86,7 +88,7 @@ func accessDialog(m *manager, title string, role model.Role, grants []model.Site
 				button("Remove", l.remove),
 			),
 		}},
-		Label{Text: "Site operators can start, stop, recycle and deploy their sites and read their logs. Changing a site's settings, and everything server-wide, needs an administrator.", TextColor: colorMuted},
+		hint("Site operators can start, stop, recycle and deploy their sites and read their logs. Changing a site's settings, and everything server-wide, needs an administrator."),
 	}, func(dlg *walk.Dialog) bool {
 		picked = accessRoles[max(scope.CurrentIndex(), 0)]
 		if picked == model.RoleSites && len(grants) == 0 {

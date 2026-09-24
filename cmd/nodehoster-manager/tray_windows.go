@@ -50,11 +50,13 @@ func runTray(autostart bool) {
 	defer ni.Dispose()
 
 	t := &tray{ni: ni, icons: map[desktop.Level]*walk.Icon{}, lastLevel: -1}
-	for _, l := range []desktop.Level{desktop.LevelOK, desktop.LevelWarning, desktop.LevelDown, desktop.LevelNotInstalled} {
-		// 32 pixels: the icon cache scales it down for 100% displays
-		// and it stays sharp at 200%.
-		if ic, err := walk.NewIconFromImage(desktop.StatusIcon(l, 32)); err == nil {
+	for _, l := range desktop.Levels {
+		// From the resources: Windows picks the size the taskbar's
+		// scaling needs.
+		if ic := trayIcon(l); ic != nil {
 			t.icons[l] = ic
+		} else if ic, err := walk.NewIconFromImage(desktop.StatusIcon(l, 32)); err == nil {
+			t.icons[l] = ic // built without the resources
 		}
 	}
 	ni.ShowingContextMenu().Attach(func() bool {
@@ -194,10 +196,17 @@ func (t *tray) balloon(level desktop.Level, title, msg, siteID string) {
 func (t *tray) buildMenu() {
 	acts := t.ni.ContextMenu().Actions()
 	acts.Clear()
-	add := func(text string, enabled bool, fn func()) *walk.Action {
+	add := func(icon, text string, enabled bool, fn func()) *walk.Action {
 		a := walk.NewAction()
 		a.SetText(text)
 		a.SetEnabled(enabled)
+		if icon != "" {
+			if !enabled && fn != nil {
+				a.SetImage(asImage(icoOff(icon)))
+			} else {
+				a.SetImage(img(icon))
+			}
+		}
 		if fn != nil {
 			a.Triggered().Attach(fn)
 		}
@@ -210,18 +219,23 @@ func (t *tray) buildMenu() {
 	if t.sum != nil {
 		head += " " + t.sum.Version
 	}
-	add(head, false, nil)
-	add(t.health.Summary, false, nil)
+	h := add("", head, true, func() { startManager() })
+	if ic := appIcon(); ic != nil {
+		h.SetImage(ic)
+	}
+	summary := add("", t.health.Summary, false, nil)
+	summary.SetImage(asImage(dotIcon(t.health.Level)))
 	for i, s := range t.health.Attention {
 		if i == 5 {
-			add(fmt.Sprintf("   and %d more…", len(t.health.Attention)-5), false, nil)
+			add("", fmt.Sprintf("and %d more…", len(t.health.Attention)-5), false, nil)
 			break
 		}
 		id := s.ID
-		add("   ⚠ "+s.Name+": "+desktop.StateText(s.State), true, func() { startManager("--site", id) })
+		a := add("", s.Name+": "+desktop.StateText(s.State), true, func() { startManager("--site", id) })
+		a.SetImage(asImage(siteIcon(string(s.Type), desktop.SiteLevel(s.State))))
 	}
 	if t.sum != nil && t.sum.AdminError != "" {
-		add("   ⚠ Web console: "+t.sum.AdminError, false, nil)
+		add(desktop.IconWarning, "Web console: "+t.sum.AdminError, false, nil).SetImage(img(desktop.IconWarning))
 	}
 	sep()
 
@@ -232,33 +246,35 @@ func (t *tray) buildMenu() {
 				id := s.ID
 				a := walk.NewAction()
 				a.SetText(s.Name + "\t" + desktop.StateText(s.State))
+				a.SetImage(asImage(siteIcon(string(s.Type), desktop.SiteLevel(s.State))))
 				a.Triggered().Attach(func() { startManager("--site", id) })
 				menu.Actions().Add(a)
 			}
 			sa, _ := acts.AddMenu(menu)
 			sa.SetText("Sites")
+			sa.SetImage(img(desktop.IconSites))
 		}
 	}
-	open := add("Open NodeHoster Manager", true, func() { startManager() })
+	open := add(desktop.IconServer, "Open NodeHoster Manager", true, func() { startManager() })
 	open.SetDefault(true)
 	consoleURL := ""
 	if t.sum != nil {
 		consoleURL = desktop.ConsoleURL(t.sum.AdminURL)
 	}
-	add("Open web console", consoleURL != "" && t.sum.AdminError == "", func() { shellOpen(consoleURL) })
+	add(desktop.IconConsole, "Open web console", consoleURL != "" && t.sum.AdminError == "", func() { shellOpen(consoleURL) })
 	sep()
 
 	installed := t.service != "not installed" && t.service != "" && t.service != "unknown"
-	add("Start service", installed && t.service == "stopped", func() { runElevated("--service", "start") })
-	add("Stop service", t.service == "running", func() { runElevated("--service", "stop") })
-	add("Restart service", t.service == "running", func() { runElevated("--service", "restart") })
+	add(desktop.IconStart, "Start service", installed && t.service == "stopped", func() { runElevated("--service", "start") })
+	add(desktop.IconStop, "Stop service", t.service == "running", func() { runElevated("--service", "stop") })
+	add(desktop.IconRestart, "Restart service", t.service == "running", func() { runElevated("--service", "restart") })
 	sep()
 
-	auto := add("Show this icon at sign-in", true, nil)
+	auto := add("", "Show this icon at sign-in", true, nil)
 	auto.SetCheckable(true)
 	auto.SetChecked(!trayAutostartDisabled())
 	auto.Triggered().Attach(func() { setTrayAutostartDisabled(!auto.Checked()) })
-	add("Exit", true, func() {
+	add(desktop.IconExit, "Exit", true, func() {
 		t.ni.Dispose()
 		os.Exit(0)
 	})
