@@ -614,11 +614,16 @@ server events are chosen by `sources` alone.
   per line.
 
 Shipping never blocks logging: each target has a queue of 10,000 records
-(the oldest are dropped when it is full, and counted), batches of up to 500
-sent at least every second, and failed batches retried with exponential
+or 16 MiB (the oldest are dropped when it is full, and counted), batches of
+up to 500 records or 1 MiB sent at least every second, and failed batches
+retried with exponential
 backoff (0.5 s doubling to 30 s, six attempts; 4xx other than 408/429 is
 not retried). The shipper's own errors go to the server log file only,
 at most once a minute per target.
+Long fields are cut, ending in `…[truncated]`: the message at 16 KiB, the
+request's method, path, host, user agent and referer and each attribute at
+4 KiB; beyond 64 attributes the rest are left out and `truncated: "true"`
+is added.
 
 | Method | Path | Body | Response |
 |---|---|---|---|

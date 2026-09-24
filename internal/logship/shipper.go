@@ -29,7 +29,9 @@ func (p permanent) Unwrap() error { return p.error }
 // Options tune the pipeline; zero values take the defaults.
 type Options struct {
 	QueueSize   int           // records waiting per target (10,000)
+	QueueBytes  int           // bytes waiting per target (16 MiB)
 	BatchSize   int           // records per request (500)
+	BatchBytes  int           // bytes per request (1 MiB; a single larger record still goes)
 	FlushEvery  time.Duration // a partial batch waits at most this long (1 s)
 	RetryBase   time.Duration // first retry delay, doubling (500 ms)
 	RetryMax    time.Duration // longest retry delay (30 s)
@@ -41,8 +43,14 @@ func (o *Options) defaults() {
 	if o.QueueSize <= 0 {
 		o.QueueSize = 10000
 	}
+	if o.QueueBytes <= 0 {
+		o.QueueBytes = 16 << 20
+	}
 	if o.BatchSize <= 0 {
 		o.BatchSize = 500
+	}
+	if o.BatchBytes <= 0 {
+		o.BatchBytes = 1 << 20
 	}
 	if o.FlushEvery <= 0 {
 		o.FlushEvery = time.Second
@@ -170,6 +178,7 @@ func (s *Shipper) Ship(r Record) {
 	if r.Time.IsZero() {
 		r.Time = time.Now()
 	}
+	r.limit()
 	// The site's name is looked up by the target's goroutine, not here:
 	// callers may hold locks the lookup needs.
 	s.mu.RLock()
@@ -237,6 +246,7 @@ type worker struct {
 	mu            sync.Mutex
 	q             []Record // ring buffer
 	head, n       int
+	bytes         int // size() of the queued records
 	sent, dropped uint64
 	failed        uint64
 	lastErr       string
@@ -281,17 +291,23 @@ func (w *worker) accepts(r *Record) bool {
 }
 
 func (w *worker) enqueue(r Record) {
+	size := r.size()
 	w.mu.Lock()
-	if w.n == len(w.q) {
-		// Full: the oldest record goes, so the newest (most useful when
-		// something is going wrong) are kept.
+	for w.n == len(w.q) || (w.n > 0 && w.bytes+size > w.opts.QueueBytes) {
+		// Full: the oldest records go, so the newest (most useful when
+		// something is going wrong) are kept. The byte budget bounds the
+		// memory a collector that is down can cost, whatever the records'
+		// sizes.
+		w.bytes -= w.q[w.head].size()
+		w.q[w.head] = Record{}
 		w.head = (w.head + 1) % len(w.q)
 		w.n--
 		w.dropped++
 	}
 	w.q[(w.head+w.n)%len(w.q)] = r
 	w.n++
-	full := w.n >= w.opts.BatchSize
+	w.bytes += size
+	full := w.n >= w.opts.BatchSize || w.bytes >= w.opts.BatchBytes
 	w.mu.Unlock()
 	if full {
 		select {
@@ -301,21 +317,26 @@ func (w *worker) enqueue(r Record) {
 	}
 }
 
+// take removes up to max records, and at most the batch byte budget (but
+// always at least one record), from the head of the queue.
 func (w *worker) take(max int) []Record {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	n := min(max, w.n)
-	if n == 0 {
-		return nil
+	var out []Record
+	bytes := 0
+	for len(out) < max && w.n > 0 {
+		r := &w.q[w.head]
+		size := r.size()
+		if len(out) > 0 && bytes+size > w.opts.BatchBytes {
+			break
+		}
+		out = append(out, *r)
+		*r = Record{}
+		bytes += size
+		w.bytes -= size
+		w.head = (w.head + 1) % len(w.q)
+		w.n--
 	}
-	out := make([]Record, n)
-	for i := range n {
-		j := (w.head + i) % len(w.q)
-		out[i] = w.q[j]
-		w.q[j] = Record{}
-	}
-	w.head = (w.head + n) % len(w.q)
-	w.n -= n
 	return out
 }
 

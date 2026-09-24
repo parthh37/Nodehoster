@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/parthh37/nodehoster/internal/model"
 )
@@ -530,5 +531,106 @@ func TestAppLevel(t *testing.T) {
 	}
 	if AccessLevel(503) != "error" || AccessLevel(404) != "warning" || AccessLevel(301) != "info" {
 		t.Error("AccessLevel")
+	}
+}
+
+func TestRecordLimits(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSender{}
+	sh := New(quiet, "h", nil, Options{FlushEvery: 5 * time.Millisecond})
+	sh.NewSender = func(model.LogTarget, string) (Sender, error) { return fake, nil }
+	defer sh.Close()
+	sh.Configure([]model.LogTarget{{ID: "a", Name: "a", Type: "http", Enabled: true, Sources: []string{"access", "server"}, MinLevel: "debug"}})
+
+	uri := "/search?q=" + strings.Repeat("é", 1<<20) // 2 MiB, multi-byte runes
+	access := &AccessFields{Method: "GET", Path: uri, Status: 200, UserAgent: strings.Repeat("u", 1<<20), Host: "h"}
+	sh.Ship(Record{Source: "access", Level: "info", Message: "GET " + uri, Access: access})
+	attrs := map[string]string{"err": strings.Repeat("e", 1<<20)}
+	for i := range 100 {
+		attrs["k"+strconv.Itoa(i)] = "v"
+	}
+	sh.Ship(Record{Source: "server", Level: "info", Message: "small", Attrs: attrs})
+	waitFor(t, "two records", func() bool { return len(fake.messages()) == 2 })
+
+	fake.mu.Lock()
+	a, s := fake.recs[0], fake.recs[1]
+	fake.mu.Unlock()
+	if len(a.Message) > maxMessage || !strings.HasSuffix(a.Message, truncMark) || !utf8.ValidString(a.Message) {
+		t.Errorf("message: %d bytes, valid UTF-8 %v", len(a.Message), utf8.ValidString(a.Message))
+	}
+	if len(a.Access.Path) > maxField || !strings.HasSuffix(a.Access.Path, truncMark) || !utf8.ValidString(a.Access.Path) ||
+		len(a.Access.UserAgent) > maxField || a.Access.Host != "h" || a.Access.Status != 200 {
+		t.Errorf("access: path %d bytes, user agent %d bytes, %+v", len(a.Access.Path), len(a.Access.UserAgent), a.Access.Host)
+	}
+	if access.Path != uri {
+		t.Error("the caller's access fields were changed")
+	}
+	if s.Message != "small" || len(s.Attrs) != maxAttrs+1 || s.Attrs["truncated"] != "true" || len(s.Attrs["err"]) > maxField {
+		t.Errorf("attrs: %d, err %d bytes", len(s.Attrs), len(s.Attrs["err"]))
+	}
+}
+
+// gatedSender blocks every Send until the gate is closed.
+type gatedSender struct {
+	fakeSender
+	gate    chan struct{}
+	batches [][]Record
+}
+
+func (g *gatedSender) Send(ctx context.Context, b []Record) error {
+	select {
+	case <-g.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	g.mu.Lock()
+	g.batches = append(g.batches, b)
+	g.mu.Unlock()
+	return g.fakeSender.Send(ctx, b)
+}
+
+// Large records while a collector is down: the queue is bounded in bytes,
+// not only in records, and a batch is bounded in bytes too.
+func TestQueueAndBatchByteBudgets(t *testing.T) {
+	t.Parallel()
+	g := &gatedSender{gate: make(chan struct{})}
+	sh := New(quiet, "h", nil, Options{QueueBytes: 256 << 10, BatchBytes: 40 << 10, FlushEvery: 5 * time.Millisecond, Timeout: time.Minute})
+	sh.NewSender = func(model.LogTarget, string) (Sender, error) { return g, nil }
+	defer sh.Close()
+	sh.Configure([]model.LogTarget{{ID: "a", Name: "a", Type: "http", Enabled: true, Sources: []string{"app"}}})
+
+	big := strings.Repeat("x", 1<<20)
+	for i := range 200 {
+		sh.Ship(Record{Source: "app", Level: "info", Message: strconv.Itoa(i) + " " + big})
+	}
+	w := sh.workers[0]
+	w.mu.Lock()
+	queued, bytes := w.n, w.bytes
+	w.mu.Unlock()
+	if bytes > 256<<10 || queued > 16 {
+		t.Errorf("queued %d records, %d bytes: want at most 256 KiB", queued, bytes)
+	}
+	if st := sh.Status()[0]; st.Dropped < 150 {
+		t.Errorf("status %+v", st)
+	}
+
+	close(g.gate)
+	waitFor(t, "the queue to drain", func() bool { return sh.Status()[0].Queued == 0 })
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.batches) < 2 {
+		t.Errorf("%d batches", len(g.batches))
+	}
+	for _, b := range g.batches {
+		size := 0
+		for i := range b {
+			size += b[i].size()
+		}
+		if len(b) > 1 && size > 40<<10 {
+			t.Errorf("a batch of %d records is %d bytes", len(b), size)
+		}
+	}
+	if last := g.recs[len(g.recs)-1].Message; !strings.HasPrefix(last, "199 ") {
+		t.Errorf("the newest record was not kept: %.10q", last)
 	}
 }
