@@ -13,6 +13,7 @@ import type {
   BackupDestination,
   BackupObject,
   BackupStatus,
+  UpdateStatus,
   BackupTestResult,
   CertificateView,
   CreatedToken,
@@ -95,6 +96,12 @@ export const logShippingApi = {
   test: (t: LogTarget) => http.post('/api/logshipping/test', t),
   searchServerLog: (p: LogSearchParams, signal?: AbortSignal) =>
     http.get<LogSearchResult>(`/api/server/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
+};
+
+export const updatesApi = {
+  status: () => http.get<UpdateStatus>('/api/updates'),
+  check: () => http.post<UpdateStatus>('/api/updates/check'),
+  install: () => http.post<UpdateStatus>('/api/updates/install'),
 };
 
 export const backupsApi = {

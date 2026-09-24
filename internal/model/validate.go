@@ -594,6 +594,7 @@ func DefaultSettings() Settings {
 		IPBan:              DefaultIPBan(),
 		Backup:             DefaultBackup(),
 		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
+		Updates:            DefaultUpdates(),
 	}
 }
 

@@ -59,6 +59,7 @@ function PathEntries { @((SystemPath) -split ";" | Where-Object { $_.TrimEnd("\"
 function FirewallRule { netsh advfirewall firewall show rule name=NodeHoster | Out-Null; $LASTEXITCODE -eq 0 }
 function RunValue { (Get-ItemProperty $RunKey -ErrorAction SilentlyContinue).NodeHosterStatus }
 function ServicePid { (Get-CimInstance Win32_Service -Filter "Name='NodeHoster'").ProcessId }
+function AutoUpdate { (& "$App\nodehoster.exe" --json update | Out-String | ConvertFrom-Json).auto }
 
 # The module imports from the machine-wide module path, and its commands
 # reach the service through nodehoster.exe and the admin pipe.
@@ -108,7 +109,7 @@ function Check-Running($what) {
 }
 
 Write-Host "Install"
-Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall,statusicon`"") 0
+Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall,statusicon,autoupdate`"") 0
 Check (Test-Path "$App\nodehoster.exe") "nodehoster.exe is installed"
 Check (Test-Path "$App\nodehoster-manager.exe") "nodehoster-manager.exe is installed"
 Check-Running "install"
@@ -121,12 +122,17 @@ Check ($ver.ProductName -eq "NodeHoster") "nodehoster.exe has version informatio
 Check-Module "install"
 & "$App\nodehoster.exe" site list | Out-Null
 Check ($LASTEXITCODE -eq 0) "nodehoster site list talks to the service"
+Check ((AutoUpdate) -eq $true) "the autoupdate task turned automatic updates on"
+# An administrator turns them off; upgrades must not turn them back on.
+& "$App\nodehoster.exe" update auto off | Out-Null
+Check ($LASTEXITCODE -eq 0 -and (AutoUpdate) -eq $false) "nodehoster update auto off turns them off"
 $password = Get-Content "$Data\initial-admin-password.txt" -Raw
 $pid1 = ServicePid
 
 Write-Host "Upgrade (reinstall over the top, without the status icon)"
-Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall`"") 0
+Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall,autoupdate`"") 0
 Check-Running "upgrade"
+Check ((AutoUpdate) -eq $false) "an upgrade keeps the administrator's automatic update setting"
 Check ((ServicePid) -ne $pid1) "the service was restarted"
 Check ((Get-Content "$Data\initial-admin-password.txt" -Raw) -eq $password) "the data was kept"
 Check ((PathEntries).Count -eq 1) "the PATH entry was not duplicated"

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -78,5 +81,43 @@ func TestImmutableUpload(t *testing.T) {
 	// Without -immutable (dev builds) overwriting is allowed.
 	if _, err := upload(ctx, c, "rel-bucket", "rel/", writeFile(t, "v2"), false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSignedManifest(t *testing.T) {
+	ctx, c := context.Background(), fakeS3(t)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	key, err := signingKey(base64.StdEncoding.EncodeToString(priv.Seed()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"version":"1.2.0"}`)
+	if err := writeManifest(ctx, c, "rel-bucket", "rel/latest.json", body, key); err != nil {
+		t.Fatal(err)
+	}
+	read := func(k string) []byte {
+		obj, err := c.GetObject(ctx, "rel-bucket", k, minio.GetObjectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if got := read("rel/latest.json"); string(got) != string(body) {
+		t.Fatalf("manifest = %q", got)
+	}
+	// What NodeHoster's updater does (internal/update.Verify).
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(read("rel/latest.json.sig"))))
+	if err != nil || !ed25519.Verify(pub, body, sig) {
+		t.Fatalf("the signature does not verify (%v)", err)
+	}
+
+	for _, bad := range []string{"", "not base64!", base64.StdEncoding.EncodeToString([]byte("short"))} {
+		if _, err := signingKey(bad); err == nil {
+			t.Errorf("signingKey(%q) accepted", bad)
+		}
 	}
 }

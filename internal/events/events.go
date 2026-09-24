@@ -41,6 +41,11 @@ const (
 	TaskTimeout     = "task.timeout" // a scheduled task ran past its timeout and was killed
 	BackupCompleted = "backup.completed"
 	BackupFailed    = "backup.failed" // no destination, or some, received the archive
+
+	UpdateAvailable  = "update.available"  // the release feed has a newer version
+	UpdateInstalling = "update.installing" // the updater is starting setup
+	UpdateInstalled  = "update.installed"  // the service runs the new version
+	UpdateFailed     = "update.failed"     // downloading or installing failed
 )
 
 // SecurityBanned: automatic IP banning banned an address (or an
@@ -49,7 +54,8 @@ const SecurityBanned = "security.banned"
 
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
-	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed}
+	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
 
 type Bus struct {
 	store    *store.Store

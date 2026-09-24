@@ -16,12 +16,17 @@ name: Build
 #
 #   git tag v1.2.3 && git push origin v1.2.3
 #
-# The S3 credentials are only exposed to the publish step, which runs only
-# for tags (pushing one needs write access). Workflows triggered by pull
-# requests from forks never receive secrets.
+# The S3 credentials and the update signing key are only exposed to the
+# publish step, which runs only for tags (pushing one needs write access).
+# Workflows triggered by pull requests from forks never receive secrets.
+#
+# latest.json is signed (latest.json.sig): servers with automatic updates
+# only install a release whose manifest verifies with a public key built
+# into them (internal/update.PublicKeys).
 #
 # Configuration (Settings -> Secrets and variables -> Actions):
-#   secrets   S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+#   secrets   S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, UPDATE_SIGNING_KEY
+#             (base64 Ed25519 seed matching internal/update.PublicKeys)
 #   variables S3_ENDPOINT (host, no scheme), S3_BUCKET, S3_PREFIX (optional,
 #             default "nodehoster"), S3_PUBLIC_URL (optional base URL for
 #             download links, default https://<endpoint>/<bucket>)
@@ -306,6 +311,7 @@ jobs:
         env:
           S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
           S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
           S3_BUCKET: ${{ vars.S3_BUCKET }}
           S3_PREFIX: ${{ vars.S3_PREFIX }}
@@ -314,6 +320,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           if (-not ($env:S3_ACCESS_KEY_ID -and $env:S3_SECRET_ACCESS_KEY -and $env:S3_ENDPOINT -and $env:S3_BUCKET)) {
             throw "S3 is not configured: set the S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY secrets and the S3_ENDPOINT and S3_BUCKET variables"
+          }
+          if (-not $env:UPDATE_SIGNING_KEY) {
+            throw "The UPDATE_SIGNING_KEY secret is not set: servers with automatic updates refuse an unsigned release"
           }
           $root = if ($env:S3_PREFIX) { $env:S3_PREFIX.Trim("/") } else { "nodehoster" }
           $prefix = "$root/releases/$env:VERSION/"
@@ -325,7 +334,7 @@ jobs:
           Pop-Location
           if ($code) { exit $code }
 
-          $publishArgs = @("-endpoint", $env:S3_ENDPOINT, "-bucket", $env:S3_BUCKET, "-prefix", $prefix, "-immutable",
+          $publishArgs = @("-endpoint", $env:S3_ENDPOINT, "-bucket", $env:S3_BUCKET, "-prefix", $prefix, "-immutable", "-sign",
                            "-version", $env:VERSION, "-commit", "${{ github.sha }}", "-latest", "$root/releases/latest.json")
           $files = @(Get-ChildItem dist\*-setup.exe, dist\*.zip, dist\SHA256SUMS.txt | ForEach-Object { $_.FullName })
           & $tool @publishArgs @files

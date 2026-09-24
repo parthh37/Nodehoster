@@ -34,6 +34,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/tasks"
+	"github.com/parthh37/nodehoster/internal/update"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -74,6 +75,9 @@ type Core struct {
 	running map[string]bool // desired state of non-node sites
 
 	backups backupState
+	updates updateState
+	// UpdateFeed is where new releases come from (tests replace it).
+	UpdateFeed *update.Feed
 
 	ctx    context.Context // ends at Shutdown
 	cancel context.CancelFunc
@@ -108,6 +112,8 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
 	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
+	c.settings.Updates.ApplyDefaults()
+	c.UpdateFeed = update.NewFeed(update.DefaultFeed)
 
 	c.Ship = newShipper(log, c.siteName)
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
@@ -203,12 +209,14 @@ func (c *Core) Start() {
 	c.Mail.Start()
 	c.Tasks.Start()
 	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
+	c.reportUpdate()
 
 	c.wg.Go(func() { c.Certs.Run(ctx) })
 	c.wg.Go(func() { c.metricsLoop(ctx) })
 	c.wg.Go(func() { c.housekeeping(ctx) })
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
+	c.wg.Go(func() { c.updateLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -310,6 +318,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 		return cur, err
 	}
 	if err := c.prepareLogShipping(&in.LogShipping, cur.LogShipping); err != nil {
+		return cur, err
+	}
+	in.Updates.ApplyDefaults()
+	if err := in.Updates.Validate(); err != nil {
 		return cur, err
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {

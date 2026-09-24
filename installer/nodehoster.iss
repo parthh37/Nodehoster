@@ -8,7 +8,9 @@
 ; (nodehoster-manager.exe, the desktop console) and starts its status icon
 ; in the notification area at every sign-in unless that task is unchecked,
 ; and the NodeHoster PowerShell module (Get-NHSite, Publish-NHSite...) for
-; every user, in {commonpf64}\WindowsPowerShell\Modules.
+; every user, in {commonpf64}\WindowsPowerShell\Modules. A first
+; installation asks whether NodeHoster may install its own updates (Settings
+; → Updates changes it later; upgrades leave the choice alone).
 ; Upgrades stop the service first and start it again afterwards; installing
 ; an older version over a newer one asks first. Uninstalling removes the
 ; service, the firewall rule, the PATH entry, the status icon and the
@@ -17,6 +19,7 @@
 ;
 ; Unattended install (for scripts and remote management):
 ;   NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall"
+; (add autoupdate to /TASKS to turn automatic updates on).
 ; Exit codes: 0 installed and the service is running; 1 installed, but the
 ; service did not start; 7 not installed, because a newer version is
 ; installed (add /ALLOWDOWNGRADE to install it anyway). Other codes are Inno
@@ -79,6 +82,10 @@ SetupLogging=yes
 Name: "addtopath"; Description: "Add nodehoster to the system PATH"; Flags: checkedonce
 Name: "firewall"; Description: "Allow NodeHoster through Windows Firewall"; Flags: checkedonce
 Name: "statusicon"; Description: "Show the NodeHoster status icon in the notification area at sign-in (all users)"; Flags: checkedonce
+; Only offered by a first installation: afterwards the setting belongs to
+; the consoles, and an upgrade (including an automatic one) must not undo
+; what an administrator chose there.
+Name: "autoupdate"; Description: "Install NodeHoster updates automatically (at 03:00; the service restarts for a few seconds). Change it later in Settings > Updates"; Check: IsFreshInstall
 
 [Files]
 Source: "{#SourceDir}\nodehoster.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -110,6 +117,9 @@ Filename: "{app}\nodehoster.exe"; Parameters: "service install"; StatusMsg: "Reg
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""NodeHoster"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""NodeHoster"" dir=in action=allow program=""{app}\nodehoster.exe"" enable=yes profile=any"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated; AfterInstall: VerifyServiceRunning
+; Through the running service; saved in its database directly if it did
+; not start. Off is the default, so only "on" needs recording.
+Filename: "{app}\nodehoster.exe"; Parameters: "update auto on"; StatusMsg: "Turning on automatic updates..."; Flags: runhidden waituntilterminated; Tasks: autoupdate
 ; The status icon runs unelevated, as the user who started setup. Upgrades
 ; close every user's icon (the program file must be replaced); other users
 ; get theirs back at their next sign-in.
@@ -248,6 +258,12 @@ begin
       exit;
     end;
   end;
+end;
+
+// A first installation, as opposed to an upgrade or a repair.
+function IsFreshInstall: Boolean;
+begin
+  Result := InstalledVersion = '';
 end;
 
 function HasSwitch(Name: string): Boolean;

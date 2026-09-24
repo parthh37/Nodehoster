@@ -33,6 +33,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
+	"github.com/parthh37/nodehoster/internal/update"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -79,7 +80,17 @@ func main() {
 		return
 	}
 
+	// The updater: a copy of this program that runs setup (not listed in
+	// the usage; the service starts it).
+	if len(args) > 0 && args[0] == "update-apply" {
+		os.Exit(update.RunUpdater(args[1:]))
+	}
 	if cli.Has(args) {
+		cli.OfflineUpdates = func(fn func(*model.UpdateSettings)) error { return offlineUpdates(*dataDir, fn) }
+		cli.ServiceUp = func() bool {
+			st, _ := service.Status()
+			return st == "running" || st == "starting"
+		}
 		os.Exit(cli.Main(args, *dataDir, *jsonOut))
 	}
 	cmd := "run"
@@ -221,6 +232,32 @@ func allowPasswordSignIn(dataDir string, st *store.Store) (bool, error) {
 	}
 	sso["disablePassword"] = false
 	return true, cl.Put(ctx, "/api/settings", doc, nil)
+}
+
+// offlineUpdates changes the updates settings in the database while the
+// service is not running (`nodehoster update auto` from setup, when the
+// service did not start); the service reads them when it starts.
+func offlineUpdates(dataDir string, fn func(*model.UpdateSettings)) error {
+	paths := config.NewPaths(dataDir)
+	if err := paths.Ensure(); err != nil {
+		return err
+	}
+	st, err := store.Open(paths.DB)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+	s := model.DefaultSettings()
+	if err := st.GetDoc(ctx, "settings", &s); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	s.Updates.ApplyDefaults()
+	fn(&s.Updates)
+	if err := s.Updates.Validate(); err != nil {
+		return err
+	}
+	return st.PutDoc(ctx, "settings", s)
 }
 
 func newLogger(paths config.Paths, level string, interactive bool) *slog.Logger {

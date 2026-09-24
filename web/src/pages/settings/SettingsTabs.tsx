@@ -319,6 +319,10 @@ export const EVENT_TYPES = [
   'security.banned',
   'backup.completed',
   'backup.failed',
+  'update.available',
+  'update.installing',
+  'update.installed',
+  'update.failed',
 ];
 
 const FORMATS = [

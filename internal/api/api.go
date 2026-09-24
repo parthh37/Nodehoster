@@ -211,6 +211,10 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/logshipping/status", a.logShippingStatus)
 		r.Post("/logshipping/test", a.logShippingTest)
 		r.Get("/server/logs/search", a.serverLogSearch)
+		r.Get("/updates", a.updateStatus)
+		r.Put("/updates", a.putUpdates)
+		r.Post("/updates/check", a.checkUpdate)
+		r.Post("/updates/install", a.installUpdate)
 	})
 }
 

@@ -142,6 +142,7 @@ var noticeTypes = map[string]bool{
 	events.DeployFailed: true, events.DeploySucceeded: true,
 	events.CertFailed: true, events.CertExpiring: true, events.UpstreamDown: true,
 	events.MailFailed: true, events.MailError: true,
+	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
 }
 
 func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {
