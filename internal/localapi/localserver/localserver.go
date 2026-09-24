@@ -136,6 +136,7 @@ func summary(c *core.Core) localapi.Summary {
 		}
 		out.Sites = append(out.Sites, ss)
 	}
+	out.Alerts = alertSummaries(c)
 	return out
 }
 
@@ -148,6 +149,7 @@ var noticeTypes = map[string]bool{
 	events.MailFailed: true, events.MailError: true,
 	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
 	events.RemoteDown: true,
+	events.AlertFiring: true, events.AlertResolved: true,
 }
 
 func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {

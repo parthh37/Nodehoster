@@ -5,6 +5,7 @@ import type { IPBanSettings, MailSettings, MimeSettings, Settings, SSOSettings }
 import { normalizeBackup } from './backup';
 import { normalizeLogShipping } from './logShipping';
 import { normalizeUpdates } from './updates';
+import { normalizeAlerts } from './alerts';
 
 export function defaultMail(): MailSettings {
   return {
@@ -88,6 +89,7 @@ export function normalizeSettings(s: Settings): Settings {
     backup: normalizeBackup(s.backup),
     logShipping: normalizeLogShipping(s.logShipping),
     updates: normalizeUpdates(s.updates),
+    alerts: normalizeAlerts(s.alerts),
   };
 }
 

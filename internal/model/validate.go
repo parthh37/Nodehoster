@@ -158,6 +158,7 @@ func (s *Site) ApplyDefaults() {
 		s.Tasks[i].applyDefaults()
 	}
 	s.Deploy.Previews.applyDefaults()
+	s.Alerts.applyDefaults()
 }
 
 func (hc *HealthCheck) applyDefaults(intervalSec int) {
@@ -329,6 +330,9 @@ func (s *Site) Validate() error {
 		return err
 	}
 	if err := s.validatePreviews(); err != nil {
+		return err
+	}
+	if err := s.Alerts.validate(s); err != nil {
 		return err
 	}
 	r := s.Routing
@@ -603,6 +607,7 @@ func DefaultSettings() Settings {
 		Backup:             DefaultBackup(),
 		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 		Updates:            DefaultUpdates(),
+		Alerts:             DefaultAlerts(),
 	}
 }
 

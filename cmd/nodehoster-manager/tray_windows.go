@@ -234,6 +234,7 @@ func (t *tray) buildMenu() {
 		a := add("", s.Name+": "+desktop.StateText(s.State), true, func() { startManager("--site", id) })
 		a.SetImage(asImage(siteIcon(string(s.Type), desktop.SiteLevel(s.State))))
 	}
+	t.alertItems(add)
 	if t.sum != nil && t.sum.AdminError != "" {
 		add(desktop.IconWarning, "Web console: "+t.sum.AdminError, false, nil).SetImage(img(desktop.IconWarning))
 	}

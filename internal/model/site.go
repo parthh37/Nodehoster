@@ -47,6 +47,9 @@ type Site struct {
 	// in the site's release, environment and identity.
 	Tasks []ScheduledTask `json:"tasks,omitempty"`
 
+	// Alerts: overrides of the server-wide alert rules, and this site's own.
+	Alerts SiteAlerts `json:"alerts"`
+
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
 	ActiveRelease string `json:"activeRelease,omitempty"`

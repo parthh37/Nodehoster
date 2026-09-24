@@ -41,6 +41,10 @@ export const qk = {
   // (see LOCAL_QUERY_ROOTS).
   servers: ['local', 'servers'] as const,
   remoteMe: (id: string) => ['local', 'remote-me', id] as const,
+  alerts: ['alerts'] as const,
+  alertList: (siteId?: string) => ['alerts', 'list', siteId ?? ''] as const,
+  alertHistory: (siteId?: string, server?: boolean) => ['alerts', 'history', siteId ?? '', !!server] as const,
+  siteAlertRules: (siteId: string) => ['alerts', 'rules', siteId] as const,
 };
 
 /** Query roots that are about this server whichever server the console operates. */

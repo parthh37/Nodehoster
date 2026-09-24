@@ -878,14 +878,117 @@ now such as `15m`, `24h`), `limit` (default 200, at most 1000), `cursor`.
 | GET | `/api/sites/{id}/logs/search?source=app\|access&stream=…` | viewer on the site | `{lines: LogLine[], truncated, cursor?, scannedBytes}` |
 | GET | `/api/server/logs/search?level=warning` | admin | same; `LogLine.s` is the line's level, `m` the whole line |
 
+## Resource alerts
+
+Like Azure Monitor metric alerts (or a Prometheus rule with `for:`): a
+rule fires when a metric stays past its limit for `forMinutes`, and
+resolves once it has been back within the limit for the recovery period.
+Rules are evaluated every 15 s from the metrics NodeHoster already keeps;
+nothing is added to the request path but one counter per request (a
+response time histogram for the 95th percentile).
+
+**Rules.** `Settings.alerts` (admin) = `{enabled, siteRules[], serverRules[],
+recoveryMinutes, emailTo[]}`; off by default, with a starting set of rules
+(settings saved before alerts existed get it too). A rule is
+`{id, metric, threshold, forMinutes, severity: warning|critical,
+windowMinutes?, minRequests?, repeatHours?, disabled?}`; an `id` left out is
+made from the metric (`cpu`, `cpu-2`…; `site-cpu` on a site). Rule IDs are
+unique across both lists. `recoveryMinutes` (1–60, default 2) is the
+hysteresis that keeps a value hovering at the limit from firing again and
+again. `forMinutes` 0 fires on the first evaluation past the limit;
+`repeatHours` (0–168) sends a reminder while it fires.
+
+| Metric | Of | Value |
+|---|---|---|
+| `cpu` | site | CPU of all instances, % of one core (as the site's Overview shows it) |
+| `instanceCpu` | site | the busiest instance's CPU, % of one core |
+| `memory` | site | memory of all instances, MB |
+| `memoryPercent` | site | the largest instance, % of its memory limit (the lower of `limits.memoryLimitMB` and `recycle.memoryLimitMB`; sites with neither are skipped) |
+| `eventLoopLag` | site | the worst instance's event-loop lag, ms (sites with `agentEnabled`) |
+| `errorRate` | site | 5xx answers, % of the requests of the last `windowMinutes` (1–30, default 5) |
+| `latency` | site | average response time over the window, ms |
+| `latencyP95` | site | 95th percentile response time over the window, ms, estimated from a histogram (buckets 5, 10, 25, 50, 100, 250, 500, 750 ms, 1, 1.5, 2, 3, 5, 10, 30, 60 s) |
+| `instancesDown` | site | configured instances not ready and healthy (threshold 0: any) |
+| `serverCpu` | server | machine CPU, % |
+| `serverMemory` | server | machine memory in use, % |
+| `diskFree` | server | free space on the emptiest drive holding the data directory, the sites folder or a site's folder, % (fires **below** the threshold) |
+
+The rate metrics count a window with fewer than `minRequests` (default
+20) requests as within the limit: one failure out of one request is not a
+100% error rate. Node.js metrics apply to node and worker sites, request
+metrics to sites that answer HTTP (not workers); a server-wide rule a site
+cannot be measured on is skipped for it. Certificate expiry is not a rule:
+`certExpiryWarnDays` and `cert.expiring` cover it.
+
+**Per site.** `Site.alerts` = `{disabled?, rules[]?}`: `disabled` opts the
+site out of site alerts altogether; a rule with the `id` of a server-wide
+site rule replaces it for this site (`disabled: true` turns it off here);
+other rules are the site's own. Saved with the site (admin), validated
+against its type.
+
+**What counts as sustained.** Each evaluation finds a rule past its limit,
+within it, or with nothing to measure. A condition fires once every
+evaluation for `forMinutes` found it past the limit, except those with
+nothing to measure; a gap of more than a minute between evaluations (the
+service was stopped or stalled) starts the period over. A stopped (or
+stopping) site is within every limit, so its alerts resolve; a starting
+site has nothing to measure: a pending condition neither advances nor
+resets, a firing alert counts it as clear. A failed site (rapid-fail
+protection gave up) only has instances down.
+
+**Across a restart.** Firing alerts are stored and come back firing,
+without being notified again; they resolve (notified) once their condition
+has been clear for the recovery period, or at the first evaluation when
+their rule, their site or alerts as a whole are gone ("site deleted",
+"rule removed or turned off", "alerts turned off"). Pending conditions are
+not stored: their period starts over.
+
+**Notifications.** `alert.firing` (level `warning`, or `error` for critical
+alerts; reminders too) and `alert.resolved` (`info`) events, which reach the
+event log, webhooks (Slack, Teams, Discord, generic), log shipping and the
+status icon (critical alerts not silenced turn it amber). The message names
+the value, how long and the limit: `CPU 93% (instance 1) for 10 min (limit
+90%)`, `Resolved after 25 min: CPU 40% (instance 1) (limit 90%)`; the event's
+site gives the rest (`[api.example.com] …` in chat). An evaluation delivers
+at most 10 notifications, critical ones first; one more summarizes the
+others. With `emailTo`, each evaluation's notifications are also one
+e-mail, queued on the built-in SMTP server (delivered directly or through
+its smart host, whether or not it listens) from `nodehoster@<mail host
+name>`.
+
+**Silences.** A silenced alert sends no notification and no reminder, and
+its resolution is only notified if its firing was. Silencing for some
+minutes also covers the rule's next alerts on the same site until the time
+is up (a flapping condition stays quiet); `minutes: 0` acknowledges the
+alert: silent until it resolves. Lifting the silence of an alert that
+fired unnotified notifies it at the next evaluation.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/alerts?siteId=` | viewer (filtered) | | `{enabled, firing: Alert[], pending: Alert[]}` — critical first, then oldest |
+| GET | `/api/alerts/history?siteId=&server=1&limit=100` | viewer (filtered) | | `Alert[]` that fired, newest first (at most 1000; `server=1`: server alerts only) |
+| POST | `/api/alerts/{id}/silence` | operator on the alert's site (server alerts: server operator) | `{minutes, note?}` | `Alert` (0–43200 minutes; 409 when it has resolved) |
+| DELETE | `/api/alerts/{id}/silence` | same | | `Alert` |
+| GET | `/api/sites/{id}/alert-rules` | viewer on the site | | `{enabled, defaults: AlertRule[], recoveryMinutes}` — the server-wide site rules, for the site's Alerts tab |
+
+`Alert` = `{id, ruleId, siteId?, siteName?, metric, severity, threshold,
+forMinutes, state: pending|firing|resolved, value, peak, detail?, message,
+since, firedAt?, resolvedAt?, resolveNote?, notified, lastNotifiedAt?,
+silence?: {until?, by, at, note?}}`. Site-scoped callers see their sites'
+alerts only, never server alerts (`siteId` of a site they cannot see: 404).
+History is kept as long as events (`logRetentionDays`), at most 5,000
+resolved alerts. Silences are audited (`alert.silence`, `alert.unsilence`).
+
 ## Prometheus
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes
 `nodehoster_requests_total{site,code}`,
 `nodehoster_requests_by_protocol_total{site,protocol}` (`HTTP/1.1`, `HTTP/2`,
-`HTTP/3`), `nodehoster_instance_memory_bytes`, etc.
-A site-scoped (or site-restricted) token sees only its sites and no
-certificate metrics.
+`HTTP/3`), `nodehoster_instance_memory_bytes`, etc.,
+and `nodehoster_alert_firing{rule,metric,severity,site,silenced} 1` for each
+resource alert firing (`site=""` for the server's).
+A site-scoped (or site-restricted) token sees only its sites (and their
+alerts) and no certificate metrics.
 
 ## Server connections (multi-server)
 
@@ -1015,8 +1118,8 @@ service is stopped.
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/status` | `{version, startedAt, adminUrl?, adminError?, sites: [{id, name, type, autoStart, state, message?, instances, ready}]}` |
-| GET | `/status/stream` | **Server-Sent Events**: `event: summary` (as `/status`) every 3 s; `event: notice` `{time, level, type, site, message}` for crashes, rapid-fail, failed health checks and deployments, certificate problems and unreachable upstreams |
+| GET | `/status` | `{version, startedAt, adminUrl?, adminError?, sites: [{id, name, type, autoStart, state, message?, instances, ready}], alerts?: [{id, siteId?, site?, severity, message, silenced?}]}` (`alerts`: resource alerts firing) |
+| GET | `/status/stream` | **Server-Sent Events**: `event: summary` (as `/status`) every 3 s; `event: notice` `{time, level, type, site, message}` for crashes, rapid-fail, failed health checks and deployments, certificate problems, unreachable upstreams and resource alerts firing or resolved |
 
 `adminError` is set when the web console could not start (its port is in
 use, or its certificate is missing): the server keeps running without it.

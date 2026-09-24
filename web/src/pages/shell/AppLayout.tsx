@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   BadgeCheck,
+  BellRing,
   Boxes,
   ChevronDown,
   ClipboardList,
@@ -54,6 +55,7 @@ const nav: NavItem[] = [
   { to: '/mail', label: 'Mail', icon: Mail },
   { to: '/events', label: 'Events', icon: Activity },
   { to: '/servers', label: 'Servers', icon: Network },
+  { to: '/alerts', label: 'Alerts', icon: BellRing },
 ];
 
 // A user allowed on selected sites only sees their sites and their events.
@@ -61,6 +63,7 @@ const siteNav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/events', label: 'Events', icon: Activity },
   { to: '/servers', label: 'Servers', icon: Network },
+  { to: '/alerts', label: 'Alerts', icon: BellRing },
 ];
 
 const adminNav: NavItem[] = [

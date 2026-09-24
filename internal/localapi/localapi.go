@@ -42,6 +42,18 @@ type Summary struct {
 	AdminURL   string        `json:"adminUrl,omitempty"`
 	AdminError string        `json:"adminError,omitempty"`
 	Sites      []SiteSummary `json:"sites"`
+	// Alerts are the resource alerts firing, most severe first.
+	Alerts []AlertSummary `json:"alerts,omitempty"`
+}
+
+// AlertSummary is a resource alert firing, as the status icon shows it.
+type AlertSummary struct {
+	ID       string `json:"id"`
+	SiteID   string `json:"siteId,omitempty"` // "" for the server's own alerts
+	Site     string `json:"site,omitempty"`
+	Severity string `json:"severity"` // warning | critical
+	Message  string `json:"message"`
+	Silenced bool   `json:"silenced,omitempty"`
 }
 
 type SiteSummary struct {

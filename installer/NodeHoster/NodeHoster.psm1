@@ -919,9 +919,131 @@ function Get-NHServer {
 
 Update-TypeData -TypeName NodeHoster.Server -DefaultDisplayPropertySet name, url, fingerprint, tokenSaved, Connected -Force
 
+function ConvertTo-NHAlert($Alert) {
+  foreach ($a in $Alert) {
+    if ($null -eq $a) { continue }
+    $site = 'server'
+    if ($a.PSObject.Properties['siteName'] -and $a.siteName) { $site = $a.siteName }
+    $fired = $null
+    if ($a.PSObject.Properties['firedAt'] -and $a.firedAt) { $fired = [datetime] $a.firedAt }
+    $resolved = $null
+    if ($a.PSObject.Properties['resolvedAt'] -and $a.resolvedAt) { $resolved = [datetime] $a.resolvedAt }
+    $silenced = [bool] ($a.PSObject.Properties['silence'] -and $a.silence)
+    Add-Member -InputObject $a -NotePropertyName Site -NotePropertyValue $site -Force
+    Add-Member -InputObject $a -NotePropertyName FiredAt -NotePropertyValue $fired -Force
+    Add-Member -InputObject $a -NotePropertyName ResolvedAt -NotePropertyValue $resolved -Force
+    Add-Member -InputObject $a -NotePropertyName Silenced -NotePropertyValue $silenced -Force
+    Add-NHType $a 'NodeHoster.Alert'
+  }
+}
+
+Update-TypeData -TypeName NodeHoster.Alert -DefaultDisplayPropertySet Site, Severity, State, Message, FiredAt, Silenced, Id -Force
+
+<#
+.SYNOPSIS
+Gets NodeHoster resource alerts: those firing, or the recent ones.
+.DESCRIPTION
+Without -History, returns the alerts firing now (with -Pending, also the
+conditions past their limit that have not lasted long enough to fire).
+With -History, returns the alerts that fired, newest first, resolved ones
+included.
+.PARAMETER Site
+Only this site's alerts (name or ID). Accepts pipeline input.
+.PARAMETER Pending
+Also return pending alerts.
+.PARAMETER History
+Return recent alerts instead of the ones in progress.
+.PARAMETER Count
+With -History, how many (default 50).
+.EXAMPLE
+Get-NHAlert | Where-Object Severity -eq 'critical'
+.EXAMPLE
+Get-NHSite shop | Get-NHAlert -History -Count 10
+#>
+function Get-NHAlert {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName', 'Name')]
+    [string] $Site,
+    [switch] $Pending,
+    [switch] $History,
+    [ValidateRange(1, 1000)]
+    [int] $Count = 50
+  )
+  process {
+    if ($History) {
+      $cliArgs = @('alert', 'history', '-n', "$Count")
+      if ($Site) { $cliArgs += @('--site', $Site) }
+      ConvertTo-NHAlert @(Invoke-NHCli $cliArgs)
+      return
+    }
+    $cliArgs = @('alert', 'list')
+    if ($Site) { $cliArgs += @('--site', $Site) }
+    $list = Invoke-NHCli $cliArgs
+    if (-not $list.enabled) { Write-Warning 'Alerts are off (Settings > Alerts in the web console).' }
+    ConvertTo-NHAlert @($list.firing)
+    if ($Pending) { ConvertTo-NHAlert @($list.pending) }
+  }
+}
+
+<#
+.SYNOPSIS
+Silences a NodeHoster alert, for a while or until it resolves.
+.DESCRIPTION
+A silenced alert sends no notification or reminder. A timed silence also
+covers the rule's next alerts on the same site until it ends; without
+-Minutes (or with 0), the alert is acknowledged: silent until it resolves.
+.PARAMETER Id
+The alert's ID (or its first characters). Accepts alerts from Get-NHAlert.
+.PARAMETER Minutes
+How long. 0 (the default) acknowledges the alert.
+.PARAMETER Note
+Why, shown with the alert and written to the audit log.
+.EXAMPLE
+Get-NHAlert | Where-Object Site -eq 'shop' | Set-NHAlertSilence -Minutes 60 -Note 'deploying a fix'
+#>
+function Set-NHAlertSilence {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [string] $Id,
+    [ValidateRange(0, 43200)]
+    [int] $Minutes = 0,
+    [string] $Note
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess($Id, 'silence alert')) { return }
+    $cliArgs = @('alert', 'silence', $Id, '--minutes', "$Minutes")
+    if ($Note) { $cliArgs += @('--note', $Note) }
+    ConvertTo-NHAlert (Invoke-NHCli $cliArgs)
+  }
+}
+
+<#
+.SYNOPSIS
+Lifts a NodeHoster alert's silence: it notifies again.
+.PARAMETER Id
+The alert's ID (or its first characters). Accepts alerts from Get-NHAlert.
+.EXAMPLE
+Get-NHAlert | Where-Object Silenced | Clear-NHAlertSilence
+#>
+function Clear-NHAlertSilence {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [string] $Id
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess($Id, 'unsilence alert')) { return }
+    ConvertTo-NHAlert (Invoke-NHCli @('alert', 'unsilence', $Id))
+  }
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
   Update-NHCertificateOcsp, Get-NHTlsSetting, Set-NHTlsSetting,
   Get-NHPreview, Publish-NHPreview, Remove-NHPreview,
-  Connect-NHServer, Disconnect-NHServer, Get-NHServer
+  Connect-NHServer, Disconnect-NHServer, Get-NHServer,
+  Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence

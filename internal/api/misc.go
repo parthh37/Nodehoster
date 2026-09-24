@@ -365,6 +365,7 @@ func (a *API) prometheus(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "nodehoster_instance_restarts_total{%s,instance=\"%d\"} %d\n", label(s), in.Index, in.Restarts)
 		}
 	}
+	a.prometheusAlerts(&b, access(r))
 	if access(r).SiteScoped() {
 		// Certificates are server-wide.
 		io.WriteString(w, b.String())

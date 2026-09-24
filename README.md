@@ -80,7 +80,7 @@ IIS Manager, with a status icon in the notification area.
 
 **Administration**
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
-- **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
+- **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail, certificate problems and resource alerts, start/stop the service
 - Web console (React) with live status over Server-Sent Events
 - **Multi-server management** like IIS Manager's "Connect to a Server": connect the web console to other NodeHoster servers (their web console URL and an API token created there, encrypted at rest, with a self-signed certificate pinned by its SHA-256 fingerprint after you compare it on first connect) and switch between them from the top bar — every page then operates that server through this one, live status, log tails and zip uploads included. A **Servers** page shows each one's reachability, version, sites running/failed, CPU and memory, checked every 30 s, with `remote.down` / `remote.up` notifications. Administrators choose which roles may use each connection; users never get more there than their role here (viewers only read), and every change made through a connection is in the local audit log. NodeHoster Manager (**Connect to a server…**), the command line (`nodehoster --server web02 site list`) and the PowerShell module (`Connect-NHServer`) connect the same way, with the token saved for your Windows account only (DPAPI)
 - **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
@@ -89,6 +89,7 @@ IIS Manager, with a status icon in the notification area.
 - **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
+- **Resource alerts** like Azure Monitor metric alerts: a rule fires when a metric stays past its limit for N minutes ("api.example.com: CPU 93% for 10 min (limit 90%)") and resolves after a recovery period, so a value hovering at the limit does not flap. Site CPU (total or busiest instance), memory (MB, or % of the site's memory limit), Node.js event-loop lag, 5xx error rate and average or p95 response time over a window (with a minimum request count), instances down; the server's CPU, memory and free disk space on the drives holding the data and the sites. Server-wide rules with per-site overrides and opt-out, warning or critical, reminders while firing; stopped or starting sites raise none. Notified through webhooks (Slack, Teams, Discord), the event log, the status icon (amber for critical alerts) and optionally e-mail through the built-in SMTP server; silence for a while or acknowledge until resolved; firing alerts survive a restart without notifying twice; history, a dashboard banner, an Alerts page in both consoles and `nodehoster_alert_firing` in Prometheus
 - **Log shipping** to syslog (RFC 5424 over UDP, TCP or TLS), Seq (CLEF) or any HTTP collector (JSON or NDJSON batches): server log, sites' output and access logs, events and audit log, per-site filters; bounded queues that drop the oldest records rather than ever slowing a site, retries with back-off, delivery counters
 - **Log search** across current and rotated (also gzipped) log files: text or regular expressions, stream and time range, newest first
 - Backup & restore of the whole configuration
@@ -188,8 +189,8 @@ never update themselves. Upgrades never change the setting.
 **Start → NodeHoster Manager** opens the desktop console (it asks for
 administrator rights, like IIS Manager). The left pane lists the server,
 its sites (with their state on their icons), certificates, SMTP e-mail,
-Node.js versions, web console users, banned addresses, the event and audit
-logs and backups; the middle pane shows the selected one (the server's
+Node.js versions, web console users, banned addresses, alerts, the event and
+audit logs and backups; the middle pane shows the selected one (the server's
 home is a dashboard of the service, CPU, memory and disk); the right pane
 has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
 edit its bindings, environment, URL Rewrite rules, MIME types and basic
@@ -197,7 +198,7 @@ settings, browse it, follow its log live (pause, filter, save), see a
 deployment's output and roll back a release, run or cancel a scheduled
 task, purge its response cache, install Node.js versions, reset a web
 console user's password or two-factor authentication, ban and unban
-addresses, manage the mail queue, change where the web console listens,
+addresses, silence or acknowledge an alert, manage the mail queue, change where the web console listens,
 back up to a file, run a scheduled backup now and see its history, restore
 from a backup, and start or stop the service.
 
@@ -232,8 +233,10 @@ manager (Tools → Web console settings) and restart the service.
 The **status icon** (`nodehoster-manager.exe --tray`) starts at sign-in for
 every user (installer task; each user can turn it off from its menu). It
 runs unelevated and reads a read-only status pipe; its color is the overall
-health, its menu lists the sites and opens the manager, and it notifies
-about crashes, rapid-fail protection, failed deployments and certificates.
+health, its menu lists the sites (and the critical alerts firing) and opens
+the manager, and it notifies about crashes, rapid-fail protection, failed
+deployments, certificates and resource alerts. A critical alert that nobody
+silenced turns it amber.
 
 ### Command line
 
@@ -264,6 +267,8 @@ nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
 nodehoster preview list <site>               preview deployments: pull request or branch, state, address
 nodehoster preview deploy <site> <branch>    deploy a branch as a preview now
 nodehoster preview redeploy|delete <site> <preview> [--yes]   <preview>: ID, PR number, host or branch
+nodehoster alert list [--site x] | alert history [-n 50] [--site x]
+nodehoster alert silence <alert-id> [--minutes 60] [--note ...] | alert ack <alert-id> | alert unsilence <alert-id>
 nodehoster cert list | cert renew <id|name|domain>
 nodehoster cert ocsp <id|name|domain>        ask the certificate's OCSP responder now
 nodehoster tls                               TLS settings and the HTTP/3 (UDP) listeners
@@ -311,7 +316,8 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 `Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
 [-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
 `Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
-`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`. They take site names from the pipeline. `Connect-NHServer
+`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`, `Get-NHAlert [-Pending]
+[-History]`, `Set-NHAlertSilence [-Minutes]`, `Clear-NHAlertSilence`. They take site names from the pipeline. `Connect-NHServer
 <name|url> [-Token]` makes them target another server until
 `Disconnect-NHServer`; `Get-NHServer` lists the saved connections:
 
@@ -473,6 +479,7 @@ internal/core         composition root; site lifecycle
 internal/procmgr      process supervisor (+ agent/ injected into apps)
 internal/proxy        listeners (TCP, QUIC), binding match, mTLS, request pipeline, load balancing
 internal/certs        ACME (lego), import/export, renewal, OCSP stapling
+internal/alerts       resource alert rules: evaluation, firing/resolving state machine
 internal/deploy       zip/git deployments and releases
 internal/preview      preview deployments: webhook events, names, commit statuses (lifecycle in core)
 internal/nodeversions Node.js runtime installer

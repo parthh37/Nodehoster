@@ -109,6 +109,7 @@ func (c *Core) restoreConfig(ctx context.Context, data []byte, withFiles map[str
 		b.Settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
 	b.Settings.IPBan.ApplyDefaults()
+	b.Settings.Alerts.ApplyDefaults()
 	// A backup from before scheduled backups existed keeps this server's
 	// backup schedule and destinations, rather than switching them off.
 	var probe struct {

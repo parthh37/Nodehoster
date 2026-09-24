@@ -332,6 +332,8 @@ export const EVENT_TYPES = [
   'update.failed',
   'remote.down',
   'remote.up',
+  'alert.firing',
+  'alert.resolved',
 ];
 
 const FORMATS = [

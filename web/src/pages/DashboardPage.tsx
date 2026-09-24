@@ -15,6 +15,7 @@ import { DaysLeft, LevelBadge, StateBadge } from '@/components/StatusBadges';
 import { Dot } from '@/components/Badge';
 import { daysUntil, formatBytes, formatCompact, formatDate, formatNumber, formatPercent, formatUptime, relativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { AlertsBanner } from './alerts/AlertsBanner';
 
 export function DashboardPage() {
   const now = useNow(10_000);
@@ -74,6 +75,7 @@ export function DashboardPage() {
   return (
     <div className="space-y-5">
       <PageHeader title="Dashboard" description={s ? <>Overview of <span className="font-mono">{s.hostname}</span></> : 'Server overview'} />
+      <AlertsBanner />
 
       {/* Server tiles */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
