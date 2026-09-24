@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, Eye, GitBranch, GitPullRequest, KeyRound, RefreshCw, ShieldAlert, Trash2, Webhook } from 'lucide-react';
+import { ExternalLink, Eye, GitBranch, GitPullRequest, KeyRound, RefreshCw, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
 import { certsApi, previewsApi, settingsApi, sitesApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -23,13 +23,17 @@ import { useNow } from '@/hooks/useNow';
 import { formatDateTime, relativeTime } from '@/lib/format';
 import { safeHref } from '@/lib/safeHref';
 import {
+  AUTO_PREVIEW_CERTS_PER_WEEK,
   branchPatternError,
+  clientCertPreviewError,
   describePreview,
   exampleHost,
   failureText,
   hostPatternError,
   previewConfigOf,
+  previewStateLabel,
   pullRequestWord,
+  requiresClientCert,
   splitHostPattern,
   WEBHOOK_EVENTS,
 } from '@/lib/previews';
@@ -54,12 +58,19 @@ export function PreviewsTab({ site, update, readOnly, savedSite, dirty }: SiteEd
   );
 }
 
-const stateTones: Record<string, Tone> = { ready: 'green', deploying: 'amber', pending: 'amber', failed: 'red', deleting: 'gray' };
+const stateTones: Record<string, Tone> = {
+  ready: 'green',
+  deploying: 'amber',
+  pending: 'amber',
+  'awaiting-approval': 'amber',
+  failed: 'red',
+  deleting: 'gray',
+};
 
 export function PreviewStateBadge({ state }: { state: string }) {
   return (
     <Badge tone={stateTones[state] ?? 'gray'} dot pulse={state === 'deploying' || state === 'deleting'} className="capitalize">
-      {state}
+      {previewStateLabel(state)}
     </Badge>
   );
 }
@@ -90,6 +101,17 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
       refresh();
     },
     onError: (e) => toast.error('Could not redeploy the preview', e),
+  });
+  const approve = useMutation({
+    mutationFn: (p: PreviewView) => previewsApi.approve(site.id, p.id, p.preview.commit),
+    onSuccess: (_, p) => {
+      toast.success(`Approved ${(p.preview.commit ?? '').slice(0, 7) || 'the preview'}: deploying ${p.preview.host}`);
+      refresh();
+    },
+    onError: (e) => {
+      toast.error('Could not approve the preview', e);
+      refresh();
+    },
   });
   const remove = useMutation({
     mutationFn: (p: PreviewView) => previewsApi.remove(site.id, p.id),
@@ -181,9 +203,15 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                   )}
                 </Td>
                 <Td>
-                  <a href={safeHref(p.preview.url)} target="_blank" rel="noreferrer" className="font-mono text-[12.5px] text-accent-700 hover:underline dark:text-accent-400">
-                    {p.preview.host}
-                  </a>
+                  {p.preview.awaitingApproval && !p.preview.approvedCommit ? (
+                    <span className="font-mono text-[12.5px] text-zinc-400" title="Not served before it is approved">
+                      {p.preview.host}
+                    </span>
+                  ) : (
+                    <a href={safeHref(p.preview.url)} target="_blank" rel="noreferrer" className="font-mono text-[12.5px] text-accent-700 hover:underline dark:text-accent-400">
+                      {p.preview.host}
+                    </a>
+                  )}
                 </Td>
                 <Td>
                   <PreviewStateBadge state={p.state} />
@@ -193,7 +221,14 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                     </p>
                   )}
                 </Td>
-                <Td>{p.preview.commit ? <Mono title={p.preview.commit}>{p.preview.commit.slice(0, 7)}</Mono> : <span className="text-zinc-400">—</span>}</Td>
+                <Td>
+                  {p.preview.commit ? <Mono title={p.preview.commit}>{p.preview.commit.slice(0, 7)}</Mono> : <span className="text-zinc-400">—</span>}
+                  {p.preview.awaitingApproval && p.preview.approvedCommit && (
+                    <p className="text-xs text-zinc-500" title={`Approved by ${p.preview.approvedBy ?? '?'}; still served`}>
+                      serving <Mono>{p.preview.approvedCommit.slice(0, 7)}</Mono>
+                    </p>
+                  )}
+                </Td>
                 <Td className="whitespace-nowrap text-xs text-zinc-500" title={formatDateTime(p.preview.lastPush)}>
                   {relativeTime(p.preview.lastPush, now)}
                 </Td>
@@ -204,12 +239,32 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                     </Link>
                     {canOperate && (
                       <>
-                        <IconButton
-                          label="Deploy again"
-                          icon={<RefreshCw className="h-3.5 w-3.5" />}
-                          disabled={p.state === 'deploying' || p.state === 'deleting'}
-                          onClick={() => redeploy.mutate(p)}
-                        />
+                        {p.state === 'awaiting-approval' ? (
+                          <IconButton
+                            label="Approve and deploy this commit"
+                            icon={<ShieldCheck className="h-3.5 w-3.5" />}
+                            disabled={approve.isPending}
+                            onClick={async () => {
+                              const commit = (p.preview.commit ?? '').slice(0, 7) || 'its head commit';
+                              const r = await confirm({
+                                title: `Approve ${describePreview(p.preview)} at ${commit}?`,
+                                message: p.preview.fork
+                                  ? `This ${pullRequestWord(p.preview.provider)} comes from a fork. Its install and build commands, then its code, will run on this server (with the service's privileges unless the site runs as a separate account). Review the changes of commit ${commit} first: only that commit is deployed, and each new push needs approval again.`
+                                  : `Commit ${commit} will be built and deployed on this server. Only that commit is deployed; each new push needs approval again.`,
+                                danger: !!p.preview.fork,
+                                confirmLabel: 'Approve and deploy',
+                              });
+                              if (r.ok) approve.mutate(p);
+                            }}
+                          />
+                        ) : (
+                          <IconButton
+                            label="Deploy again"
+                            icon={<RefreshCw className="h-3.5 w-3.5" />}
+                            disabled={p.state === 'deploying' || p.state === 'deleting'}
+                            onClick={() => redeploy.mutate(p)}
+                          />
+                        )}
                         <IconButton
                           label="Delete preview"
                           variant="danger-ghost"
@@ -303,7 +358,10 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
   };
 
   return (
-    <Card title="Preview settings" description="Each preview is a site of its own, made from this one's configuration at every deployment: one instance, its own shared folder, one release kept, no scheduled tasks.">
+    <Card
+      title="Preview settings"
+      description="Each preview is a site of its own, made from this one's configuration at every deployment: one instance, its own shared folder, one release kept, no scheduled tasks or deployment slots, none of the site's secrets. A few previews deploy at a time on the server; the others wait their turn."
+    >
       <Sections>
         <FormSection title="Previews">
           <Switch
@@ -338,12 +396,30 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
                 checked={p.allowForks}
                 onChange={(v) => set({ allowForks: v })}
                 label="Build pull requests from forks"
-                description="Anyone can open one: its install and build commands, and then its code, run on this server under the site's identity."
+                description="Anyone can open one. Each push waits for an operator to approve its commit; once approved, its install and build commands, then its code, run on this server."
               />
               {p.allowForks && (
                 <Callout tone="danger" icon={<ShieldAlert />}>
-                  Only for repositories whose forks you trust. A malicious pull request could read this server's files and secrets the site can reach.
+                  Fork code runs on this server, with the NodeHoster service's privileges unless the site runs as a separate account (Run as). Approve only
+                  commits you have reviewed: a malicious pull request could read this server's files and anything the site's account can reach. Fork previews
+                  never get the site's secrets. Turning this off deletes the fork previews.
                 </Callout>
+              )}
+              {p.pullRequests && (
+                <Field
+                  label="Approval before building"
+                  path="deploy.previews.requireApproval"
+                  hint="A held pull request is listed here, awaiting approval; nothing of it is fetched until an operator approves its commit. Branch previews are never held."
+                >
+                  <Select
+                    value={p.requireApproval || 'forks'}
+                    onChange={(v) => set({ requireApproval: v as PreviewConfig['requireApproval'] })}
+                    options={[
+                      { value: 'forks', label: 'Pull requests from forks' },
+                      { value: 'all', label: 'Every pull request' },
+                    ]}
+                  />
+                </Field>
               )}
             </FormSection>
 
@@ -420,18 +496,27 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
                     </Field>
                   )}
                   {(p.certMode || 'auto') === 'auto' && (
-                    <p className="text-xs text-zinc-500">
-                      Each preview host needs port 80 reachable for the challenge, and every preview counts against Let's Encrypt's weekly limits: prefer a wildcard
-                      certificate when previews are frequent.
-                    </p>
+                    <Callout tone="warning">
+                      Each preview host needs port 80 reachable for the challenge, and every new preview asks Let's Encrypt for a certificate, counted against the
+                      limit of 50 a week per registered domain that your production sites share. NodeHoster asks for at most {AUTO_PREVIEW_CERTS_PER_WEEK} a week for
+                      previews under *.{suffix || '…'} and refuses new previews beyond: use a wildcard certificate when previews are frequent.
+                    </Callout>
+                  )}
+                  {requiresClientCert(site) && (
+                    <p className="text-xs text-zinc-500">Previews ask for client certificates as the site's HTTPS binding does (mutual TLS).</p>
                   )}
                 </>
               )}
+              {clientCertPreviewError(site, p) && <Callout tone="danger">{clientCertPreviewError(site, p)}</Callout>}
             </FormSection>
 
             <FormSection title="Lifecycle" description="Operations on one preview never overlap; pushes arriving during a deployment collapse into one more.">
               <Grid>
-                <Field label="Previews at most" path="deploy.previews.maxPreviews" hint="A new one beyond it evicts the preview pushed to least recently.">
+                <Field
+                  label="Previews at most"
+                  path="deploy.previews.maxPreviews"
+                  hint="A new one beyond it evicts a preview that never deployed first, else the one pushed to least recently. A pull request awaiting approval only replaces another one awaiting approval."
+                >
                   <NumberInput min={1} max={100} value={p.maxPreviews} onChange={(v) => set({ maxPreviews: v })} />
                 </Field>
                 <Field label="Delete after days without a push" path="deploy.previews.expireDays" hint="0 = never">
@@ -445,7 +530,8 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
                 title="Environment"
                 description={
                   <>
-                    Override the site's variables in previews, e.g. a separate <Mono>DATABASE_URL</Mono>. <Mono>PREVIEW=1</Mono>, <Mono>PREVIEW_BRANCH</Mono>,{' '}
+                    Previews get the site's plain variables, not its secrets: secret variables, those read from a secret store and slot settings stay in
+                    production. Give previews their own here, e.g. a separate <Mono>DATABASE_URL</Mono>. <Mono>PREVIEW=1</Mono>, <Mono>PREVIEW_BRANCH</Mono>,{' '}
                     <Mono>PREVIEW_PR</Mono> and <Mono>PREVIEW_URL</Mono> are always set.
                   </>
                 }
@@ -455,7 +541,13 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
                   onChange={(env) => set({ env })}
                   path="deploy.previews.env"
                   readOnly={readOnly}
-                  emptyDescription="Previews use the site's variables unchanged."
+                  emptyDescription="Previews use the site's plain variables."
+                />
+                <Switch
+                  checked={!!p.inheritSecrets}
+                  onChange={(v) => set({ inheritSecrets: v })}
+                  label="Give same-repository previews the site's secrets"
+                  description="Everyone who can push a branch or open a pull request in the repository could read them from a preview. Previews of forks never get them."
                 />
               </FormSection>
             )}

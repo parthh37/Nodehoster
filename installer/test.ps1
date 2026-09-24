@@ -68,7 +68,7 @@ function Check-Module($what) {
   Import-Module NodeHoster -Force -ErrorAction Stop
   $m = Get-Module NodeHoster
   Check ($m.Version.ToString() -eq (Split-Path $m.ModuleBase -Leaf)) "${what}: the module's version ($($m.Version)) matches its folder"
-  Check (@(Get-Command -Module NodeHoster).Count -eq 36) "${what}: the module exports its commands"
+  Check (@(Get-Command -Module NodeHoster).Count -eq 37) "${what}: the module exports its commands"
   $sites = @(Get-NHSite -ErrorAction Stop)
   Check ($sites.Count -eq 0) "${what}: Get-NHSite answers (no sites)"
   Check (@(Get-NHEvent -Count 5 -ErrorAction Stop).Count -ge 1) "${what}: Get-NHEvent answers"

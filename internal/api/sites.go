@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/parthh37/nodehoster/internal/core"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/preview"
 )
 
 type siteView struct {
@@ -572,7 +573,18 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
-	if a.previewWebhook(w, r, s, body) {
+	// A webhook URL with ?slot= deploys that slot on pushes to the
+	// production branch, and nothing else: previews are the business of
+	// the site's own webhook URL (both configured on the git host would
+	// create every preview twice), and a pull request event never deploys
+	// the slot. The slot is chosen by the URL the administrator set at the
+	// git host; the signature covers the body only.
+	if slot := r.URL.Query().Get("slot"); slot == "" {
+		if a.previewWebhook(w, r, s, body) {
+			return
+		}
+	} else if ev, err := preview.Parse(r.Header, body); err == nil && ev != nil && ev.Kind == model.PreviewPR {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "pull request events do not deploy a slot"})
 		return
 	}
 	var payload struct {

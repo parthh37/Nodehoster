@@ -119,7 +119,8 @@ type Alert struct {
 	ID         string  `json:"id"`
 	RuleID     string  `json:"ruleId"`
 	SiteID     string  `json:"siteId,omitempty"`   // "" for server alerts
-	SiteName   string  `json:"siteName,omitempty"` // as it was named then
+	Slot       string  `json:"slot,omitempty"`     // a deployment slot of the site; "" = production
+	SiteName   string  `json:"siteName,omitempty"` // as it was named then: "shop", "shop (staging)"
 	Metric     string  `json:"metric"`
 	Severity   string  `json:"severity"`
 	Threshold  float64 `json:"threshold"`

@@ -12,6 +12,8 @@ export function defaultPreviewConfig(): PreviewConfig {
     pullRequests: true,
     branches: [],
     allowForks: false,
+    requireApproval: 'forks',
+    inheritSecrets: false,
     maxPreviews: 10,
     expireDays: 7,
     protocol: 'http',
@@ -123,6 +125,43 @@ export function describePreview(p: Pick<PreviewInfo, 'kind' | 'number' | 'branch
  */
 export function failureText(message: string | undefined): string {
   return (message ?? '').replace(/^[\s—]+/, '');
+}
+
+/** A preview state as shown: "awaiting approval". */
+export function previewStateLabel(state: string): string {
+  return state.replaceAll('-', ' ');
+}
+
+/**
+ * How many automatic (per host) Let's Encrypt certificates previews may
+ * ask for under one domain in a week (maxAutoPreviewCerts on the server).
+ */
+export const AUTO_PREVIEW_CERTS_PER_WEEK = 20;
+
+/**
+ * Whether a production binding of the site refuses clients without a
+ * client certificate (mode require, or accept with required paths), as
+ * the server's Site.RequiresClientCert.
+ */
+export function requiresClientCert(site: Pick<Site, 'bindings'>): boolean {
+  return (site.bindings ?? []).some(
+    (b) =>
+      !b.slot &&
+      b.protocol === 'https' &&
+      !!b.clientCert &&
+      (b.clientCert.mode === 'require' || (b.clientCert.mode === 'accept' && (b.clientCert.requirePaths ?? []).length > 0)),
+  );
+}
+
+/**
+ * The server refuses http previews of a site that requires client
+ * certificates unless they have basic authentication or an IP allow list
+ * (https previews take the site's policy). The message, or null.
+ */
+export function clientCertPreviewError(site: Pick<Site, 'bindings'>, cfg: PreviewConfig): string | null {
+  if (!cfg.enabled || cfg.protocol !== 'http' || !requiresClientCert(site)) return null;
+  if (cfg.basicAuth.enabled || (cfg.allowIps ?? []).length > 0) return null;
+  return 'The site requires client certificates (mutual TLS), which HTTP previews cannot ask for: use HTTPS previews, or protect them with a password or an IP allow list.';
 }
 
 /** What a pull request is called on the host. */

@@ -16,6 +16,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -110,7 +111,7 @@ func (e *Engine) Load(ctx context.Context, now time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, a := range firing {
-		k := key(a.RuleID, a.SiteID)
+		k := key(a.RuleID, model.SlotKey(a.SiteID, a.Slot))
 		if a.FiredAt == nil {
 			continue
 		}
@@ -125,7 +126,7 @@ func (e *Engine) Load(ctx context.Context, now time.Time) error {
 	for i := len(recent) - 1; i >= 0; i-- { // oldest first: the newest silence wins
 		a := recent[i]
 		if a.State == model.AlertResolved && a.Silence != nil && a.Silence.Until != nil && a.Silence.Active(now) {
-			e.silences[key(a.RuleID, a.SiteID)] = *a.Silence
+			e.silences[key(a.RuleID, model.SlotKey(a.SiteID, a.Slot))] = *a.Silence
 		}
 	}
 	return nil
@@ -146,10 +147,11 @@ func (e *Engine) evaluate(ctx context.Context, now time.Time, cfg model.AlertSet
 	recovery := time.Duration(cfg.RecoveryMinutes) * time.Minute
 	var out []Notice
 	seen := map[string]bool{}
-	live := map[string]bool{}
+	live := map[string]bool{} // subjects: sites and slots (model.SlotKey)
 	for _, in := range sites {
-		id := in.Site.ID
+		id := model.SlotKey(in.Site.ID, in.Site.Slot)
 		live[id] = true
+		live[in.Site.ID] = true
 		w := e.windows[id]
 		if w == nil {
 			w = &window{}
@@ -162,6 +164,9 @@ func (e *Engine) evaluate(ctx context.Context, now time.Time, cfg model.AlertSet
 		for _, r := range model.EffectiveAlertRules(cfg.SiteRules, in.Site) {
 			k := key(r.ID, id)
 			seen[k] = true
+			if in.Hold {
+				continue // not watched meanwhile, as across a gap
+			}
 			obs, rd := measureSite(r, in, w, e.opts.LatencyBounds)
 			e.step(ctx, k, r, in.Site, obs, rd, now, recovery, &out)
 		}
@@ -193,6 +198,8 @@ func (e *Engine) evaluate(ctx context.Context, now time.Time, cfg model.AlertSet
 			note = "alerts turned off"
 		case t.alert.SiteID != "" && !live[t.alert.SiteID]:
 			note = "site deleted"
+		case t.alert.Slot != "" && !live[model.SlotKey(t.alert.SiteID, t.alert.Slot)]:
+			note = "slot removed"
 		}
 		e.finish(ctx, t, now, note, &out)
 	}
@@ -220,7 +227,7 @@ func (e *Engine) step(ctx context.Context, k string, r model.AlertRule, site *mo
 		}
 		t = &tracked{key: k, alert: model.Alert{ID: e.opts.NewID(), State: model.AlertPending}}
 		if site != nil {
-			t.alert.SiteID = site.ID
+			t.alert.SiteID, t.alert.Slot = site.ID, site.Slot
 		}
 		if s, ok := e.silences[k]; ok && s.Active(now) {
 			t.alert.Silence = &s
@@ -239,6 +246,9 @@ func (e *Engine) step(ctx context.Context, k string, r model.AlertRule, site *mo
 	a.RuleID, a.Metric, a.Severity, a.Threshold, a.ForMinutes = r.ID, r.Metric, r.Severity, r.Threshold, r.ForMinutes
 	if site != nil {
 		a.SiteName = site.Name
+		if site.Slot != "" {
+			a.SiteName = fmt.Sprintf("%s (%s)", site.Name, site.Slot) // "shop (staging)"
+		}
 	}
 	if obs != NoData {
 		a.Value, a.Detail = round(rd.Value), rd.Detail

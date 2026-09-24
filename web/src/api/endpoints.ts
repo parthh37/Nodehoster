@@ -193,6 +193,9 @@ export const previewsApi = {
   /** Deploys a branch as a preview (created if needed). */
   deployBranch: (id: string, branch: string) => http.post<PreviewDecision>(`/api/sites/${enc(id)}/previews`, { branch }),
   redeploy: (id: string, previewId: string) => http.post<PreviewView>(`/api/sites/${enc(id)}/previews/${enc(previewId)}/redeploy`),
+  /** Approves the commit a preview holds (forks, or requireApproval "all"); commit = the one reviewed. */
+  approve: (id: string, previewId: string, commit?: string) =>
+    http.post<PreviewView>(`/api/sites/${enc(id)}/previews/${enc(previewId)}/approve`, commit ? { commit } : {}),
   remove: (id: string, previewId: string) => http.del(`/api/sites/${enc(id)}/previews/${enc(previewId)}`),
 };
 

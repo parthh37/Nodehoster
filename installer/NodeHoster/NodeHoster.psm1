@@ -764,7 +764,8 @@ Gets the preview deployments of a NodeHoster site.
 A site with previews enabled gets a temporary site per pull request (or
 previewed branch), created, redeployed and deleted by its push webhook.
 This lists them with their address, branch, pull request, commit and state
-(pending, deploying, ready, failed, deleting).
+(pending, awaiting-approval, deploying, ready, failed, deleting; see
+Approve-NHPreview).
 .PARAMETER Name
 The parent site's name or ID. Accepts pipeline input.
 .EXAMPLE
@@ -838,6 +839,52 @@ function Publish-NHPreview {
     }
     if (-not $PSCmdlet.ShouldProcess("$Name/$Preview", 'redeploy preview')) { return }
     Add-NHType (Invoke-NHCli @('preview', 'redeploy', $Name, $Preview)) 'NodeHoster.Preview'
+  }
+}
+
+<#
+.SYNOPSIS
+Approves the commit a pull request's preview waits with, to build and deploy it.
+.DESCRIPTION
+Pull requests from forks (when the site allows them) and, with
+requireApproval "all", every pull request wait for an operator before
+anything of them is fetched: Get-NHPreview shows them in state
+awaiting-approval. Approving builds and deploys exactly that commit on this
+server; each new push waits for approval again. Review the commit first:
+a fork's code runs with the service's privileges unless the site runs as a
+separate account.
+.PARAMETER Name
+The parent site's name or ID.
+.PARAMETER Preview
+The preview: its ID, pull request number, host name or branch. Accepts
+previews from Get-NHPreview on the pipeline.
+.PARAMETER Commit
+The commit reviewed (default: the one the preview waits with; previews
+from Get-NHPreview carry it). A push since then is refused.
+.EXAMPLE
+Approve-NHPreview shop 42
+.EXAMPLE
+Get-NHPreview shop | Where-Object State -eq 'awaiting-approval' | Approve-NHPreview
+#>
+function Approve-NHPreview {
+  [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName', 'Site')]
+    [string] $Name,
+    [Parameter(Mandatory, Position = 1, ValueFromPipelineByPropertyName)]
+    [Alias('Id')]
+    [string] $Preview,
+    [Parameter(ValueFromPipelineByPropertyName)]
+    [string] $Commit
+  )
+  process {
+    $what = if ($Commit) { "$Name/$Preview at $Commit" } else { "$Name/$Preview" }
+    if (-not $PSCmdlet.ShouldProcess($what, 'approve preview (builds and runs its code on this server)')) { return }
+    $cliArgs = @('preview', 'approve', $Name, $Preview, '--yes')
+    if ($Commit) { $cliArgs += @('--commit', $Commit) }
+    try { Add-NHType (Invoke-NHCli $cliArgs) 'NodeHoster.Preview' }
+    catch { $PSCmdlet.WriteError($_) }
   }
 }
 
@@ -1510,7 +1557,7 @@ Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHS
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
   Update-NHCertificateOcsp, Get-NHTlsSetting, Set-NHTlsSetting,
-  Get-NHPreview, Publish-NHPreview, Remove-NHPreview,
+  Get-NHPreview, Publish-NHPreview, Approve-NHPreview, Remove-NHPreview,
   Connect-NHServer, Disconnect-NHServer, Get-NHServer,
   Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence,
   Get-NHSecretStore, Test-NHSecretReference,

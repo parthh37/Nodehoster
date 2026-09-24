@@ -136,6 +136,54 @@ func TestEngineFireAndResolve(t *testing.T) {
 	}
 }
 
+// slotOf is a site's deployment slot sampled as it runs.
+func slotOf(s SiteSample, slot string, cpu float64) SiteSample {
+	c := *s.Site
+	c.Slot = slot
+	return SiteSample{Site: &c, Status: model.SiteStatus{SiteID: c.ID, State: model.StateRunning, Instances: []model.InstanceStatus{ready(0, cpu, 100)}}}
+}
+
+// TestEngineSlots: a slot's alerts are its own, named after it, kept
+// through a swap's preparation, restored as the slot's after a restart and
+// ended when the slot goes.
+func TestEngineSlots(t *testing.T) {
+	h := newHarness(t)
+	prod := site("api", 10)
+	staging := slotOf(prod, "staging", 95)
+	h.ticks(5, healthyDisk, prod, staging)
+	expectNotices(t, h.take(), "fire:api.example.com (staging):CPU 95% for 1 min (limit 80%)")
+	l := h.e.List()
+	if len(l.Firing) != 1 || l.Firing[0].SiteID != "api" || l.Firing[0].Slot != "staging" {
+		t.Fatalf("firing: %+v", l.Firing)
+	}
+	// Production breaching too is another alert.
+	h.ticks(5, healthyDisk, site("api", 95), staging)
+	expectNotices(t, h.take(), "fire:api.example.com:CPU 95% for 1 min (limit 80%)")
+
+	// A swap prepares the slot: nothing changes however it measures.
+	held := slotOf(prod, "staging", 0)
+	held.Hold = true
+	h.ticks(10, healthyDisk, prod, held)
+	expectNotices(t, h.take(), "resolve:api.example.com:Resolved after 1 min: CPU 10% (limit 80%)")
+	if l := h.e.List(); len(l.Firing) != 1 || l.Firing[0].Slot != "staging" {
+		t.Fatalf("held slot alert: %+v", l.Firing)
+	}
+
+	// After a restart the stored alert is the slot's again.
+	h.e = h.engine()
+	if err := h.e.Load(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	h.ticks(2, healthyDisk, prod, staging)
+	expectNotices(t, h.take())
+	// The slot is removed: its alert ends as such.
+	h.tick(healthyDisk, prod)
+	got := h.take()
+	if len(got) != 1 || !strings.HasPrefix(got[0], "resolve:api.example.com (staging):") || !strings.Contains(got[0], "slot removed") {
+		t.Fatalf("notices = %q", got)
+	}
+}
+
 func TestEnginePendingNeverStored(t *testing.T) {
 	h := newHarness(t)
 	h.ticks(2, healthyDisk, site("api", 95))

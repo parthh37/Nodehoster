@@ -26,6 +26,9 @@ func init() {
 		&Command{Name: "preview redeploy", Args: "<site> <preview>", MinArgs: 2, MaxArgs: 2,
 			Summary: "Deploy a preview's head again",
 			Setup:   func(*flag.FlagSet) Runner { return previewRedeploy }},
+		&Command{Name: "preview approve", Args: "<site> <preview>", MinArgs: 2, MaxArgs: 2,
+			Summary: "Approve the commit a pull request's preview waits with, to build and deploy it (--commit, --yes)",
+			Setup:   previewApproveCmd},
 		&Command{Name: "preview delete", Args: "<site> <preview>", MinArgs: 2, MaxArgs: 2,
 			Summary: "Delete a preview with its releases, logs and certificate (--yes)",
 			Setup:   previewDeleteCmd},
@@ -98,7 +101,11 @@ func previewList(e *Env, args []string) error {
 		if p.Preview.Fork {
 			what += " (fork)"
 		}
-		rows = append(rows, []string{truncate(what, 40), p.State, shortCommit(p.Preview.Commit), localTime(p.Preview.LastPush), p.Preview.URL, p.ID})
+		state := p.State
+		if p.State == model.PreviewAwaitingApproval {
+			state += " (nodehoster preview approve)"
+		}
+		rows = append(rows, []string{truncate(what, 40), state, shortCommit(p.Preview.Commit), localTime(p.Preview.LastPush), p.Preview.URL, p.ID})
 	}
 	e.table([]string{"PREVIEW", "STATE", "COMMIT", "LAST PUSH", "URL", "ID"}, rows)
 	return nil
@@ -138,6 +145,54 @@ func previewRedeploy(e *Env, args []string) error {
 	}
 	e.printf("%s is being deployed again. Follow it with: nodehoster preview list %s\n", p.Preview.URL, s.Name)
 	return nil
+}
+
+// previewApproveCmd approves the commit a preview holds (a pull request
+// from a fork, or any with requireApproval "all"). --commit names the
+// commit reviewed: a push since then is refused.
+func previewApproveCmd(fs *flag.FlagSet) Runner {
+	yes := fs.Bool("yes", false, "do not ask for confirmation")
+	commit := fs.String("commit", "", "the commit reviewed (default: the one the preview waits with)")
+	return func(e *Env, args []string) error {
+		s, err := e.resolveSite(args[0])
+		if err != nil {
+			return err
+		}
+		p, err := e.resolvePreview(s, args[1])
+		if err != nil {
+			return err
+		}
+		if !p.Preview.AwaitingApproval {
+			return fmt.Errorf("%s is not waiting for approval (state %s)", p.Name, p.State)
+		}
+		reviewed := *commit
+		if reviewed == "" {
+			reviewed = p.Preview.Commit
+		}
+		if !*yes {
+			if !e.Interactive {
+				return usagef("approving builds and runs the pull request's code on this server; add --yes to confirm")
+			}
+			from := ""
+			if p.Preview.Fork {
+				from = " from a fork: its code will run on this server"
+			}
+			fmt.Fprintf(e.Stdout, "Approve pull request #%d%s, at commit %s? [y/N] ", p.Preview.Number, from, shortCommit(reviewed))
+			answer, _ := bufio.NewReader(e.Stdin).ReadString('\n')
+			if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+				return errors.New("cancelled; nothing was approved")
+			}
+		}
+		var raw json.RawMessage
+		if err := e.Client.Post(e.Ctx, sitePath(s)+"/previews/"+url.PathEscape(p.ID)+"/approve", map[string]string{"commit": reviewed}, &raw); err != nil {
+			return err
+		}
+		if e.JSON {
+			return e.printJSON(raw)
+		}
+		e.printf("Commit %s of %s approved; the preview is being deployed. Follow it with: nodehoster preview list %s\n", shortCommit(reviewed), p.Name, s.Name)
+		return nil
+	}
 }
 
 func previewDeleteCmd(fs *flag.FlagSet) Runner {

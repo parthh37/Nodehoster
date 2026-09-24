@@ -200,7 +200,12 @@ reason}`. Pull request (merge request) events and branch deletions are for
 [deployment slot](#deployment-slots) instead of production (422 `slot` for
 a slot the site does not have). `Deployment.slot` records it;
 `GET .../deployments?slot=production|<name>` lists one slot's history. Any
-successful release can be activated into any slot.
+successful release can be activated into any slot. A webhook URL with
+`?slot=` only deploys that slot on pushes to the production branch: pull
+request events answer 200 `{status: "ignored"}` and previews are left to
+the URL without `?slot=` (configuring both at the git host creates each
+preview once). The slot comes from the URL the administrator configured at
+the git host: the signature covers the body, not the query string.
 
 ### Runtimes
 
@@ -327,35 +332,57 @@ request (GitLab: merge request) or per branch: `deploy.previews`
 | `hostPattern` | `pr-{number}.preview.example.com`, `{branch}.preview.example.com`: placeholders in the first label only. `{branch}` is the branch made DNS-safe (lower case, `-` for anything else, at most 63 characters with a hash of the full name when shortened); a name another site uses gets a hash of the preview's key appended. A branch preview under a pattern without `{branch}` takes the branch as its first label |
 | `pullRequests` | opened, reopened, pushed to (`synchronize`; GitLab `update` with new commits): deployed; closed or merged: deleted |
 | `branches` | globs of branches whose pushes get a preview (`*` within a path segment, `**` across, `?`); a push deleting the branch (or a `delete` event) deletes it |
-| `allowForks` | default false: pull requests from forks are ignored (their code would run on the server). When allowed they are fetched through the base repository's pull request ref (`refs/pull/N/head`, GitLab `refs/merge-requests/N/head`) |
-| `maxPreviews` | default 10, at most 100. A new preview beyond it **evicts** the preview pushed to least recently (`preview.deleted`, reason `evicted`) |
+| `allowForks` | default false: pull requests from forks are ignored (their code would run on the server, with the service's privileges unless the site runs as a separate account). When allowed they wait for approval (below) and are fetched through the base repository's pull request ref (`refs/pull/N/head`, GitLab `refs/merge-requests/N/head`). Turning it off (or pull requests, or previews) deletes the fork previews at once (`preview.deleted`, reason `forks disabled`), and a redeploy the settings no longer allow is refused (`preview.failed`) |
+| `requireApproval` | `forks` (default) or `all`: which pull requests wait for an operator to approve their head commit before anything is fetched or built. Branch previews never wait |
+| `inheritSecrets` | default false: previews get the site's variables except secret ones, those with `from` (secret stores) and slot settings; `env` gives them their own. True keeps them for same-repository previews; previews of forks never get them |
+| `maxPreviews` | default 10, at most 100. A new preview beyond it **evicts** one that never deployed successfully first, then the preview pushed to least recently (`preview.deleted`, reason `evicted`). A pull request awaiting approval only evicts another one awaiting approval since it was opened; otherwise it is refused (`preview.failed`) |
 | `expireDays` | delete previews without a push for that many days (checked hourly); 0 = never |
-| `protocol`, `ip`, `port` | the preview's one binding (default http, port 80/443) |
-| `certMode` | https: `auto` (a Let's Encrypt certificate per preview host over HTTP-01, deleted with the preview), `certificate` + `certificateId` (a certificate from the store that covers `*.<suffix>`), `wildcard` + `dnsProviderId` (the store's certificate for `*.<suffix>`, else one requested through DNS-01 and kept for the next previews) |
-| `env` | overrides of the site's variables (`secret` supported, masked like the site's); `PREVIEW=1`, `PREVIEW_BRANCH`, `PREVIEW_PR` (the number, empty for a branch) and `PREVIEW_URL` are always set and cannot be overridden |
+| `protocol`, `ip`, `port` | the preview's one binding (default http, port 80/443). An https binding gets the client certificate policy (mutual TLS) of the site's production https binding on the same address and port, else of the first one asking for a certificate. A site that requires client certificates (mode `require`, or `accept` with `requirePaths`) cannot have http previews unless `basicAuth` or `allowIps` is set (422 `deploy.previews.protocol`) |
+| `certMode` | https: `auto` (a Let's Encrypt certificate per preview host over HTTP-01, deleted with the preview; at most 20 new ones a week per preview domain, beyond which new previews are refused with `preview.failed`, since Let's Encrypt's 50 a week per registered domain are shared with the production sites), `certificate` + `certificateId` (a certificate from the store that covers `*.<suffix>`), `wildcard` + `dnsProviderId` (the store's certificate for `*.<suffix>`, else one requested through DNS-01 and kept for the next previews) |
+| `env` | the previews' own variables, over the site's (`secret` supported, masked like the site's); `PREVIEW=1`, `PREVIEW_BRANCH`, `PREVIEW_PR` (the number, empty for a branch) and `PREVIEW_URL` are always set and cannot be overridden |
 | `basicAuth`, `allowIps` | when enabled / not empty, replace the site's basic authentication / IP allow list in previews |
-| `reportStatus`, `statusToken` | set a commit status (`nodehoster/preview`: pending, then success with the preview's URL or failure) on GitHub (and Enterprise: `https://<host>/api/v3`), GitLab or Gitea (at the root of their host). The API address comes from `deploy.git.repo`, never from the webhook; `statusToken` (secret) defaults to `deploy.git.token` |
+| `reportStatus`, `statusToken` | set a commit status (`nodehoster/preview`: pending, then success with the preview's URL or failure) on GitHub (and Enterprise: `https://<host>/api/v3`), GitLab or Gitea (at the root of their host). The API address comes from `deploy.git.repo`, never from the webhook; the token is only sent over https (or to this machine), and redirects to another host are not followed. `statusToken` (secret) defaults to `deploy.git.token`, or the token `deploy.git.tokenFrom` reads from its secret store |
 
 A preview is a site with `previewOf: <parentId>` and `preview: PreviewInfo`
 (`{key, kind: pr|branch, number?, branch, ref, commit?, title?, author?,
-prUrl?, fork?, provider?, host, url, lastPush, ready?}`), both maintained by
-the server (ignored in `POST`/`PUT /api/sites`). Its configuration is the
-parent's, made again at every deployment, with: its binding, one instance
-on an automatic port, no load balancing, maintenance mode and HTTPS redirect
-off, `keepReleases` 1, no scheduled tasks, no webhook of its own, and an
-absolute application path replaced by its release. Shared paths are its own
+prUrl?, fork?, provider?, host, url, lastPush, ready?, awaitingApproval?,
+approvedCommit?, approvedBy?}`), both maintained by the server (ignored in
+`POST`/`PUT /api/sites`). Its configuration is the parent's, made again at
+every deployment, with: its binding, one instance on an automatic port, no
+load balancing, maintenance mode and HTTPS redirect off, `keepReleases` 1,
+no scheduled tasks, no deployment slots (422 `slots` on a preview), no
+webhook of its own, the parent's variables without its secrets (see
+`inheritSecrets`), the parent's firewall mode as in effect (`off` for a
+site from before the firewall; new-site defaults do not apply), and an
+absolute application path replaced by its release. The git token
+(`deploy.git.token` or `tokenFrom`) is used by NodeHoster to fetch, never
+given to the build or the application. Shared paths are its own
 (`sites\<previewId>\shared`), never the parent's. It starts after its first
 successful deployment (and cannot be started before: 400). Operations on one
 preview are serialised; pushes that arrive during a deployment collapse
-into one more deployment of the latest head. Deleting a preview removes its
-site, releases, logs and automatic certificate; deleting the parent
-deletes its previews.
+into one more deployment of the latest head. At most two preview
+deployments run at once on the server; the others wait (state
+`deploying`). Deleting a preview removes its site, releases, logs and
+automatic certificate; deleting the parent deletes its previews. Previews
+raise no alerts.
+
+**Approval.** A pull request that needs approval (from a fork, or any with
+`requireApproval: "all"`) is recorded with `awaitingApproval` and state
+`awaiting-approval`, and nothing of it is fetched; one that was never
+approved has no binding (and no certificate) yet. Approving deploys exactly
+`preview.commit`: the ref is checked after fetching and before anything
+runs, and a ref that moved meanwhile is not built (the new head then awaits
+approval). Every new push waits for approval again while the approved
+build keeps serving; redeploying the approved commit needs none.
+`preview.approval` events (on the parent) announce a pull request awaiting
+approval.
 
 | Method | Path | Role | Body | Response |
 |---|---|---|---|---|
-| GET | `/api/sites/{id}/previews` | viewer | | `PreviewView[]`, pushed to most recently first: `{id, name, preview: PreviewInfo, state: pending\|deploying\|ready\|failed\|deleting, siteState, lastDeployment?, createdAt}` |
+| GET | `/api/sites/{id}/previews` | viewer | | `PreviewView[]`, pushed to most recently first: `{id, name, preview: PreviewInfo, state: pending\|awaiting-approval\|deploying\|ready\|failed\|deleting, siteState, lastDeployment?, createdAt}` |
 | POST | `/api/sites/{id}/previews` | operator | `{branch}` | 202 `{action, key, reason}`: deploys the branch as a preview (created if needed), whatever `branches` says; 422 for the production branch or an invalid name |
-| POST | `/api/sites/{id}/previews/{previewId}/redeploy` | operator | | 202 `PreviewView` |
+| POST | `/api/sites/{id}/previews/{previewId}/redeploy` | operator | | 202 `PreviewView`; 409 while it awaits approval |
+| POST | `/api/sites/{id}/previews/{previewId}/approve` | operator | `{commit?}`: the commit reviewed | 202 `PreviewView`: the held commit is built and deployed; 422 `commit` when the pull request has moved to another commit since; 409 when nothing awaits approval |
 | DELETE | `/api/sites/{id}/previews/{previewId}` | operator | | 202 `PreviewView` (deleted in the background) |
 
 Webhook answers for these deliveries: 202 `{status: "accepted", action:
@@ -366,10 +393,11 @@ one without a preview, an unacceptable branch name). The host is told by
 Forgejo); a delivery without one is a push as before. Events on the parent
 site: `preview.created` (first deployment succeeded; message with the URL),
 `preview.updated`, `preview.deleted` (with the reason: closed, merged,
-branch deleted, expired, evicted, deleted by a user), `preview.failed`.
-Audit: `preview.deploy` / `preview.delete` by `webhook`, `preview.create`,
-`preview.redeploy`, `preview.delete`. Deployments of previews have
-`source: "preview"`.
+branch deleted, expired, evicted, forks disabled, deleted by a user),
+`preview.failed`, `preview.approval`. Audit: `preview.deploy` /
+`preview.delete` by `webhook`, `preview.create`, `preview.redeploy`,
+`preview.approve` (with the pull request and commit), `preview.delete`.
+Deployments of previews have `source: "preview"`.
 
 ### Deployment slots
 
@@ -1374,11 +1402,17 @@ fired unnotified notifies it at the next evaluation.
 | DELETE | `/api/alerts/{id}/silence` | same | | `Alert` |
 | GET | `/api/sites/{id}/alert-rules` | viewer on the site | | `{enabled, defaults: AlertRule[], recoveryMinutes}` — the server-wide site rules, for the site's Alerts tab |
 
-`Alert` = `{id, ruleId, siteId?, siteName?, metric, severity, threshold,
+`Alert` = `{id, ruleId, siteId?, slot?, siteName?, metric, severity, threshold,
 forMinutes, state: pending|firing|resolved, value, peak, detail?, message,
 since, firedAt?, resolvedAt?, resolveNote?, notified, lastNotifiedAt?,
 silence?: {until?, by, at, note?}}`. Site-scoped callers see their sites'
 alerts only, never server alerts (`siteId` of a site they cannot see: 404).
+Each running [deployment slot](#deployment-slots) is watched by the site's
+rules as a subject of its own: its alerts carry `slot` and a `siteName`
+such as `shop (staging)`, and their events start with `slot staging:`. A
+stopped slot raises none; the slot a swap is preparing is not judged until
+the swap ends (what was pending or firing stays); removing the slot ends
+its alerts (`resolveNote` `slot removed`). Previews raise no alerts.
 History is kept as long as events (`logRetentionDays`), at most 5,000
 resolved alerts. Silences are audited (`alert.silence`, `alert.unsilence`).
 

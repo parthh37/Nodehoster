@@ -276,6 +276,9 @@ func (s *Site) validateSlots() error {
 	if len(s.Slots) == 0 {
 		return nil
 	}
+	if s.IsPreview() {
+		return verr("slots", "a preview has no deployment slots")
+	}
 	if !s.RunsNode() {
 		return verr("slots", "deployment slots need a Node.js application or background worker site")
 	}

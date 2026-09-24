@@ -80,7 +80,7 @@ IIS Manager, with a status icon in the notification area.
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
 - **Deployment slots** like Azure App Service's: a `staging` slot runs its own release on its own instances and bindings (`staging.example.com`) with production's configuration, except slot settings (its own variables, production's variables marked sticky, instance count, bindings). Deploy to it (zip, git, webhook, CLI), try it, then **swap**: its instances restart with production's settings, warm-up paths are requested on every instance until they answer (200-399 by default), and production's traffic moves onto them at once — no cold start, in-flight requests finish on the old instances, which become the slot. Swapping again is the rollback; a failed warm-up changes nothing. Optional auto-swap after a deployment, `slot.swapped` / `slot.swap_failed` notifications, per-slot logs and metrics
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
-- **Preview deployments** like Azure Static Web Apps' pull request environments: every pull request (GitLab merge request) or matching branch (`feature/*`) gets a temporary site of its own at `pr-42.preview.example.com` or `feature-login.preview.example.com`, cloned from its site with one instance, its own shared folder and variable overrides (a separate `DATABASE_URL`) plus `PREVIEW`, `PREVIEW_BRANCH`, `PREVIEW_PR`, `PREVIEW_URL`; redeployed on every push and deleted with its releases, logs and certificate when the pull request is closed or merged, the branch deleted or after N days without a push. Forks are never built unless allowed; optional basic auth or IP allow list; per-host Let's Encrypt, a wildcard certificate from the store or one obtained through DNS-01; commit status with the preview's link on GitHub, GitLab and Gitea; `preview.*` notifications
+- **Preview deployments** like Azure Static Web Apps' pull request environments: every pull request (GitLab merge request) or matching branch (`feature/*`) gets a temporary site of its own at `pr-42.preview.example.com` or `feature-login.preview.example.com`, cloned from its site with one instance, its own shared folder, none of its secrets and variable overrides (a separate `DATABASE_URL`) plus `PREVIEW`, `PREVIEW_BRANCH`, `PREVIEW_PR`, `PREVIEW_URL`; redeployed on every push and deleted with its releases, logs and certificate when the pull request is closed or merged, the branch deleted or after N days without a push. Forks are never built unless allowed, and then only each commit an operator approves; optional basic auth or IP allow list; per-host Let's Encrypt, a wildcard certificate from the store or one obtained through DNS-01; commit status with the preview's link on GitHub, GitLab and Gitea; `preview.*` notifications
 - **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
 
 **Administration**
@@ -280,6 +280,7 @@ nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
 nodehoster preview list <site>               preview deployments: pull request or branch, state, address
 nodehoster preview deploy <site> <branch>    deploy a branch as a preview now
 nodehoster preview redeploy|delete <site> <preview> [--yes]   <preview>: ID, PR number, host or branch
+nodehoster preview approve <site> <preview> [--commit <sha>] [--yes]   build a pull request waiting for approval
 nodehoster alert list [--site x] | alert history [-n 50] [--site x]
 nodehoster alert silence <alert-id> [--minutes 60] [--note ...] | alert ack <alert-id> | alert unsilence <alert-id>
 nodehoster cert list | cert renew <id|name|domain>
@@ -341,8 +342,8 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 `Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
 [-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
 `Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
-`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`, `Get-NHAlert
-[-Pending] [-History]`, `Set-NHAlertSilence [-Minutes]`,
+`Publish-NHPreview -Branch|-Preview`, `Approve-NHPreview`, `Remove-NHPreview`,
+`Get-NHAlert [-Pending] [-History]`, `Set-NHAlertSilence [-Minutes]`,
 `Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`,
 `Test-NHSecretReference`, `Get-NHSlot`, `Switch-NHSlot` (and `-Slot` on
 `Publish-NHSite`, `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog`),
@@ -398,11 +399,17 @@ branch and webhook secret), the **Previews** tab turns them on:
    wildcard DNS record (`*.preview.example.com`) at the server. For HTTPS,
    prefer a wildcard certificate (from the store, or obtained through DNS-01
    with one of the DNS providers): a per-host Let's Encrypt certificate needs
-   port 80 and counts against the CA's weekly limits.
+   port 80 and counts against the CA's limit of 50 new certificates a week
+   per registered domain, which your production sites under that domain
+   share. NodeHoster asks for at most 20 a week for previews under one
+   domain and refuses new previews beyond that (`preview.failed`), so that
+   previews never use up what production renewals and new domains need.
 2. Subscribe the site's push webhook to pull request events and branch
    deletions as well as pushes (GitHub: *Pull requests*, *Branch or tag
    deletion*; GitLab: *Merge request events*; Gitea: *Pull Request*,
-   *Delete*). Signatures are verified exactly as for pushes.
+   *Delete*). Signatures are verified exactly as for pushes. Use the
+   site's webhook URL without `?slot=`: a slot's URL deploys the slot on
+   pushes to the production branch and leaves previews alone.
 3. Optionally: variables that differ in previews (a staging database),
    basic auth or an IP allow list so they are not public, and a token to
    report a commit status whose link opens the preview.
@@ -411,11 +418,36 @@ A preview is a site of its own (`shop pr-42`), listed under its site in the
 console and in `nodehoster preview list`. Its configuration is made from
 its site's at every deployment: one instance, one release kept, its own
 shared folder (never the site's `uploads` or `.env`), no scheduled tasks
-(they would run against the same data twice). Whoever may operate the site
-may redeploy and delete its previews. Pull requests from forks are ignored
-unless allowed, since their code would run on the server; at most
-`maxPreviews` exist, a new one evicting the preview pushed to least
-recently.
+(they would run against the same data twice), no deployment slots, the
+site's firewall mode and, on HTTPS, its client certificate policy. Previews
+get the site's plain variables but **not its secrets**: secret variables,
+variables read from a secret store and slot settings stay in production;
+give previews their own in the preview variables, or turn on
+`inheritSecrets` for same-repository previews (anyone who can push a branch
+could then read them). The git token is only ever used by NodeHoster to
+fetch. A site that requires client certificates cannot have plain-HTTP
+previews unless they have basic auth or an IP allow list. Previews raise no
+alerts. Whoever may operate the site may redeploy, approve and delete its
+previews.
+
+Pull requests from forks are ignored unless allowed. When allowed, a fork's
+pull request is listed **awaiting approval** and nothing of it is fetched
+until an operator approves its head commit (Previews tab, `nodehoster
+preview approve`, `Approve-NHPreview`, the Manager's Previews page): its
+install and build commands and then its code run on the server, with the
+service's privileges unless the site runs as a separate account. Only the
+approved commit is built (the pull request's ref is checked before
+anything runs), each new push waits for approval again while the approved
+build keeps serving, fork previews never get the site's secrets, and
+turning forks off deletes their previews at once. `requireApproval: "all"`
+holds every pull request the same way (branch previews never wait).
+
+At most two preview deployments run at once on the server; the others wait
+their turn, so a burst of pushed branches does not start as many installs
+side by side. At most `maxPreviews` previews exist per site: a new one
+evicts a preview that never deployed successfully first, then the one
+pushed to least recently; a pull request awaiting approval only evicts
+another one awaiting approval since it was opened.
 
 ## Runtimes
 

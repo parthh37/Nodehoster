@@ -21,7 +21,7 @@
     'Get-NHLog', 'Get-NHEvent', 'Get-NHCertificate',
     'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup',
     'Update-NHCertificateOcsp', 'Get-NHTlsSetting', 'Set-NHTlsSetting',
-    'Get-NHPreview', 'Publish-NHPreview', 'Remove-NHPreview',
+    'Get-NHPreview', 'Publish-NHPreview', 'Approve-NHPreview', 'Remove-NHPreview',
     'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer',
     'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
     'Get-NHSecretStore', 'Test-NHSecretReference',

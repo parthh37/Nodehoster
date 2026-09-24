@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/preview"
 )
 
 func TestPreviewCommands(t *testing.T) {
@@ -56,4 +57,52 @@ func TestPreviewCommands(t *testing.T) {
 	if n := len(s.c.Previews(parent.ID)); n != 0 {
 		t.Fatalf("%d previews left", n)
 	}
+}
+
+func TestPreviewApproveCommand(t *testing.T) {
+	s := newServer(t)
+	parent := s.createSite(&model.Site{
+		Name: "shop", Type: model.SiteStatic, Static: &model.StaticConfig{Root: "."},
+		Deploy: model.DeployConfig{
+			Git: model.GitSource{Repo: filepath.Join(s.root, "missing"), Branch: "main"}, WebhookSecret: "x",
+			Previews: model.PreviewConfig{Enabled: true, HostPattern: "pr-{number}.preview.test", PullRequests: true, AllowForks: true,
+				Protocol: "http", IP: "127.0.0.1", Port: freePort(t)},
+		},
+	})
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	site, err := s.c.Site(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.c.PreviewWebhook(site, &preview.Event{Kind: model.PreviewPR, Number: 9, Branch: "evil", Ref: "refs/pull/9/head",
+		Action: preview.ActionDeploy, Reason: "opened", Commit: head, Fork: true}); err != nil {
+		t.Fatal(err)
+	}
+	var out string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		out = s.run("preview", "list", "shop").expect(t, ExitOK).stdout
+		if strings.Contains(out, "awaiting-approval") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(out, "#9 evil (fork)") || !strings.Contains(out, "preview approve") {
+		t.Fatalf("preview list:\n%s", out)
+	}
+	s.run("preview", "approve", "shop", "9").expect(t, ExitUsage) // no terminal, no --yes
+	s.runWith(strings.NewReader("n\n"), true, "preview", "approve", "shop", "9").expect(t, ExitError)
+	s.run("preview", "approve", "shop", "9", "--commit", "fedcba9876", "--yes").expect(t, ExitError) // not the commit held
+	s.run("preview", "approve", "shop", "#9", "--yes").expect(t, ExitOK)
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := s.c.Previews(parent.ID); len(p) == 1 && p[0].Preview.ApprovedBy != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if p := s.c.Previews(parent.ID); len(p) != 1 || p[0].Preview.ApprovedCommit != head {
+		t.Fatalf("preview = %+v", p[0].Preview)
+	}
+	s.run("preview", "approve", "shop", "9", "--yes").expect(t, ExitError) // nothing to approve any more
 }

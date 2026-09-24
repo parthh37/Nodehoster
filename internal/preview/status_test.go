@@ -147,6 +147,61 @@ func TestReportTimesOut(t *testing.T) {
 	}
 }
 
+// TestReportKeepsTheTokenOnItsHost: a redirect to another host is not
+// followed (GitLab's PRIVATE-TOKEN would go with it), and the token is
+// never sent over plain http to another machine.
+func TestReportKeepsTheTokenOnItsHost(t *testing.T) {
+	t.Parallel()
+	var leaked []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = append(leaked, r.Header.Get("PRIVATE-TOKEN")+r.Header.Get("Authorization"))
+	}))
+	t.Cleanup(other.Close)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+	for _, p := range []string{GitLab, Gitea, GitHub} {
+		err := NewReporter().Report(context.Background(), p, redirect.URL+"/group/app.git", "glpat-secret", Status{Commit: sha, State: StatePending})
+		if err == nil || !strings.Contains(err.Error(), "another host") {
+			t.Errorf("%s: err = %v", p, err)
+		}
+	}
+	if len(leaked) != 0 {
+		t.Errorf("the other host received %q", leaked)
+	}
+
+	// A same-host redirect (a renamed repository) is followed.
+	f := newFakeHost(t, http.StatusCreated)
+	moved := http.NewServeMux()
+	moved.HandleFunc("/api/v1/repos/old/app/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/api/v1/repos/new/app/statuses/"+sha, http.StatusTemporaryRedirect)
+	})
+	moved.Handle("/", f.srv.Config.Handler)
+	same := httptest.NewServer(moved)
+	t.Cleanup(same.Close)
+	if err := NewReporter().Report(context.Background(), Gitea, same.URL+"/old/app", "tok", Status{Commit: sha, State: StatePending}); err != nil {
+		t.Fatalf("same-host redirect: %v", err)
+	}
+	if f.path != "/api/v1/repos/new/app/statuses/"+sha || f.header.Get("Authorization") != "token tok" {
+		t.Errorf("path = %s, headers = %v", f.path, f.header)
+	}
+
+	// Plain http to another machine: refused before connecting.
+	err := NewReporter().Report(context.Background(), GitLab, "http://git.example.invalid/group/app.git", "glpat-secret", Status{Commit: sha, State: StatePending})
+	if err == nil || !strings.Contains(err.Error(), "plain http") {
+		t.Errorf("plain http: err = %v", err)
+	}
+	for _, h := range []string{"localhost", "127.0.0.1", "[::1]"} {
+		if !isLoopback(strings.Trim(h, "[]")) {
+			t.Errorf("%s is not loopback", h)
+		}
+	}
+	if isLoopback("git.example.com") || isLoopback("10.0.0.1") {
+		t.Error("a remote host counted as loopback")
+	}
+}
+
 func TestReportTruncatesDescription(t *testing.T) {
 	t.Parallel()
 	f := newFakeHost(t, http.StatusCreated)

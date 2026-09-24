@@ -17,8 +17,9 @@ import (
 // ---- Preview deployments: the temporary sites the push webhook makes per
 // pull request or branch of a git-deployed site. They are sites (in the
 // Sites list too); this page shows them with what they preview, their
-// address and state, and deploys them again or deletes them. Their
-// settings are the parent site's, in the web console (site → Previews).
+// address and state, approves the pull requests waiting for it, and
+// deploys them again or deletes them. Their settings are the parent
+// site's, in the web console (site → Previews).
 
 type previewRow struct {
 	parentID, parent string
@@ -34,7 +35,7 @@ type previewsPage struct {
 	count *walk.Label
 	busy  bool // a load is in flight
 
-	open, browse, pullRequest, redeploy, remove, refresh, settings *command
+	open, browse, pullRequest, approve, redeploy, remove, refresh, settings *command
 }
 
 func (s *previewsPage) init(m *manager) *page {
@@ -75,6 +76,7 @@ func (s *previewsPage) init(m *manager) *page {
 			shellOpen(r.v.Preview.PRURL)
 		}
 	})
+	s.approve = newCommand("Approve…", desktop.IconOK, func() { s.approvePreview(m) })
 	s.redeploy = newCommand("Deploy again", desktop.IconDeploy, func() { s.redeployPreview(m) })
 	s.remove = newCommand("Delete…", desktop.IconRemove, func() { s.deletePreview(m) })
 	s.refresh = newCommand("Refresh", desktop.IconRefresh, func() { s.reload(m) })
@@ -111,7 +113,7 @@ func previewLevel(state string) desktop.Level {
 		return desktop.LevelOK
 	case model.PreviewFailed:
 		return desktop.LevelDown
-	case model.PreviewDeploying, model.PreviewPending, model.PreviewDeleting:
+	case model.PreviewDeploying, model.PreviewPending, model.PreviewDeleting, model.PreviewAwaitingApproval:
 		return desktop.LevelWarning
 	}
 	return desktop.LevelNotInstalled
@@ -122,9 +124,10 @@ func (s *previewsPage) content(m *manager) []Widget {
 		s.bar.widget(),
 		searchRow(&s.find, &s.count, "Search sites, branches, pull requests, addresses", &s.list),
 		s.list.viewWith(tableOpts{name: "previews", sortable: true, onActivate: s.browse.trigger, onDelete: s.remove.trigger,
-			menu: menu(s.browse, s.open, s.pullRequest, nil, s.redeploy, s.remove, nil, s.settings)},
-			col("Site", 150), col("Preview", 230), col("State", 90), col("Address", 280), col("Commit", 80), col("Last push", 130)),
+			menu: menu(s.browse, s.open, s.pullRequest, nil, s.approve, s.redeploy, s.remove, nil, s.settings)},
+			col("Site", 150), col("Preview", 230), col("State", 120), col("Address", 280), col("Commit", 80), col("Last push", 130)),
 		hint("Pull requests closed or merged, deleted branches and previews without a push for the site's expiry delete themselves. " +
+			"Pull requests from forks wait for approval of each push before they are built. " +
 			"A preview's settings are its site's: web console → site → Previews."),
 	}
 }
@@ -132,7 +135,7 @@ func (s *previewsPage) content(m *manager) []Widget {
 func (s *previewsPage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Preview deployments", s.refresh,
-		"Selected preview", s.browse, s.open, s.pullRequest, s.redeploy, s.remove,
+		"Selected preview", s.browse, s.open, s.pullRequest, s.approve, s.redeploy, s.remove,
 		"Settings", s.settings,
 	)
 }
@@ -152,7 +155,8 @@ func (s *previewsPage) enable(m *manager) {
 	ok := r != nil && m.connected()
 	setEnabled(ok, s.open, s.browse, s.settings)
 	setEnabled(ok && r.v.Preview.PRURL != "", s.pullRequest)
-	setEnabled(ok && r.v.State != model.PreviewDeleting && r.v.State != model.PreviewDeploying, s.redeploy)
+	setEnabled(ok && r.v.State == model.PreviewAwaitingApproval, s.approve)
+	setEnabled(ok && r.v.State != model.PreviewDeleting && r.v.State != model.PreviewDeploying && r.v.State != model.PreviewAwaitingApproval, s.redeploy)
 	setEnabled(ok && r.v.State != model.PreviewDeleting, s.remove)
 	setEnabled(m.connected(), s.refresh)
 }
@@ -249,6 +253,31 @@ func (s *previewsPage) redraw(m *manager, parents int) {
 		m.updateHeader()
 	}
 	s.enable(m)
+}
+
+// approvePreview approves the commit a pull request's preview waits with,
+// after the operator confirms having reviewed it.
+func (s *previewsPage) approvePreview(m *manager) {
+	r := s.selected()
+	if r == nil || r.v.State != model.PreviewAwaitingApproval {
+		return
+	}
+	parent, id, host, p := r.parentID, r.v.ID, r.v.Preview.Host, r.v.Preview
+	commit := shortCommit(p.Commit)
+	content := "Only this commit is built and deployed; each new push waits for approval again."
+	if p.Fork {
+		content = "The pull request comes from a fork. Its install and build commands, then its code, run on this server, " +
+			"with the service's privileges unless the site runs as a separate account. Review commit " + commit + " first. " + content
+	}
+	if ask(m.mw, "Approve preview", fmt.Sprintf("Approve pull request #%d at commit %s?", p.Number, commit), content,
+		walk.TaskDialogSystemIconWarning, [2]string{"Approve and deploy", ""}) != 0 {
+		return
+	}
+	m.do("Approving "+host, func(ctx context.Context) error {
+		err := m.cl.Post(ctx, "/api/sites/"+url.PathEscape(parent)+"/previews/"+url.PathEscape(id)+"/approve", map[string]string{"commit": p.Commit}, nil)
+		m.mw.Synchronize(func() { s.reload(m) })
+		return err
+	})
 }
 
 func (s *previewsPage) redeployPreview(m *manager) {

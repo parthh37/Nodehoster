@@ -69,6 +69,9 @@ const (
 	PreviewUpdated = "preview.updated" // a later deployment succeeded
 	PreviewDeleted = "preview.deleted" // closed, merged, branch deleted, expired or evicted
 	PreviewFailed  = "preview.failed"  // a preview could not be created, deployed or deleted
+	// PreviewApproval: a pull request's head waits for an operator to
+	// approve it before it is built (forks, or requireApproval "all").
+	PreviewApproval = "preview.approval"
 )
 
 // A server connection (another NodeHoster server managed from this one)
@@ -101,7 +104,7 @@ var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteR
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
 	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling,
-	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed,
+	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed, PreviewApproval,
 	RemoteDown, RemoteUp,
 	AlertFiring, AlertResolved,
 	SlotSwapped, SlotSwapFailed,

@@ -156,6 +156,12 @@ func TestSlotValidation(t *testing.T) {
 	if err := w.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	// A preview has none: it would copy its parent's.
+	p := slotSite()
+	p.PreviewOf = "parent"
+	if ve, ok := p.Validate().(*ValidationError); !ok || ve.Field != "slots" || !strings.Contains(ve.Message, "preview") {
+		t.Fatalf("preview with slots: %v", p.Validate())
+	}
 }
 
 func TestStatusRanges(t *testing.T) {

@@ -70,6 +70,75 @@ func TestDeliverAlerts(t *testing.T) {
 	}
 }
 
+// TestAlertSamples: previews are not watched; each deployment slot is,
+// as the configuration it runs, held while a swap prepares it.
+func TestAlertSamples(t *testing.T) {
+	c := testCore(t)
+	ctx := context.Background()
+	shop, err := c.CreateSite(ctx, slotTestSite())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.CreateSite(ctx, &model.Site{Name: "shop pr-1", Type: model.SiteRedirect, Redirect: &model.RedirectConfig{TargetURL: "https://example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.sitesMu.Lock()
+	marked := clone(p)
+	marked.PreviewOf, marked.Preview = shop.ID, &model.PreviewInfo{Key: "pr:1"}
+	_, err = c.updateSite(ctx, p.ID, marked)
+	c.sitesMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects := func() map[string]alerts.SiteSample {
+		out := map[string]alerts.SiteSample{}
+		for _, s := range c.alertSamples() {
+			out[model.SlotKey(s.Site.ID, s.Site.Slot)] = s
+		}
+		return out
+	}
+	got := subjects()
+	if _, ok := got[p.ID]; ok {
+		t.Error("a preview is watched")
+	}
+	prod, ok1 := got[shop.ID]
+	slot, ok2 := got[model.SlotKey(shop.ID, "staging")]
+	if !ok1 || !ok2 || len(got) != 2 {
+		t.Fatalf("subjects = %v", got)
+	}
+	if prod.Site.Slot != "" || slot.Site.Slot != "staging" || slot.Site.ID != shop.ID || slot.Status.State != model.StateStopped || slot.Hold {
+		t.Errorf("slot sample = %+v / %+v", slot.Site, slot.Status)
+	}
+	c.slots.mu.Lock()
+	if c.slots.active == nil {
+		c.slots.active = map[string]*model.SwapProgress{}
+	}
+	c.slots.active[shop.ID] = &model.SwapProgress{Slot: "staging"}
+	c.slots.mu.Unlock()
+	defer func() {
+		c.slots.mu.Lock()
+		delete(c.slots.active, shop.ID)
+		c.slots.mu.Unlock()
+	}()
+	if got := subjects(); !got[model.SlotKey(shop.ID, "staging")].Hold || got[shop.ID].Hold {
+		t.Error("the slot a swap prepares is not held")
+	}
+
+	// A slot's events say which slot.
+	feed, cancel := c.Bus.Subscribe()
+	defer cancel()
+	c.deliverAlerts([]alerts.Notice{{Kind: alerts.Fire, Alert: model.Alert{SiteID: shop.ID, Slot: "staging", SiteName: "shop (staging)", Severity: model.SeverityCritical}, Message: "Instances down 1 of 1"}})
+	select {
+	case e := <-feed:
+		if e.SiteID != shop.ID || e.Message != "slot staging: Instances down 1 of 1" {
+			t.Errorf("event = %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
+	}
+}
+
 func TestAlertMail(t *testing.T) {
 	c := &Core{AdminURL: "https://host:8443/"}
 	subject, body := c.alertMail([]alerts.Notice{

@@ -16,6 +16,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/preview"
 	"github.com/parthh37/nodehoster/internal/secrets"
+	"github.com/parthh37/nodehoster/internal/secretstore"
 	"github.com/parthh37/nodehoster/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -23,15 +24,23 @@ import (
 // Preview deployments (model.PreviewConfig). A preview is an ordinary
 // site with PreviewOf set, made from its parent's configuration: one
 // binding at the preview's host, one instance, the parent's variables
-// with the preview overrides and PREVIEW_* on top, its own shared
-// folder, no scheduled tasks and one release kept. Its configuration is
-// made again from the parent's at every deployment, so a change to the
-// parent reaches its previews with their next push.
+// that are not secrets with the preview overrides and PREVIEW_* on top,
+// its own shared folder, no scheduled tasks or deployment slots and one
+// release kept. Its configuration is made again from the parent's at
+// every deployment, so a change to the parent reaches its previews with
+// their next push.
 //
 // Everything done to one preview (create, deploy, delete) goes through a
 // queue of its own, drained by one worker: operations on a preview never
 // overlap, and pushes arriving while it deploys collapse into one
-// deployment of the latest.
+// deployment of the latest. At most maxPreviewBuilds previews of the
+// whole server deploy at once; the others wait their turn.
+//
+// Pull requests from forks (and, with requireApproval "all", every pull
+// request) are held: the preview is recorded, awaiting approval of its
+// head commit, and nothing is fetched until an operator approves that
+// commit. Only the approved commit is then built, and a new push needs a
+// new approval.
 
 // previewOp is one thing to do to a preview.
 type previewOp struct {
@@ -41,7 +50,34 @@ type previewOp struct {
 	reason   string         // why, for events: "closed", "no push for 7 days"...
 	ev       *preview.Event // what to deploy; nil = redeploy what the preview shows
 	user     string         // who asked, for the deployment record
+	// approved: user approved commit, the head the preview was holding.
+	approved bool
+	commit   string
 }
+
+// maxPreviewBuilds is how many preview deployments run at once on the
+// server: a burst of pushes to many branches queues instead of running
+// as many installs and builds side by side.
+var maxPreviewBuilds = 2
+
+// maxAutoPreviewCerts is how many automatic (Let's Encrypt, per host)
+// certificates previews may ask for under one domain in a week. Let's
+// Encrypt allows 50 new certificates per registered domain a week, shared
+// with the production sites under it; beyond this, a new preview is
+// refused and a wildcard certificate is the way (certMode wildcard or
+// certificate).
+var maxAutoPreviewCerts = 20
+
+const autoPreviewCertsDoc = "previews.autoCerts"
+
+var (
+	// ErrNotAwaitingApproval is ApprovePreview's answer for a preview with
+	// nothing to approve.
+	ErrNotAwaitingApproval = errors.New("the preview is not waiting for approval")
+	// ErrAwaitingApproval is RedeployPreview's answer for a preview whose
+	// head waits for approval: approving it deploys it.
+	ErrAwaitingApproval = errors.New("the preview is waiting for approval")
+)
 
 type previewState struct {
 	mu      sync.Mutex
@@ -55,7 +91,9 @@ type previewState struct {
 
 	admit    sync.Mutex // counts, evicts and creates one preview at a time
 	wildcard sync.Mutex // finds or requests a wildcard certificate once
+	certs    sync.Mutex // reads and writes the automatic certificate count
 	reporter *preview.Reporter
+	builds   chan struct{} // a token per running preview deployment
 }
 
 var errPreviewsClosed = errors.New("the server is shutting down")
@@ -80,6 +118,7 @@ func (c *Core) queuePreview(op *previewOp) error {
 		st.ctx, st.cancel = context.WithCancel(context.Background())
 		st.pending, st.active = map[string]*previewOp{}, map[string]string{}
 		st.reporter = preview.NewReporter()
+		st.builds = make(chan struct{}, max(maxPreviewBuilds, 1))
 		st.started = true
 	}
 	st.pending[k] = op
@@ -200,6 +239,9 @@ func (c *Core) PreviewView(ctx context.Context, s *model.Site) model.PreviewView
 		v.LastDeployment = list[0]
 	}
 	v.State = c.queued(s.PreviewOf, v.Preview.Key)
+	if v.State == "" && v.Preview.AwaitingApproval {
+		v.State = model.PreviewAwaitingApproval
+	}
 	if v.State == "" {
 		v.State = model.PreviewPending
 		if d := v.LastDeployment; d != nil {
@@ -251,12 +293,74 @@ func (c *Core) DeployBranchPreview(parent *model.Site, branch, user string) (pre
 	return preview.Decision{Handled: true, Action: preview.ActionDeploy, Key: ev.Key(), Reason: "requested"}, c.queuePreview(op)
 }
 
-// RedeployPreview deploys a preview's head again.
+// RedeployPreview deploys a preview's head again. A preview awaiting
+// approval stays so: it has to be approved (ApprovePreview).
 func (c *Core) RedeployPreview(p *model.Site, user string) error {
 	if !p.IsPreview() || p.Preview == nil {
 		return store.ErrNotFound
 	}
+	if p.Preview.AwaitingApproval {
+		return fmt.Errorf("%w: approve commit %s first", ErrAwaitingApproval, shortCommit(p.Preview.Commit))
+	}
 	return c.queuePreview(&previewOp{parentID: p.PreviewOf, key: p.Preview.Key, user: user, reason: "redeploy requested by " + user})
+}
+
+// ApprovePreview approves the commit a preview is holding: it is fetched,
+// built and deployed, and only that commit (the pull request's ref is
+// checked before anything runs). commit, when set, is the commit the
+// operator reviewed: a push since then is refused, to be reviewed too.
+func (c *Core) ApprovePreview(p *model.Site, user, commit string) error {
+	if !p.IsPreview() || p.Preview == nil {
+		return store.ErrNotFound
+	}
+	info := p.Preview
+	if !info.AwaitingApproval {
+		return ErrNotAwaitingApproval
+	}
+	commit = strings.TrimSpace(commit)
+	if commit != "" && !sameCommit(commit, info.Commit) {
+		return &model.ValidationError{Field: "commit", Message: fmt.Sprintf("the pull request is now at %s: review that commit and approve again", shortCommit(info.Commit))}
+	}
+	return c.queuePreview(&previewOp{parentID: p.PreviewOf, key: info.Key, user: user, approved: true, commit: info.Commit,
+		reason: "approved by " + user})
+}
+
+// sameCommit compares commit IDs, either possibly abbreviated.
+func sameCommit(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}
+
+func shortCommit(c string) string {
+	if c == "" {
+		return "(unknown)"
+	}
+	return c[:min(7, len(c))]
+}
+
+// needsApproval reports whether a deployment of ev waits for an operator:
+// pull requests from forks, and every pull request with
+// requireApproval "all".
+func needsApproval(cfg model.PreviewConfig, ev *preview.Event) bool {
+	return ev.Kind == model.PreviewPR && (ev.Fork || cfg.RequireApproval == model.PreviewApproveAll)
+}
+
+// previewRefused says why the settings refuse a deployment ("" = they
+// do not). A redeployment is refused as the webhook would be: turning
+// forks or pull requests off stops their previews.
+func previewRefused(cfg model.PreviewConfig, ev *preview.Event) string {
+	switch {
+	case !cfg.Enabled:
+		return "previews are turned off"
+	case ev.Kind == model.PreviewPR && !cfg.PullRequests:
+		return "previews of pull requests are turned off"
+	case ev.Fork && !cfg.AllowForks:
+		return "previews of forks are turned off"
+	}
+	return ""
 }
 
 // RemovePreview deletes a preview with its releases, logs and
@@ -285,15 +389,51 @@ func (c *Core) deployPreview(ctx context.Context, op *previewOp) {
 		ev = eventOf(existing.Preview)
 	}
 	what := describePreview(ev)
-	if !cfg.Enabled {
-		c.Bus.Warn(events.PreviewFailed, parent.ID, "the preview of %s for %s was not deployed: previews are turned off", parent.Name, what)
+	reason := previewRefused(cfg, ev)
+	if reason == "" && cfg.Protocol == "http" && parent.RequiresClientCert() && !cfg.BasicAuth.Enabled && len(cfg.AllowIPs) == 0 {
+		// Settings saved before this was refused (see validatePreviews).
+		reason = "the site requires client certificates, which http previews cannot ask for; protect them with basic authentication or an IP allow list, or use https"
+	}
+	if reason != "" {
+		c.Bus.Warn(events.PreviewFailed, parent.ID, "the preview of %s for %s was not deployed: %s", parent.Name, what, reason)
+		if why := disallowedFork(cfg); existing != nil && ev.Fork && why != "" {
+			c.queuePreview(&previewOp{parentID: parent.ID, key: op.key, del: true, reason: why, user: "previews"})
+		}
 		return
 	}
+
+	// Approval: hold the push, or deploy exactly the approved commit.
+	pin, hold := "", false
+	if op.approved {
+		if existing == nil || !existing.Preview.AwaitingApproval || !sameCommit(existing.Preview.Commit, op.commit) {
+			c.Bus.Warn(events.PreviewApproval, parent.ID, "the approval of %s for %s by %s was not applied: the pull request has moved on since; review it and approve again", shortCommit(op.commit), what, op.user)
+			return
+		}
+		pin = op.commit
+	} else if needsApproval(cfg, ev) {
+		approved := ""
+		if existing != nil {
+			approved = existing.Preview.ApprovedCommit
+		}
+		// The approved commit may be deployed again (a redeploy, a pull
+		// request reopened at the same head); anything else waits.
+		if !sameCommit(ev.Commit, approved) {
+			hold = true
+		}
+		pin = approved
+	}
+	adjust := func(info *model.PreviewInfo) {
+		info.AwaitingApproval = hold
+		if op.approved {
+			info.ApprovedCommit, info.ApprovedBy = op.commit, op.user
+		}
+	}
+
 	var site *model.Site
 	if existing == nil {
-		site, err = c.createPreview(ctx, parent, ev)
+		site, err = c.createPreview(ctx, parent, ev, adjust)
 	} else {
-		site, err = c.refreshPreview(ctx, parent, existing.ID, ev)
+		site, err = c.refreshPreview(ctx, parent, existing.ID, ev, adjust)
 	}
 	if err != nil {
 		verb := "updated"
@@ -304,11 +444,26 @@ func (c *Core) deployPreview(ctx context.Context, op *previewOp) {
 		return
 	}
 	info := *site.Preview
+	if hold {
+		if existing == nil || !existing.Preview.AwaitingApproval || !sameCommit(existing.Preview.Commit, info.Commit) {
+			c.announceApproval(parent, &info, what)
+		}
+		c.reportPreview(ctx, parent, info, info.Commit, preview.StatePending, "Waiting for an operator to approve the preview")
+		return
+	}
 	c.reportPreview(ctx, parent, info, info.Commit, preview.StatePending, "Deploying the preview")
+
+	// One of the server's few build slots, for the whole deployment.
+	select {
+	case <-ctx.Done():
+		return
+	case c.previews.builds <- struct{}{}:
+	}
+	defer func() { <-c.previews.builds }()
 
 	done := make(chan *model.Deployment, 1)
 	for {
-		_, err = c.Deploy.DeployRef(context.Background(), site, info.Ref, "preview", op.user, func(d *model.Deployment) { done <- d })
+		_, err = c.Deploy.DeployRef(context.Background(), site, info.Ref, pin, "preview", op.user, func(d *model.Deployment) { done <- d })
 		if !errors.Is(err, deploy.ErrBusy) {
 			break
 		}
@@ -331,6 +486,17 @@ func (c *Core) deployPreview(ctx context.Context, op *previewOp) {
 	case dep = <-done:
 	}
 	commit := cmpOr(dep.Commit, info.Commit)
+	if dep.Status != "succeeded" && pin != "" && dep.Commit != "" && !sameCommit(dep.Commit, pin) {
+		// The pull request moved on between the approval and the fetch:
+		// nothing was built; the new head waits for approval in turn.
+		c.Bus.Warn(events.PreviewFailed, parent.ID, "the preview of %s for %s was not deployed: %s", parent.Name, what, strings.TrimLeft(dep.Message, "— "))
+		held, err := c.setPreviewInfo(ctx, site.ID, func(p *model.PreviewInfo) { p.AwaitingApproval, p.Commit = true, dep.Commit })
+		if err == nil {
+			c.announceApproval(parent, held.Preview, what)
+			c.reportPreview(ctx, parent, *held.Preview, dep.Commit, preview.StatePending, "Waiting for an operator to approve the preview")
+		}
+		return
+	}
 	if dep.Status != "succeeded" {
 		// The message is "<commit subject> — <error>", the subject empty
 		// when nothing was fetched.
@@ -377,35 +543,67 @@ func describePreview(ev *preview.Event) string {
 	return "branch " + ev.Branch
 }
 
-// createPreview makes the preview site, first evicting the least
-// recently pushed previews beyond the site's maximum.
-func (c *Core) createPreview(ctx context.Context, parent *model.Site, ev *preview.Event) (*model.Site, error) {
+// createPreview makes the preview site, first evicting previews beyond
+// the site's maximum: those never deployed successfully first (a burst
+// of pushes then replaces its own previews rather than working ones),
+// then those pushed to least recently. A preview held for approval only
+// evicts others held since their creation: unreviewed pull requests
+// cannot push out working previews.
+func (c *Core) createPreview(ctx context.Context, parent *model.Site, ev *preview.Event, adjust func(*model.PreviewInfo)) (*model.Site, error) {
 	st := &c.previews
 	st.admit.Lock()
 	defer st.admit.Unlock()
 	cfg := parent.Deploy.Previews
+	info := infoOf(ev, nil)
+	adjust(&info)
 	var live []*model.Site
 	for _, p := range c.Previews(parent.ID) {
 		if c.queued(parent.ID, p.Preview.Key) != model.PreviewDeleting {
 			live = append(live, p)
 		}
 	}
-	for len(live) >= max(cfg.MaxPreviews, 1) {
-		victim := live[len(live)-1] // pushed to least recently
-		live = live[:len(live)-1]
-		reason := fmt.Sprintf("evicted for %s: %s has at most %d previews", describePreview(ev), parent.Name, cfg.MaxPreviews)
-		if err := c.queuePreview(&previewOp{parentID: parent.ID, key: victim.Preview.Key, del: true, reason: reason, user: "previews"}); err != nil {
-			return nil, err
+	if over := len(live) - max(cfg.MaxPreviews, 1) + 1; over > 0 {
+		// Held since created, then never deployed, then the others.
+		rank := func(p *model.PreviewInfo) int {
+			switch {
+			case neverApproved(p):
+				return 0
+			case !p.Ready:
+				return 1
+			}
+			return 2
+		}
+		var victims []*model.Site
+		for r := range 3 {
+			if info.AwaitingApproval && r > 0 {
+				break
+			}
+			for i := len(live) - 1; i >= 0; i-- { // pushed to least recently first
+				if rank(live[i].Preview) == r {
+					victims = append(victims, live[i])
+				}
+			}
+		}
+		if len(victims) < over {
+			return nil, fmt.Errorf("%s has %d previews, the most it keeps, and a pull request waiting for approval only replaces others waiting since they were opened: delete a preview or raise maxPreviews", parent.Name, len(live))
+		}
+		for _, victim := range victims[:over] {
+			reason := fmt.Sprintf("evicted for %s: %s has at most %d previews", describePreview(ev), parent.Name, cfg.MaxPreviews)
+			if err := c.queuePreview(&previewOp{parentID: parent.ID, key: victim.Preview.Key, del: true, reason: reason, user: "previews"}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	certID, err := c.previewCertificate(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	info := infoOf(ev, nil)
 	info.Host = preview.Host(cfg.HostPattern, ev.Kind, ev.Number, ev.Branch, func(h string) bool { return c.hostTaken(h, "") })
 	info.URL = preview.URL(cfg.Protocol, info.Host, cfg.Port)
 	s := derivePreview(parent, nil, info, certID)
+	if err := c.countAutoCert(ctx, cfg, nil, s); err != nil {
+		return nil, err
+	}
 	created, err := c.createSite(ctx, s, false)
 	if errors.Is(err, store.ErrDuplicateName) {
 		s.Name = preview.Unique(s.Name, info.Key)
@@ -414,9 +612,15 @@ func (c *Core) createPreview(ctx context.Context, parent *model.Site, ev *previe
 	return created, err
 }
 
+// neverApproved reports whether a preview has been held for approval
+// since it was created (it has no binding yet).
+func neverApproved(info *model.PreviewInfo) bool {
+	return info.AwaitingApproval && info.ApprovedCommit == ""
+}
+
 // refreshPreview records a new push and makes the preview's
 // configuration again from its parent's.
-func (c *Core) refreshPreview(ctx context.Context, parent *model.Site, id string, ev *preview.Event) (*model.Site, error) {
+func (c *Core) refreshPreview(ctx context.Context, parent *model.Site, id string, ev *preview.Event, adjust func(*model.PreviewInfo)) (*model.Site, error) {
 	certID, err := c.previewCertificate(ctx, parent.Deploy.Previews)
 	if err != nil {
 		return nil, err
@@ -428,9 +632,44 @@ func (c *Core) refreshPreview(ctx context.Context, parent *model.Site, id string
 		return nil, err
 	}
 	info := infoOf(ev, cur.Preview)
+	adjust(&info)
 	cfg := parent.Deploy.Previews
 	info.URL = preview.URL(cfg.Protocol, info.Host, cfg.Port)
-	return c.updateSite(ctx, id, derivePreview(parent, cur, info, certID))
+	s := derivePreview(parent, cur, info, certID)
+	if err := c.countAutoCert(ctx, cfg, cur, s); err != nil {
+		return nil, err
+	}
+	return c.updateSite(ctx, id, s)
+}
+
+// setPreviewInfo changes what the server records about a preview.
+func (c *Core) setPreviewInfo(ctx context.Context, id string, change func(*model.PreviewInfo)) (*model.Site, error) {
+	c.sitesMu.Lock()
+	defer c.sitesMu.Unlock()
+	cur, err := c.Site(id)
+	if err != nil {
+		return nil, err
+	}
+	if cur.Preview == nil {
+		return nil, store.ErrNotFound
+	}
+	s := clone(cur)
+	change(s.Preview)
+	return c.updateSite(ctx, id, s)
+}
+
+// announceApproval tells the operators a preview waits for them.
+func (c *Core) announceApproval(parent *model.Site, info *model.PreviewInfo, what string) {
+	from := ""
+	if info.Fork {
+		from = " from a fork"
+	}
+	by := ""
+	if info.Author != "" {
+		by = " by " + info.Author
+	}
+	c.Bus.Warn(events.PreviewApproval, parent.ID, "the preview of %s for %s%s waits for approval of commit %s%s: review the change, then approve it to build it on this server",
+		parent.Name, what, from, shortCommit(info.Commit), by)
 }
 
 // infoOf is a preview's description after an event: what the event says,
@@ -505,9 +744,23 @@ func derivePreview(parent, cur *model.Site, info model.PreviewInfo, certID strin
 		if certID != "" {
 			b.CertMode, b.CertificateID = model.CertModeManual, certID
 		}
+		// The parent's clients need a certificate: so do the preview's.
+		b.ClientCert = parent.PreviewClientCert(cfg.IP, cfg.Port)
 	}
 	s.Bindings = []model.Binding{b}
+	if neverApproved(&info) {
+		// Nothing to serve, and no certificate to ask for, before an
+		// operator has looked at the pull request.
+		s.Bindings = nil
+	}
 	s.Tasks = nil // scheduled tasks would run against the preview's data twice
+	s.Slots = nil // a preview is one deployment: none of the parent's slots
+
+	// The parent's firewall mode, as it is in effect: a site from before
+	// the firewall has none, which is off; new-site defaults do not apply.
+	if s.Routing.WAF.Mode == "" {
+		s.Routing.WAF.Mode = model.WAFOff
+	}
 
 	d := &s.Deploy
 	d.Git.Branch = info.Branch
@@ -535,7 +788,7 @@ func derivePreview(parent, cur *model.Site, info model.PreviewInfo, certID strin
 		if isAbsPath(n.AppRoot) {
 			n.AppRoot = "." // the release, once deployed (see Site.ResolveRoot)
 		}
-		n.Env = previewEnv(n.Env, cfg.Env, info)
+		n.Env = previewEnv(n.Env, cfg.Env, info, cfg.InheritSecrets && !info.Fork)
 	}
 	if st := s.Static; st != nil && isAbsPath(st.Root) {
 		st.Root = "."
@@ -549,9 +802,17 @@ func isAbsPath(p string) bool {
 
 // previewEnv is the parent's variables, the preview overrides on top and
 // then PREVIEW, PREVIEW_BRANCH, PREVIEW_PR and PREVIEW_URL. Names match
-// regardless of case, as Windows environment variables do.
-func previewEnv(base, overrides []model.EnvVar, info model.PreviewInfo) []model.EnvVar {
-	out := slices.Clone(base)
+// regardless of case, as Windows environment variables do. Production's
+// secrets stay in production unless inherit is set: secret variables,
+// those read from a secret store and slot settings are left out (the
+// overrides give previews their own).
+func previewEnv(base, overrides []model.EnvVar, info model.PreviewInfo, inherit bool) []model.EnvVar {
+	var out []model.EnvVar
+	for _, e := range base {
+		if inherit || !e.Secret && e.From == nil && !e.SlotSetting {
+			out = append(out, e)
+		}
+	}
 	set := func(e model.EnvVar) {
 		for i := range out {
 			if strings.EqualFold(out[i].Name, e.Name) {
@@ -582,6 +843,9 @@ func (c *Core) hostTaken(host, except string) bool {
 		if s.ID == except {
 			continue
 		}
+		if s.Preview != nil && strings.EqualFold(s.Preview.Host, host) {
+			return true // a preview waiting for approval has no binding yet
+		}
 		for _, b := range s.Bindings {
 			if strings.EqualFold(b.Host, host) {
 				return true
@@ -608,6 +872,43 @@ func (c *Core) previewCertificate(ctx context.Context, cfg model.PreviewConfig) 
 		return c.ensureWildcard(ctx, suffix, cfg.DNSProviderID)
 	}
 	return "", nil
+}
+
+// countAutoCert enforces maxAutoPreviewCerts: a preview binding that is
+// to ask Let's Encrypt for a certificate of its own (https, certMode auto,
+// a host that had none) counts against its domain's week, and beyond the
+// limit the preview is refused rather than risk the production sites'
+// certificates. The count survives restarts.
+func (c *Core) countAutoCert(ctx context.Context, cfg model.PreviewConfig, cur, s *model.Site) error {
+	if len(s.Bindings) == 0 || s.Bindings[0].Protocol != "https" || s.Bindings[0].CertMode != model.CertModeAuto {
+		return nil
+	}
+	if cur != nil && len(cur.Bindings) > 0 && cur.Bindings[0].Protocol == "https" && cur.Bindings[0].CertMode == model.CertModeAuto &&
+		strings.EqualFold(cur.Bindings[0].Host, s.Bindings[0].Host) {
+		return nil // it has its certificate already
+	}
+	_, domain := model.SplitHostPattern(cfg.HostPattern)
+	st := &c.previews
+	st.certs.Lock()
+	defer st.certs.Unlock()
+	ledger := map[string][]time.Time{}
+	if err := c.Store.GetDoc(ctx, autoPreviewCertsDoc, &ledger); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	now := time.Now()
+	for d, list := range ledger {
+		list = slices.DeleteFunc(list, func(t time.Time) bool { return now.Sub(t) > 7*24*time.Hour })
+		if len(list) == 0 {
+			delete(ledger, d)
+		} else {
+			ledger[d] = list
+		}
+	}
+	if n := len(ledger[domain]); n >= maxAutoPreviewCerts {
+		return fmt.Errorf("previews under %s have asked Let's Encrypt for %d certificates in the last 7 days, the most NodeHoster asks for previews (Let's Encrypt allows 50 a week per registered domain, shared with the sites under it): use a wildcard certificate for previews (certificate mode wildcard or certificate)", domain, n)
+	}
+	ledger[domain] = append(ledger[domain], now)
+	return c.Store.PutDoc(ctx, autoPreviewCertsDoc, ledger)
 }
 
 // ensureWildcard returns a certificate for *.suffix: one the server has
@@ -716,6 +1017,35 @@ func (c *Core) previewLoop(ctx context.Context) {
 	}
 }
 
+// disallowedFork says why settings no longer allow previews of forks'
+// pull requests ("" = they do).
+func disallowedFork(cfg model.PreviewConfig) string {
+	switch {
+	case !cfg.Enabled:
+		return "previews turned off"
+	case !cfg.PullRequests:
+		return "previews of pull requests turned off"
+	case !cfg.AllowForks:
+		return "forks disabled"
+	}
+	return ""
+}
+
+// dropDisallowedForks deletes a site's fork previews once its settings no
+// longer allow them (called when the site is saved): the forks' code
+// stops running at once, not at their next push.
+func (c *Core) dropDisallowedForks(parent *model.Site) {
+	reason := disallowedFork(parent.Deploy.Previews)
+	if reason == "" || parent.IsPreview() {
+		return
+	}
+	for _, p := range c.Previews(parent.ID) {
+		if p.Preview.Fork && c.queued(parent.ID, p.Preview.Key) != model.PreviewDeleting {
+			c.queuePreview(&previewOp{parentID: parent.ID, key: p.Preview.Key, del: true, reason: reason, user: "previews"})
+		}
+	}
+}
+
 func (c *Core) expirePreviews(now time.Time) {
 	for _, s := range c.Sites() {
 		if !s.IsPreview() || s.Preview == nil {
@@ -724,6 +1054,8 @@ func (c *Core) expirePreviews(now time.Time) {
 		reason := ""
 		if parent, err := c.Site(s.PreviewOf); err != nil {
 			reason = "its site no longer exists"
+		} else if why := disallowedFork(parent.Deploy.Previews); s.Preview.Fork && why != "" {
+			reason = why
 		} else if days := parent.Deploy.Previews.ExpireDays; days > 0 && now.Sub(s.Preview.LastPush) > time.Duration(days)*24*time.Hour {
 			reason = fmt.Sprintf("expired: no push for %d days", days)
 		}
@@ -748,8 +1080,16 @@ func (c *Core) reportPreview(ctx context.Context, parent *model.Site, info model
 		sealed = parent.Deploy.Git.Token
 	}
 	token, err := c.Box.Unseal(sealed)
+	if err == nil && token == "" && cfg.StatusToken == "" && parent.Deploy.Git.TokenFrom != nil {
+		// The git token, held in a secret store.
+		ref := *parent.Deploy.Git.TokenFrom
+		var vals map[model.SecretRef]string
+		if vals, err = c.Secrets.Resolve(c.secretsCtx(), []model.SecretRef{ref}, secretstore.ResolveOptions{}); err == nil {
+			token = vals[ref]
+		}
+	}
 	if err != nil || token == "" {
-		c.Log.Warn("preview status not reported: no usable token; set one in the site's preview settings", "site", parent.Name)
+		c.Log.Warn("preview status not reported: no usable token; set one in the site's preview settings", "site", parent.Name, "err", err)
 		return
 	}
 	st := preview.Status{Commit: commit, State: state, Description: desc}
