@@ -533,8 +533,8 @@ processes is the same for all of them; what differs is how they start:
   `nodehoster deps` lists every runtime a site uses as required.
 - **Only programs administrators control are run.** The service runs as
   SYSTEM, and runs what it finds (to ask an interpreter its version, and in
-  deployments). So an interpreter, `dotnet.exe`, or a `bun`/`deno` on PATH
-  is used only when no account but SYSTEM, Administrators and
+  deployments). So an interpreter, `dotnet.exe`, a `bun`/`deno`, and a
+  `node`, `git` or custom command's program found on PATH are used only when no account but SYSTEM, Administrators and
   TrustedInstaller can change it, its folder (for Python also `Lib`,
   `site-packages` and `DLLs`) or the folders leading to it. Python in
   `C:\Python312` fails this (a folder made in `C:\` lets every signed-in

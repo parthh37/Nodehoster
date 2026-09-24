@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 // RuntimeExe is a resolved interpreter or host of a runtime other than
@@ -305,6 +306,11 @@ func findProgram(dir, name string) (string, error) {
 	p, err := exec.LookPath(name)
 	if err != nil {
 		return "", fmt.Errorf("the program %q was not found in the application folder or on PATH", name)
+	}
+	// Found on PATH, not chosen by path: only one that users other than
+	// administrators cannot replace.
+	if err := winacl.CheckProgram(p); err != nil {
+		return "", fmt.Errorf("the program %q found on PATH is not used: %w; give its full path", name, err)
 	}
 	return p, nil
 }

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -78,5 +79,24 @@ func TestFindGitOnPath(t *testing.T) {
 	t.Setenv("ProgramW6432", t.TempDir())
 	if _, err := FindGit(t.TempDir()); err == nil || !strings.Contains(err.Error(), "nodehoster deps install git") {
 		t.Fatalf("FindGit without git: %v", err)
+	}
+}
+
+// Deployments run git as the service: a git in a folder anyone can write
+// to is passed over.
+func TestFindGitSkipsUntrusted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("folder permissions are set with ACLs on Windows (winacl tests)")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bin, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if p, err := FindGit(t.TempDir()); err == nil || !strings.Contains(err.Error(), "is not used") {
+		t.Fatalf("FindGit = %q, %v", p, err)
 	}
 }

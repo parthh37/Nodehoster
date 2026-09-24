@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/parthh37/nodehoster/internal/procmgr"
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 var versionRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
@@ -148,6 +149,11 @@ func systemNpm(nodeExe string) (string, string) {
 func (m *Manager) System() *System {
 	p, err := exec.LookPath("node")
 	if err != nil {
+		return nil
+	}
+	// Sites and deployments run it as the service: not one that users
+	// other than administrators could replace.
+	if winacl.CheckProgram(p) != nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
