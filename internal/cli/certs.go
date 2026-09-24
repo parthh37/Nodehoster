@@ -27,6 +27,7 @@ type certView struct {
 		SiteName string `json:"siteName"`
 		Binding  string `json:"binding"`
 	} `json:"usedBy"`
+	OCSP *model.OCSPStatus `json:"ocsp"`
 }
 
 func certList(e *Env, _ []string) error {
@@ -58,9 +59,9 @@ func certList(e *Env, _ []string) error {
 			used = append(used, u.SiteName)
 		}
 		rows = append(rows, []string{c.Name, truncate(strings.Join(c.Domains, ", "), 50), status, expires, days, yesNo(c.AutoRenew),
-			orDash(strings.Join(used, ", ")), c.ID})
+			truncate(c.OCSP.Summary(), 40), orDash(strings.Join(used, ", ")), c.ID})
 	}
-	e.table([]string{"NAME", "DOMAINS", "STATUS", "EXPIRES", "DAYS LEFT", "AUTO-RENEW", "USED BY", "ID"}, rows)
+	e.table([]string{"NAME", "DOMAINS", "STATUS", "EXPIRES", "DAYS LEFT", "AUTO-RENEW", "OCSP", "USED BY", "ID"}, rows)
 	return nil
 }
 

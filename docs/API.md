@@ -246,7 +246,9 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 
 ## Certificates
 
-`CertificateView` = `Certificate` + `"usedBy": [{siteId, siteName, binding}]`.
+`CertificateView` = `Certificate` + `"usedBy": [{siteId, siteName, binding}]` +
+`"ocsp": OCSPStatus` (absent while the certificate is not issued; see
+[OCSP stapling](#ocsp-stapling)).
 
 | Method | Path | Body | Response |
 |---|---|---|---|
@@ -256,6 +258,7 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 | POST | `/api/certificates/import` | multipart: `file` (.pfx/.p12 or .pem/.crt), optional `keyFile`, `password`, `name` | `CertificateView` |
 | POST | `/api/certificates/selfsigned` | `{name, domains[], validDays}` | `CertificateView` |
 | POST | `/api/certificates/{id}/renew` | | `CertificateView` 202 |
+| POST | `/api/certificates/{id}/ocsp` | | `CertificateView` (operator; asks the OCSP responder now, audited `cert.ocsp`) |
 | PUT | `/api/certificates/{id}` | `{name, autoRenew}` | `CertificateView` |
 | DELETE | `/api/certificates/{id}` | | 204 (409 if in use) |
 | POST | `/api/certificates/{id}/export` | `{format: "pfx"\|"pem", password?}` | file download (pfx, or zip of PEMs) |
@@ -276,6 +279,8 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 | GET | `/api/settings` | | `Settings` |
 | PUT | `/api/settings` | `Settings` | `Settings` |
 | GET | `/api/settings/dns-catalog` | | `[{code, name, fields: [{key, label, secret, optional}]}]` |
+| GET | `/api/tls` | | `{minVersion, http2, http3, http3Listeners: []}` (viewer; see [HTTP/3](#http3)) |
+| PUT | `/api/tls` | `{minVersion, http2, http3}` | same (admin; only the TLS settings change, audited `settings.tls`) |
 | POST | `/api/settings/webhooks/test` | `WebhookTarget` | 204 |
 | GET | `/api/settings/admin` | | `{listen, tls: "selfsigned"\|"certificate"\|"none", certificateId, restartRequired}` |
 | PUT | `/api/settings/admin` | same | same (takes effect after service restart) |
@@ -459,6 +464,98 @@ bypasses the cache. `SiteStatus.cache` = `{entries, bytes, hits,
 misses, hitRatio}` when enabled. The cache is emptied when the site's
 configuration changes, on recycles and restarts and on deployment
 activation. Purge paths match the request path after URL rewrite rules.
+
+## Client certificates (mutual TLS)
+
+Like IIS "SSL Settings" › Client certificates. An `https` binding may have
+`clientCert` = `{mode, caPem, allowedSubjects[], allowedFingerprints[],
+requirePaths[]}` (absent = ignore, as before):
+
+- `mode`: `ignore` (default) | `accept` (clients may present a certificate)
+  | `require` (the TLS handshake fails without a certificate issued by the
+  CAs; like IIS "Require").
+- `caPem`: the trusted issuing CAs, PEM (at least one certificate, nothing
+  else, at most 100 and 256 KB). CA certificates are public and stored as
+  they are. A self-signed client certificate may be listed to trust exactly
+  that certificate. Required unless `mode` is `ignore` (422
+  `bindings[i].clientCert.caPem`).
+- `allowedSubjects`, `allowedFingerprints` (optional): when either is set,
+  a verified certificate must also match one entry: the subject common name,
+  the whole subject DN (as in `X-Client-Cert-Subject`) or a DNS, email or
+  URI subject alternative name, ignoring case; or its SHA-256 fingerprint
+  (hex; colons and spaces are removed, stored upper-case).
+- `requirePaths` (with `accept`): path prefixes (`/admin` covers `/admin`
+  and `/admin/...`) answered 403 without a valid certificate. TLS 1.3 has no
+  renegotiation, so a per-path requirement is a certificate accepted at the
+  TLS level and enforced per request.
+
+Bindings sharing an IP address and port have their own policies: the
+handshake asks for a certificate as the binding its SNI name selects says
+(a binding without a host name is the default, also for clients that send
+no SNI). Each request is checked against the binding its Host header
+selects; if that is another policy (a connection reused for another host,
+or a Host unlike the SNI name), the answer is `421 Misdirected Request`,
+which browsers retry on a new connection. With `accept`, a certificate
+that does not verify never fails the handshake. Verification (chain to
+`caPem`, client-authentication usage, validity, allow lists) is cached per
+certificate for 5 minutes.
+
+The application receives, on every request of such a binding:
+
+| Header | Value |
+|---|---|
+| `X-Client-Verify` | `SUCCESS`, `NONE` (no certificate) or `FAILED:<reason>` (`unknown issuer`, `certificate expired or not yet valid`, `certificate not for client authentication`, `certificate not allowed`, `certificate invalid`) |
+| `X-Client-Cert` | the certificate, URL-escaped PEM (like nginx `$ssl_client_escaped_cert`; `decodeURIComponent` reads it) |
+| `X-Client-Cert-Subject` | subject DN, RFC 2253 (`CN=device-1,O=Example`) |
+| `X-Client-Cert-Fingerprint` | SHA-256, upper-case hex (as the certificate store shows fingerprints) |
+
+The last three only on `SUCCESS`. Copies of all four sent by clients are
+removed from every request, on every binding. Responses to requests with a
+verified certificate are treated like responses to requests with
+credentials by the response cache (stored only when marked `public`).
+Refusals: `403` ("A client certificate is required." / "... not accepted
+here (reason)", the site's custom 403 page if it has one).
+
+## OCSP stapling
+
+Certificates whose leaf names an OCSP responder (and whose file includes
+the issuer's certificate) get their OCSP response fetched and stapled to
+TLS handshakes (HTTP/1.1, HTTP/2 and HTTP/3). Responses are verified
+(signed by the issuer or a responder it delegated to with the OCSP Signing
+usage, about this certificate, not dated in the future, not past
+`nextUpdate`), saved as `data/certs/<id>/ocsp.der` so that a restart
+staples at once without the responder, refreshed halfway to `nextUpdate`,
+retried after 1, 2, 4... minutes (at most an hour) on failure, and dropped
+two minutes before `nextUpdate` if no fresh one came. Only `good` answers
+are stapled. Let's Encrypt ended OCSP in 2025: its certificates name no
+responder and show `state: "none"` (nothing to staple), as do self-signed
+ones.
+
+`OCSPStatus` = `{state, responder?, mustStaple?, stapled, thisUpdate?,
+nextUpdate?, revokedAt?, revocationReason?, lastCheck?, nextCheck?,
+lastError?}`; `state`: `none` | `pending` | `good` | `revoked` | `unknown` |
+`error`. Events: `cert.revoked` (error; an ACME certificate with automatic renewal
+is requested again at once, with a new key) and `cert.stapling` (warning: a
+Must-Staple certificate has no valid response to staple). Both reach
+webhooks and the status icon.
+
+## HTTP/3
+
+`Settings.tls.http3` (off by default; also `PUT /api/tls`) opens a UDP
+(QUIC) listener on the same address and port as every HTTPS listener.
+HTTP/1.1 and HTTP/2 responses on those ports carry `Alt-Svc: h3=":443";
+ma=86400`; requests over HTTP/3 go through the same pipeline, with the same
+SNI certificate choice, client certificates and OCSP staples (QUIC always
+uses TLS 1.3; 0-RTT is off, because early data can be replayed). A binding
+to a specific address on a port whose listener takes all addresses is not
+advertised: over QUIC on Windows the address a request arrived on is not
+known, so another binding could answer. `http3Listeners` lists the open
+UDP listeners (`udp :443`) and failures (`FAILED udp :443: ...`, also a
+`server.listen` event); HTTPS keeps working when a UDP port cannot be
+opened. Access logs show the protocol (`HTTP/3.0`), log shipping has
+`access.protocol`, and Prometheus counts requests per protocol. Setup's
+Windows Firewall rule allows the program, UDP included; firewalls in front
+of the server must allow UDP on the HTTPS ports.
 
 ## Automatic IP banning
 
@@ -718,7 +815,9 @@ now such as `15m`, `24h`), `limit` (default 200, at most 1000), `cursor`.
 ## Prometheus
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes
-`nodehoster_requests_total{site,code}`, `nodehoster_instance_memory_bytes`, etc.
+`nodehoster_requests_total{site,code}`,
+`nodehoster_requests_by_protocol_total{site,protocol}` (`HTTP/1.1`, `HTTP/2`,
+`HTTP/3`), `nodehoster_instance_memory_bytes`, etc.
 A site-scoped (or site-restricted) token sees only its sites and no
 certificate metrics.
 

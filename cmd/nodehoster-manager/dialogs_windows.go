@@ -290,7 +290,7 @@ func bindingsDialog(m *manager, siteID string) {
 		rows := make([][]string, len(s.Bindings))
 		for i, b := range s.Bindings {
 			keys[i] = fmt.Sprint(i, b.ID)
-			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), b.Host, certLabel(b, certs)}
+			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), b.Host, certLabel(b, certs), desktop.ClientCertText(b.ClientCert)}
 		}
 		t.set(keys, rows)
 	}
@@ -311,11 +311,11 @@ func bindingsDialog(m *manager, siteID string) {
 		}
 	}
 	refresh()
-	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 760, Height: 380}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 900, Height: 380}, []Widget{
 		intro(desktop.IconLink, "The addresses the site answers on: protocol, IP address, port and host name. HTTPS bindings use a certificate from this server, or get one automatically."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 			t.viewWith(tableOpts{onActivate: edit, onDelete: remove},
-				col("Type", 70), col("IP address", 120), colR("Port", 60), col("Host name", 200), col("Certificate", 180)),
+				col("Type", 70), col("IP address", 120), colR("Port", 60), col("Host name", 200), col("Certificate", 180), col("Client certificates", 150)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
 				button("Add…", func() {
 					b := model.Binding{Protocol: "http", IP: "*", Port: 80}
@@ -376,12 +376,15 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 		}
 	}
 	protos := []string{"http", "https"}
+	var self *walk.Dialog
+	clientCert := newClientCertField(b.ClientCert) // pages_tls_windows.go
 	onType := func() {
 		if cert == nil || port == nil { // still being created
 			return
 		}
 		https := typ.CurrentIndex() == 1
 		cert.SetEnabled(https)
+		clientCert.setEnabled(https)
 		// Like IIS: switching the protocol moves the default port along.
 		switch {
 		case https && port.Value() == 80:
@@ -390,8 +393,8 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 			port.SetValue(80)
 		}
 	}
-	return runDialog(owner, title, Size{Width: 500}, []Widget{
-		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
+	return runDialogAs(&self, owner, title, Size{Width: 500}, []Widget{
+		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: append([]Widget{
 			Label{Text: "Type:"},
 			ComboBox{AssignTo: &typ, Model: protos, CurrentIndex: slices.Index(protos, b.Protocol), OnCurrentIndexChanged: onType},
 			Label{Text: "IP address:"},
@@ -402,7 +405,7 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 			LineEdit{AssignTo: &host, Text: b.Host, CueBanner: "www.example.com, *.example.com, or empty for any"},
 			Label{Text: "Certificate:"},
 			ComboBox{AssignTo: &cert, Model: certNames, CurrentIndex: certIdx, Enabled: b.Protocol == "https"},
-		}},
+		}, clientCert.widgets(&self, b.Protocol == "https")...)},
 	}, func(dlg *walk.Dialog) bool {
 		addr := strings.TrimSpace(ip.Text())
 		if addr != "" && addr != "*" && net.ParseIP(addr) == nil {
@@ -415,8 +418,9 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 		}
 		b.Port = int(port.Value())
 		b.Host = strings.ToLower(strings.TrimSpace(host.Text()))
-		b.CertMode, b.CertificateID = "", ""
+		b.CertMode, b.CertificateID, b.ClientCert = "", "", nil
 		if b.Protocol == "https" {
+			b.ClientCert = clientCert.cc
 			b.CertMode = model.CertModeAuto
 			if i := cert.CurrentIndex(); i > 0 {
 				b.CertMode, b.CertificateID = model.CertModeManual, certs[i-1].ID

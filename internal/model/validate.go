@@ -55,6 +55,7 @@ func (s *Site) ApplyDefaults() {
 		if b.Protocol == "http" {
 			b.CertMode, b.CertificateID = "", ""
 		}
+		b.applyTLSDefaults()
 	}
 	switch s.Type {
 	case SiteNode, SiteWorker:
@@ -217,6 +218,9 @@ func (s *Site) Validate() error {
 			default:
 				return verr(f+".certMode", "must be auto or certificate")
 			}
+		}
+		if err := b.validateTLS(f); err != nil {
+			return err
 		}
 		k := b.Key()
 		if seen[k] {

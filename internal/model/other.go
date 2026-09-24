@@ -69,6 +69,9 @@ type ACMESettings struct {
 type TLSSettings struct {
 	MinVersion string `json:"minVersion"` // "1.2" | "1.3"
 	HTTP2      bool   `json:"http2"`
+	// HTTP3 opens a UDP (QUIC) listener next to every HTTPS listener and
+	// advertises it with Alt-Svc. Off by default.
+	HTTP3 bool `json:"http3"`
 }
 
 type ProxySettings struct {

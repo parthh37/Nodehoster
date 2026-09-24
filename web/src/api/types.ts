@@ -17,6 +17,23 @@ export interface Binding {
   host: string;
   certMode?: 'auto' | 'certificate' | '';
   certificateId?: string;
+  /** HTTPS only: ask clients for a certificate (mutual TLS). Absent = ignore. */
+  clientCert?: ClientCertPolicy | null;
+}
+
+export type ClientCertMode = 'ignore' | 'accept' | 'require';
+
+/** A binding's client certificate policy (IIS "SSL Settings" › Client certificates). */
+export interface ClientCertPolicy {
+  mode?: ClientCertMode | string;
+  /** Trusted issuing CAs, PEM. */
+  caPem?: string;
+  /** CN, subject DN or a DNS / email / URI SAN, ignoring case. */
+  allowedSubjects?: string[] | null;
+  /** SHA-256, hex. */
+  allowedFingerprints?: string[] | null;
+  /** accept mode: path prefixes answered 403 without a valid certificate. */
+  requirePaths?: string[] | null;
 }
 
 export interface EnvVar {
@@ -580,6 +597,24 @@ export interface CertUsage {
 
 export interface CertificateView extends Certificate {
   usedBy: CertUsage[] | null;
+  /** OCSP stapling state; absent while the certificate is not issued. */
+  ocsp?: OCSPStatus;
+}
+
+export type OCSPState = 'none' | 'pending' | 'good' | 'revoked' | 'unknown' | 'error';
+
+export interface OCSPStatus {
+  state: OCSPState | string;
+  responder?: string;
+  mustStaple?: boolean;
+  stapled: boolean;
+  thisUpdate?: string;
+  nextUpdate?: string;
+  revokedAt?: string;
+  revocationReason?: string;
+  lastCheck?: string;
+  nextCheck?: string;
+  lastError?: string;
 }
 
 // ---------------------------------------------------------------- settings
@@ -615,6 +650,13 @@ export interface ACMESettings {
 export interface TLSSettings {
   minVersion: '1.2' | '1.3' | string;
   http2: boolean;
+  /** A UDP (QUIC) listener next to every HTTPS listener, advertised with Alt-Svc. */
+  http3?: boolean;
+}
+
+/** GET/PUT /api/tls. */
+export interface TLSView extends TLSSettings {
+  http3Listeners: string[];
 }
 
 export interface ProxySettings {

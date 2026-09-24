@@ -198,9 +198,11 @@ func (c *responseCache) bypassed(r *http.Request) bool {
 
 // hasCredentials: requests with Authorization or cookies may get answers
 // meant for one user; only responses marked public are shared with them.
-// The session affinity cookie is NodeHoster's own and does not count.
+// The session affinity cookie is NodeHoster's own and does not count. A
+// verified client certificate is a credential too (clients cannot send
+// that header themselves).
 func (c *responseCache) hasCredentials(r *http.Request) bool {
-	if r.Header.Get("Authorization") != "" {
+	if r.Header.Get("Authorization") != "" || r.Header.Get(hdrClientCert) != "" {
 		return true
 	}
 	for _, ck := range r.Cookies() {

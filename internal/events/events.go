@@ -52,10 +52,17 @@ const (
 // administrator did).
 const SecurityBanned = "security.banned"
 
+// OCSP stapling: a certificate's CA reports it revoked; a Must-Staple
+// certificate has no valid response to staple.
+const (
+	CertRevoked  = "cert.revoked"
+	CertStapling = "cert.stapling"
+)
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling}
 
 type Bus struct {
 	store    *store.Store

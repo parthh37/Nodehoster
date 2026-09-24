@@ -14,6 +14,7 @@ import { bindingHref, defaultPort } from '@/lib/bindings';
 import { cn } from '@/lib/cn';
 import { usePermissions } from '@/hooks/useAuth';
 import type { SiteEditorProps } from './types';
+import { ClientCertEditor } from './ClientCertEditor';
 
 export function BindingsEditor({ site, update, readOnly, compact }: SiteEditorProps & { compact?: boolean }) {
   // The certificate store is server-wide: not readable with access to selected sites only.
@@ -199,6 +200,7 @@ function BindingRow({
           )}
         </div>
       )}
+      {https && !compact && <ClientCertEditor policy={b.clientCert} path={p} readOnly={readOnly} onChange={(cc) => onChange({ clientCert: cc })} />}
       <div className="mt-2 flex items-center justify-between gap-2">
         <PathError path={p} />
         {href && !compact && (
