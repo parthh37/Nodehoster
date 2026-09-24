@@ -672,6 +672,10 @@ Searches read the current file backwards, then the rotated copies
 (`app-<time>.log`, also `.gz`), newest first, stopping after 3 seconds or
 256 MB read with `truncated: true`. `cursor` continues after the last line
 returned (at the limit or the budget); a cursor survives a rotation.
+A `.gz` copy can only be read from its start, so a page that runs out of
+budget inside one stops before its lines and the next page reads that
+copy again, from the start, with a budget of its own (a page that starts
+at a `.gz` copy always reads it through).
 Parameters: `q` (case-insensitive text, or an RE2 regular expression of at
 most 512 characters with `regex=1`; matched against the message, not the
 timestamp prefix), `since` / `until` (RFC 3339, or a duration back from

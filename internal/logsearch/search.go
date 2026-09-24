@@ -198,7 +198,7 @@ func Search(files []string, q Query) (Result, error) {
 			if i == start && cur.File != "" {
 				before = cur.Before
 			}
-			next, err = s.gz(f, before)
+			next, err = s.gz(f, before, i == start)
 		} else {
 			off := int64(-1)
 			if i == start && cur.File != "" && cur.Offset > 0 {
@@ -250,7 +250,6 @@ func (s *search) plain(path string, end int64) (*cursor, error) {
 	}
 	name := filepath.Base(path)
 	const chunk = 64 << 10
-	const maxLine = 1 << 20
 	pos := end      // bytes before pos are unread
 	var tail []byte // the start of a line whose beginning is not read yet
 	lineEnd := end  // offset just past the line in tail
@@ -314,9 +313,23 @@ func (s *search) plain(path string, end int64) (*cursor, error) {
 	}
 }
 
+// maxLine is the longest line a search keeps; the rest of an absurdly
+// long line is cut.
+const maxLine = 1 << 20
+
 // gz scans a compressed file forwards (gzip cannot be read backwards),
 // keeping the newest matches before the before'th (0 = all of them).
-func (s *search) gz(path string, before int) (*cursor, error) {
+//
+// The newest matches are at the end, so a page cannot return any of them
+// before it has decompressed the file that far, and cannot resume a
+// decompression another page started. When the budget runs out inside the
+// file, the page ends there, truncated, without this file's lines, and
+// the next page starts over at this file with a whole budget of its own.
+// A page that starts at the file (first, true) already has that whole
+// budget: it reads the file through whatever it costs, as nothing would
+// ever read it otherwise (lumberjack keeps a rotated file to the log size
+// setting).
+func (s *search) gz(path string, before int, first bool) (*cursor, error) {
 	name := filepath.Base(path)
 	want := s.q.Limit - len(s.res.Lines)
 	if want <= 0 {
@@ -338,11 +351,25 @@ func (s *search) gz(path string, before int) (*cursor, error) {
 	sub := &search{q: s.q, deadline: s.deadline}
 	sub.q.Since = time.Time{} // checked below: the file is in time order, oldest first
 	br := bufio.NewReaderSize(zr, 64<<10)
+	var long []byte // a line longer than br's buffer, so far
 	for before <= 0 || n < before {
-		line, err := br.ReadString('\n')
-		s.res.Scanned += int64(len(line))
+		if !first && s.overBudget() {
+			s.res.Truncated = true
+			return &cursor{File: name, Before: before}, nil
+		}
+		chunk, err := br.ReadSlice('\n')
+		s.res.Scanned += int64(len(chunk))
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk[:min(len(chunk), maxLine-len(long))]...)
+			continue
+		}
+		line := chunk
+		if long != nil {
+			line = append(long, chunk[:min(len(chunk), maxLine-len(long))]...)
+			long = nil
+		}
 		if len(line) > 0 {
-			text := strings.TrimRight(line, "\r\n")
+			text := strings.TrimRight(string(line), "\r\n")
 			sub.res.Lines = sub.res.Lines[:0]
 			sub.consider(text, name)
 			if len(sub.res.Lines) == 1 {

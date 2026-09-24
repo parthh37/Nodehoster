@@ -198,6 +198,113 @@ func TestSearchBudget(t *testing.T) {
 	}
 }
 
+// gzLogs writes app.log with lines 200 to 204 and two gzipped rotated
+// files, lines 100 to 199 and 0 to 99, so that a page reading app.log
+// goes on into a .gz file.
+func gzLogs(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name string, from, to int, gz bool) {
+		var b strings.Builder
+		for i := from; i <= to; i++ {
+			b.WriteString(appLine(i, "stdout", fmt.Sprintf("request %d done", i)))
+		}
+		p := filepath.Join(dir, name)
+		if !gz {
+			os.WriteFile(p, []byte(b.String()), 0o640)
+			return
+		}
+		f, _ := os.Create(p)
+		zw := gzip.NewWriter(f)
+		zw.Write([]byte(b.String()))
+		zw.Close()
+		f.Close()
+	}
+	write("app-2026-03-01T01-40-00.000.log.gz", 0, 99, true)
+	write("app-2026-03-01T03-20-00.000.log.gz", 100, 199, true)
+	write("app.log", 200, 204, false)
+	return filepath.Join(dir, "app.log")
+}
+
+// TestSearchBudgetInsideGzipFiles: the byte and time budgets stop a
+// search inside a compressed file too, not only between files, and paging
+// on from there loses and repeats nothing.
+func TestSearchBudgetInsideGzipFiles(t *testing.T) {
+	t.Parallel()
+	files := Files(gzLogs(t))
+	gz := filepath.Base(files[1])
+	const lineLen = 60
+
+	res, err := Search(files, Query{Parse: parse(""), MaxBytes: 1500, Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || res.Scanned > 1500+lineLen || fmt.Sprint(minutes(res)) != "[204 203 202 201 200]" {
+		t.Errorf("byte budget: truncated %v after %d bytes, lines %v", res.Truncated, res.Scanned, minutes(res))
+	}
+	if c, err := decodeCursor(res.Cursor); err != nil || c.File != gz || c.Before != 0 {
+		t.Errorf("byte budget: cursor %+v %v, want the start of %s over", c, err, gz)
+	}
+
+	// A slow match: reading the whole file would take a second.
+	slow := func(string) bool { time.Sleep(10 * time.Millisecond); return true }
+	began := time.Now()
+	res, err = Search(files, Query{Parse: parse(""), Match: slow, Budget: 150 * time.Millisecond, Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(began); !res.Truncated || took > 600*time.Millisecond || len(res.Lines) != 5 {
+		t.Errorf("time budget: truncated %v after %v, %d lines", res.Truncated, took, len(res.Lines))
+	}
+
+	for _, limit := range []int{1000, 30, 7} {
+		q := Query{Parse: parse(""), MaxBytes: 1500, Limit: limit}
+		var all []int
+		for page := 0; page < 100; page++ {
+			res, err := Search(files, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, minutes(res)...)
+			if res.Cursor == "" {
+				break
+			}
+			q.Cursor = res.Cursor
+		}
+		if len(all) != 205 {
+			t.Fatalf("limit %d: %d lines", limit, len(all))
+		}
+		for i, m := range all {
+			if want := 204 - i; m != want {
+				t.Fatalf("limit %d: line %d is minute %d, want %d (newest first, no gaps or repeats)", limit, i, m, want)
+			}
+		}
+	}
+}
+
+// A huge line in a .gz file is cut to 1 MiB, as in a plain file, not
+// read whole into memory.
+func TestSearchLongGzipLine(t *testing.T) {
+	t.Parallel()
+	const maxLine = 1 << 20
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "app.log"), nil, 0o640)
+	f, _ := os.Create(filepath.Join(dir, "app-2026-03-01T01-40-00.000.log.gz"))
+	zw := gzip.NewWriter(f)
+	zw.Write([]byte(appLine(1, "stdout", "before")))
+	zw.Write([]byte(strings.Repeat("x", 3*maxLine) + "\n"))
+	zw.Write([]byte(appLine(2, "stdout", "after")))
+	zw.Close()
+	f.Close()
+	res, err := Search(Files(filepath.Join(dir, "app.log")), Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Lines) != 3 || len(res.Lines[1].Text) != maxLine || !strings.HasSuffix(res.Lines[0].Text, "after") || !strings.HasSuffix(res.Lines[2].Text, "before") {
+		t.Errorf("got %d lines", len(res.Lines))
+	}
+}
+
 func TestSearchFollowsRotation(t *testing.T) {
 	t.Parallel()
 	p := logs(t)
