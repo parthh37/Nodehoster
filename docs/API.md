@@ -450,10 +450,12 @@ is `{threshold, windowSec}` (threshold 0 = off; defaults 10 in 300 s, 50 in
 60 s, 30 in 60 s). Off by default. What counts, per client address:
 
 - `authFailures`: 401 answers (basic authentication or the application) to
-  requests that carried an `Authorization` header or were not GET/HEAD (a
-  submitted login form) — a browser merely asked to sign in, or an API call
-  without a session, is not counted; failed web console logins. 403 is not
-  counted (it is authorization, and what bans and IP restrictions answer).
+  requests that tried a password: `Authorization: Basic …`, or a submitted
+  form (a POST of `application/x-www-form-urlencoded` or
+  `multipart/form-data`) — a browser merely asked to sign in, an expired
+  bearer token, an API call or heartbeat without a session, or an `OPTIONS`
+  preflight is not counted; failed web console logins. 403 is not counted
+  (it is authorization, and what bans and IP restrictions answer).
 - `notFound`: 404 answers, including the default page for unbound hosts.
 - `rateLimited`: 429 answers (a site's rate limit or the application's).
 - `trapPaths` (prefixes, case-insensitive; defaults `/wp-login.php`,

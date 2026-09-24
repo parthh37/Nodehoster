@@ -546,24 +546,44 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // countForBan counts an answer against the client for automatic IP
-// banning. A 401 counts only when credentials were tried: sent in an
-// Authorization header (basic authentication, a bearer token) or in a
-// submitted form (a login page that answers 401). A page load that is
-// simply asked to sign in, or an application's API call without a session,
-// is not an attack. 403 does not count: it answers who the client is, not
-// a failed sign-in, and is also what a ban or an IP restriction answers.
+// banning. A 401 counts only for a failed sign-in (see triedPassword). 403
+// does not count: it answers who the client is, not a failed sign-in, and
+// is also what a ban or an IP restriction answers.
 func (s *Server) countForBan(ip net.IP, r *http.Request, status int) {
 	if ip == nil {
 		return
 	}
 	switch {
-	case status == http.StatusUnauthorized && (r.Header.Get("Authorization") != "" || (r.Method != http.MethodGet && r.Method != http.MethodHead)):
+	case status == http.StatusUnauthorized && triedPassword(r):
 		s.deps.Bans.Record(ip, ipban.AuthFailure)
 	case status == http.StatusNotFound:
 		s.deps.Bans.Record(ip, ipban.NotFound)
 	case status == http.StatusTooManyRequests:
 		s.deps.Bans.Record(ip, ipban.RateLimited)
 	}
+}
+
+// triedPassword reports whether a request that was answered 401 was a
+// guess at a password: basic authentication credentials (NodeHoster's own
+// or the application's), or a submitted form (a login page that answers
+// 401). Everything else a 401 answers is an ordinary client whose session
+// ran out: a page asked to sign in, a single-page app's expired bearer
+// token, a heartbeat POST, a CORS preflight. Counting those would ban a
+// whole office behind one NAT address from every site.
+func triedPassword(r *http.Request) bool {
+	if r.Method == http.MethodOptions {
+		return false
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		scheme, _, _ := strings.Cut(strings.TrimSpace(auth), " ")
+		return strings.EqualFold(scheme, "Basic")
+	}
+	if r.Method != http.MethodPost {
+		return false
+	}
+	mt, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	mt = strings.ToLower(strings.TrimSpace(mt))
+	return mt == "application/x-www-form-urlencoded" || mt == "multipart/form-data"
 }
 
 // refuseBanned answers a banned client with a bare 403. Closing the
