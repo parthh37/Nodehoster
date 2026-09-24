@@ -594,6 +594,9 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 			delete(m.managed, h)
 		}
 	}
+	for _, d := range c.Domains {
+		delete(m.temp, d) // a placeholder while it was issued
+	}
 	m.mu.Unlock()
 	m.ocspForget(id)
 	os.RemoveAll(filepath.Join(m.dir, id))

@@ -59,10 +59,19 @@ const (
 	CertStapling = "cert.stapling"
 )
 
+// Preview deployments, reported on the parent site.
+const (
+	PreviewCreated = "preview.created" // the first deployment of a preview succeeded: it is up
+	PreviewUpdated = "preview.updated" // a later deployment succeeded
+	PreviewDeleted = "preview.deleted" // closed, merged, branch deleted, expired or evicted
+	PreviewFailed  = "preview.failed"  // a preview could not be created, deployed or deleted
+)
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling,
+	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed}
 
 type Bus struct {
 	store    *store.Store

@@ -525,6 +525,9 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
+	if a.previewWebhook(w, r, s, body) {
+		return
+	}
 	var payload struct {
 		Ref string `json:"ref"`
 	}

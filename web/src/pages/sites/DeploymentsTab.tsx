@@ -100,7 +100,7 @@ function DeployStatusBadge({ status }: { status: string }) {
   return <StateBadge state={status} />;
 }
 
-const sourceLabel: Record<string, string> = { zip: 'Upload', git: 'Git', webhook: 'Webhook', rollback: 'Rollback' };
+const sourceLabel: Record<string, string> = { zip: 'Upload', git: 'Git', webhook: 'Webhook', rollback: 'Rollback', preview: 'Preview' };
 
 export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; savedSite: Site; dirty: boolean }) {
   const { canOperate } = useSitePermissions(site.id);

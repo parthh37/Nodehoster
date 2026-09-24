@@ -12,7 +12,7 @@
   Author = 'NodeHoster'
   CompanyName = 'NodeHoster'
   Copyright = '(c) NodeHoster contributors'
-  Description = 'Manage NodeHoster sites, deployments, logs, events, certificates, scheduled tasks and backups on this computer.'
+  Description = 'Manage NodeHoster sites, deployments, preview deployments, logs, events, certificates, scheduled tasks and backups on this computer.'
   PowerShellVersion = '5.1'
   CompatiblePSEditions = @('Desktop', 'Core')
   FunctionsToExport = @(
@@ -20,7 +20,8 @@
     'Publish-NHSite', 'Get-NHRelease', 'Undo-NHDeployment',
     'Get-NHLog', 'Get-NHEvent', 'Get-NHCertificate',
     'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup',
-    'Update-NHCertificateOcsp', 'Get-NHTlsSetting', 'Set-NHTlsSetting'
+    'Update-NHCertificateOcsp', 'Get-NHTlsSetting', 'Set-NHTlsSetting',
+    'Get-NHPreview', 'Publish-NHPreview', 'Remove-NHPreview'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

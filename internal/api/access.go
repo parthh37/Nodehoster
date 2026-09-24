@@ -170,7 +170,7 @@ func (a *API) currentAccess(r *http.Request) (acc auth.Access, ok bool) {
 	if err != nil || fresh.Disabled || fresh.ID != u.ID {
 		return auth.Access{}, false
 	}
-	return auth.UserAccess(&fresh.User).Restrict(tok), true
+	return auth.UserAccess(&fresh.User).Restrict(tok).WithPreviews(a.c.PreviewIDs), true
 }
 
 // eventVisible reports whether a live or stored event may be shown to the

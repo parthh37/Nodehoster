@@ -157,6 +157,7 @@ func (s *Site) ApplyDefaults() {
 	for i := range s.Tasks {
 		s.Tasks[i].applyDefaults()
 	}
+	s.Deploy.Previews.applyDefaults()
 }
 
 func (hc *HealthCheck) applyDefaults(intervalSec int) {
@@ -325,6 +326,9 @@ func (s *Site) Validate() error {
 		return verr("tasks", "scheduled tasks need a Node.js application or background worker site")
 	}
 	if err := validateTasks(s.Tasks); err != nil {
+		return err
+	}
+	if err := s.validatePreviews(); err != nil {
 		return err
 	}
 	r := s.Routing

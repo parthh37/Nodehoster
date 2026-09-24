@@ -75,6 +75,7 @@ IIS Manager, with a status icon in the notification area.
 - Install/build commands, shared paths (`.env`, `uploads`) persisted across releases
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
+- **Preview deployments** like Azure Static Web Apps' pull request environments: every pull request (GitLab merge request) or matching branch (`feature/*`) gets a temporary site of its own at `pr-42.preview.example.com` or `feature-login.preview.example.com`, cloned from its site with one instance, its own shared folder and variable overrides (a separate `DATABASE_URL`) plus `PREVIEW`, `PREVIEW_BRANCH`, `PREVIEW_PR`, `PREVIEW_URL`; redeployed on every push and deleted with its releases, logs and certificate when the pull request is closed or merged, the branch deleted or after N days without a push. Forks are never built unless allowed; optional basic auth or IP allow list; per-host Let's Encrypt, a wildcard certificate from the store or one obtained through DNS-01; commit status with the preview's link on GitHub, GitLab and Gitea; `preview.*` notifications
 - **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
 
 **Administration**
@@ -243,6 +244,9 @@ nodehoster events [-n 50] [--site x]
 nodehoster task list <site>                  scheduled tasks, next run, last result
 nodehoster task run <site> <task> [--no-wait]  run now, showing its output until it ends
 nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
+nodehoster preview list <site>               preview deployments: pull request or branch, state, address
+nodehoster preview deploy <site> <branch>    deploy a branch as a preview now
+nodehoster preview redeploy|delete <site> <preview> [--yes]   <preview>: ID, PR number, host or branch
 nodehoster cert list | cert renew <id|name|domain>
 nodehoster cert ocsp <id|name|domain>        ask the certificate's OCSP responder now
 nodehoster tls                               TLS settings and the HTTP/3 (UDP) listeners
@@ -277,7 +281,8 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
 `Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
 [-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
-`Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`. They take site names from the pipeline:
+`Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
+`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`. They take site names from the pipeline:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -306,6 +311,34 @@ report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
 site: each run starts the script in the site's current release with its
 Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
 deployment during a run does not delete the release it runs in.
+
+### Preview deployments
+
+On a site deployed from git (**Deployments** tab: repository, production
+branch and webhook secret), the **Previews** tab turns them on:
+
+1. Pick a host pattern such as `pr-{number}.preview.example.com` and point a
+   wildcard DNS record (`*.preview.example.com`) at the server. For HTTPS,
+   prefer a wildcard certificate (from the store, or obtained through DNS-01
+   with one of the DNS providers): a per-host Let's Encrypt certificate needs
+   port 80 and counts against the CA's weekly limits.
+2. Subscribe the site's push webhook to pull request events and branch
+   deletions as well as pushes (GitHub: *Pull requests*, *Branch or tag
+   deletion*; GitLab: *Merge request events*; Gitea: *Pull Request*,
+   *Delete*). Signatures are verified exactly as for pushes.
+3. Optionally: variables that differ in previews (a staging database),
+   basic auth or an IP allow list so they are not public, and a token to
+   report a commit status whose link opens the preview.
+
+A preview is a site of its own (`shop pr-42`), listed under its site in the
+console and in `nodehoster preview list`. Its configuration is made from
+its site's at every deployment: one instance, one release kept, its own
+shared folder (never the site's `uploads` or `.env`), no scheduled tasks
+(they would run against the same data twice). Whoever may operate the site
+may redeploy and delete its previews. Pull requests from forks are ignored
+unless allowed, since their code would run on the server; at most
+`maxPreviews` exist, a new one evicting the preview pushed to least
+recently.
 
 ### Migrating from IIS/iisnode or PM2
 
@@ -410,6 +443,7 @@ internal/procmgr      process supervisor (+ agent/ injected into apps)
 internal/proxy        listeners (TCP, QUIC), binding match, mTLS, request pipeline, load balancing
 internal/certs        ACME (lego), import/export, renewal, OCSP stapling
 internal/deploy       zip/git deployments and releases
+internal/preview      preview deployments: webhook events, names, commit statuses (lifecycle in core)
 internal/nodeversions Node.js runtime installer
 internal/deps         Git lookup and MinGit installer (nodehoster deps)
 internal/api          REST API (docs/API.md) and embedded web UI

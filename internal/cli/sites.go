@@ -77,10 +77,18 @@ func siteList(e *Env, _ []string) error {
 	}
 	sort.Slice(list, func(i, j int) bool { return strings.ToLower(list[i].Name) < strings.ToLower(list[j].Name) })
 	rows := make([][]string, 0, len(list))
+	previews := 0
 	for _, s := range list {
+		if s.PreviewOf != "" {
+			previews++ // listed by: nodehoster preview list <site>
+			continue
+		}
 		rows = append(rows, []string{s.Name, string(s.Type), stateText(s.Status), instancesText(s), bindingsText(s.Bindings), s.ID})
 	}
 	e.table([]string{"NAME", "TYPE", "STATE", "INSTANCES", "BINDINGS", "ID"}, rows)
+	if previews > 0 {
+		e.printf("\n%d preview deployment(s) not shown: nodehoster preview list <site>\n", previews)
+	}
 	return nil
 }
 

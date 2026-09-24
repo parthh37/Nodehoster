@@ -359,6 +359,8 @@ export interface DeployConfig {
   keepReleases: number;
   sharedPaths?: string[];
   webhookSecret?: string;
+  /** A temporary site per pull request or branch (see PreviewConfig). */
+  previews?: PreviewConfig;
 }
 
 export interface Site {
@@ -377,6 +379,9 @@ export interface Site {
   /** Scheduled tasks (node and worker sites). */
   tasks?: ScheduledTask[];
   activeRelease?: string;
+  /** Set on a preview deployment: its parent site. Server-maintained. */
+  previewOf?: string;
+  preview?: PreviewInfo;
   createdAt: string;
   updatedAt: string;
 }
@@ -385,7 +390,7 @@ export interface SiteView extends Site {
   status: SiteStatus;
 }
 
-export type DeploymentSource = 'zip' | 'git' | 'webhook' | 'rollback';
+export type DeploymentSource = 'zip' | 'git' | 'webhook' | 'rollback' | 'preview';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed';
 
 export interface Deployment {
@@ -1370,4 +1375,79 @@ export interface LogSearchParams {
   until?: string;
   limit?: number;
   cursor?: string;
+}
+
+// ---------------------------------------------------------------- preview deployments
+
+export type PreviewCertMode = 'auto' | 'certificate' | 'wildcard';
+
+/** deploy.previews of a git-deployed node or static site. */
+export interface PreviewConfig {
+  enabled: boolean;
+  /** "pr-{number}.preview.example.com" or "{branch}.preview.example.com". */
+  hostPattern: string;
+  pullRequests: boolean;
+  /** Globs of branches whose pushes get a preview ("feature/*", "release/**"). */
+  branches?: string[];
+  /** Build pull requests from forks (untrusted code). */
+  allowForks: boolean;
+  /** Beyond it, the least recently pushed preview is evicted. */
+  maxPreviews: number;
+  /** Days without a push before a preview is deleted; 0 = never. */
+  expireDays: number;
+  protocol: 'http' | 'https' | string;
+  ip?: string;
+  port: number;
+  certMode?: PreviewCertMode | '';
+  certificateId?: string;
+  dnsProviderId?: string;
+  /** Overrides of the site's variables; PREVIEW* are always set. */
+  env?: EnvVar[];
+  /** Replaces the site's basic authentication in previews when enabled. */
+  basicAuth: BasicAuthConfig;
+  /** Replaces the site's IP allow list in previews when set. */
+  allowIps?: string[];
+  reportStatus: boolean;
+  /** Secret; empty = the git access token. */
+  statusToken?: string;
+}
+
+export type PreviewKind = 'pr' | 'branch';
+
+export interface PreviewInfo {
+  key: string;
+  kind: PreviewKind;
+  number?: number;
+  branch: string;
+  ref: string;
+  commit?: string;
+  title?: string;
+  author?: string;
+  prUrl?: string;
+  fork?: boolean;
+  provider?: 'github' | 'gitlab' | 'gitea' | string;
+  host: string;
+  url: string;
+  lastPush: string;
+  ready?: boolean;
+}
+
+export type PreviewState = 'pending' | 'deploying' | 'ready' | 'failed' | 'deleting';
+
+/** GET /sites/{id}/previews */
+export interface PreviewView {
+  id: string;
+  name: string;
+  preview: PreviewInfo;
+  state: PreviewState | string;
+  siteState: SiteState;
+  lastDeployment?: Deployment;
+  createdAt: string;
+}
+
+/** What a preview request (webhook delivery, POST /previews) was taken as. */
+export interface PreviewDecision {
+  action: 'deploy' | 'delete' | 'ignore';
+  key?: string;
+  reason: string;
 }

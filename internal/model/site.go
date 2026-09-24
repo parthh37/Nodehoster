@@ -51,6 +51,11 @@ type Site struct {
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
 	ActiveRelease string `json:"activeRelease,omitempty"`
 
+	// PreviewOf is set on a preview deployment: the ID of the site it
+	// previews (see PreviewConfig). Preview says what it shows.
+	PreviewOf string       `json:"previewOf,omitempty"`
+	Preview   *PreviewInfo `json:"preview,omitempty"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -414,6 +419,8 @@ type DeployConfig struct {
 	KeepReleases   int       `json:"keepReleases"`
 	SharedPaths    []string  `json:"sharedPaths,omitempty"`   // persisted across releases (".env", "uploads")
 	WebhookSecret  string    `json:"webhookSecret,omitempty"` // secret
+	// Previews: a temporary site per pull request or branch (previews.go).
+	Previews PreviewConfig `json:"previews"`
 }
 
 // Deployment is a record of one deploy attempt.

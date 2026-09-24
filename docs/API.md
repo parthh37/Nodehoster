@@ -12,7 +12,7 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 - **Errors**: non-2xx responses have body `{ "error": "message", "field": "bindings[0].host" }`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
-  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
+  `deploy.webhookSecret`, `deploy.previews.statusToken`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
   backup destination credentials, the Seq API key and log-shipping headers marked
   `secret`) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
@@ -125,6 +125,11 @@ a grant, downgrades the token too. A restricted token cannot use the account
 endpoints (`/api/auth/password`, `/api/auth/totp/*`, `/api/tokens`), nor
 `PUT /api/users/{id}` on its owner (an `admin`-restricted token): 403.
 
+A site's [preview deployments](#preview-deployments) come with it: a grant
+on a site (or a token restricted to it) gives the same role on each of its
+previews, which appear in `GET /api/sites` and answer `/api/sites/{previewId}/...`
+for that caller.
+
 The desktop manager's local pipe always acts as `admin`.
 
 ## Server
@@ -176,6 +181,10 @@ The desktop manager's local pipe always acts as `admin`.
 
 Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 `X-Hub-Signature-256: sha256=<hmac of body with deploy.webhookSecret>`, or `?secret=`.
+A push to the site's branch (or to any branch when none is set) deploys it:
+202 `Deployment`; a push to another branch answers 200 `{status: "ignored",
+reason}`. Pull request (merge request) events and branch deletions are for
+[preview deployments](#preview-deployments) and never deploy the site itself.
 
 ### Background workers
 
@@ -243,6 +252,62 @@ status: running|succeeded|failed|timeout|cancelled|skipped, startedAt,
 finishedAt?, exitCode?, error?}`. Events: `task.failed` (error: non-zero
 exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 `task.cancel`.
+
+### Preview deployments
+
+A node or static site deployed from git can get a temporary site per pull
+request (GitLab: merge request) or per branch: `deploy.previews`
+(`PreviewConfig`), edited with the site (`PUT /api/sites/{id}`, admin):
+
+| Field | |
+|---|---|
+| `enabled` | needs `deploy.git.repo`, the production branch `deploy.git.branch` (never previewed) and `deploy.webhookSecret` (422 on that field otherwise) |
+| `hostPattern` | `pr-{number}.preview.example.com`, `{branch}.preview.example.com`: placeholders in the first label only. `{branch}` is the branch made DNS-safe (lower case, `-` for anything else, at most 63 characters with a hash of the full name when shortened); a name another site uses gets a hash of the preview's key appended. A branch preview under a pattern without `{branch}` takes the branch as its first label |
+| `pullRequests` | opened, reopened, pushed to (`synchronize`; GitLab `update` with new commits): deployed; closed or merged: deleted |
+| `branches` | globs of branches whose pushes get a preview (`*` within a path segment, `**` across, `?`); a push deleting the branch (or a `delete` event) deletes it |
+| `allowForks` | default false: pull requests from forks are ignored (their code would run on the server). When allowed they are fetched through the base repository's pull request ref (`refs/pull/N/head`, GitLab `refs/merge-requests/N/head`) |
+| `maxPreviews` | default 10, at most 100. A new preview beyond it **evicts** the preview pushed to least recently (`preview.deleted`, reason `evicted`) |
+| `expireDays` | delete previews without a push for that many days (checked hourly); 0 = never |
+| `protocol`, `ip`, `port` | the preview's one binding (default http, port 80/443) |
+| `certMode` | https: `auto` (a Let's Encrypt certificate per preview host over HTTP-01, deleted with the preview), `certificate` + `certificateId` (a certificate from the store that covers `*.<suffix>`), `wildcard` + `dnsProviderId` (the store's certificate for `*.<suffix>`, else one requested through DNS-01 and kept for the next previews) |
+| `env` | overrides of the site's variables (`secret` supported, masked like the site's); `PREVIEW=1`, `PREVIEW_BRANCH`, `PREVIEW_PR` (the number, empty for a branch) and `PREVIEW_URL` are always set and cannot be overridden |
+| `basicAuth`, `allowIps` | when enabled / not empty, replace the site's basic authentication / IP allow list in previews |
+| `reportStatus`, `statusToken` | set a commit status (`nodehoster/preview`: pending, then success with the preview's URL or failure) on GitHub (and Enterprise: `https://<host>/api/v3`), GitLab or Gitea (at the root of their host). The API address comes from `deploy.git.repo`, never from the webhook; `statusToken` (secret) defaults to `deploy.git.token` |
+
+A preview is a site with `previewOf: <parentId>` and `preview: PreviewInfo`
+(`{key, kind: pr|branch, number?, branch, ref, commit?, title?, author?,
+prUrl?, fork?, provider?, host, url, lastPush, ready?}`), both maintained by
+the server (ignored in `POST`/`PUT /api/sites`). Its configuration is the
+parent's, made again at every deployment, with: its binding, one instance
+on an automatic port, no load balancing, maintenance mode and HTTPS redirect
+off, `keepReleases` 1, no scheduled tasks, no webhook of its own, and an
+absolute application path replaced by its release. Shared paths are its own
+(`sites\<previewId>\shared`), never the parent's. It starts after its first
+successful deployment (and cannot be started before: 400). Operations on one
+preview are serialised; pushes that arrive during a deployment collapse
+into one more deployment of the latest head. Deleting a preview removes its
+site, releases, logs and automatic certificate; deleting the parent
+deletes its previews.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/sites/{id}/previews` | viewer | | `PreviewView[]`, pushed to most recently first: `{id, name, preview: PreviewInfo, state: pending\|deploying\|ready\|failed\|deleting, siteState, lastDeployment?, createdAt}` |
+| POST | `/api/sites/{id}/previews` | operator | `{branch}` | 202 `{action, key, reason}`: deploys the branch as a preview (created if needed), whatever `branches` says; 422 for the production branch or an invalid name |
+| POST | `/api/sites/{id}/previews/{previewId}/redeploy` | operator | | 202 `PreviewView` |
+| DELETE | `/api/sites/{id}/previews/{previewId}` | operator | | 202 `PreviewView` (deleted in the background) |
+
+Webhook answers for these deliveries: 202 `{status: "accepted", action:
+deploy|delete, preview: <key>, reason}`, or 200 `{status: "ignored", reason}`
+(previews off, a fork, a pull request event that changes no code, closing
+one without a preview, an unacceptable branch name). The host is told by
+`X-GitHub-Event`, `X-Gitlab-Event` or `X-Gitea-Event` (also Gogs and
+Forgejo); a delivery without one is a push as before. Events on the parent
+site: `preview.created` (first deployment succeeded; message with the URL),
+`preview.updated`, `preview.deleted` (with the reason: closed, merged,
+branch deleted, expired, evicted, deleted by a user), `preview.failed`.
+Audit: `preview.deploy` / `preview.delete` by `webhook`, `preview.create`,
+`preview.redeploy`, `preview.delete`. Deployments of previews have
+`source: "preview"`.
 
 ## Certificates
 
