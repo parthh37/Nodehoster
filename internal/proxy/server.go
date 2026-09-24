@@ -56,7 +56,18 @@ type route struct {
 	binding model.Binding
 	site    *siteRuntime
 	client  *clientPolicy // client certificates; nil = not asked for
+	// secure are, for an http binding, the client certificate policies of
+	// the site's https bindings, which plain HTTP must not get around.
+	secure []hostPolicy
 }
+
+// hostPolicy is an https binding's host name and client certificate policy.
+type hostPolicy struct {
+	host   string
+	policy *clientPolicy
+}
+
+type routeKey struct{} // the *route a request matched, in its context
 
 // routeTable is immutable once built; Reload swaps in a new one.
 type routeTable struct {
@@ -201,12 +212,23 @@ func (s *Server) Reload(sites []*model.Site, running func(*model.Site) bool) {
 		if !running(site) {
 			continue // stopped sites keep their runtime (for locations) but no bindings
 		}
+		var plain []*route
+		var secure []hostPolicy
 		for _, b := range site.Bindings {
 			r := &route{host: b.Host, binding: b, site: rt, client: s.clientPolicyFor(b)}
 			if b.IP != "" {
 				r.ip = net.ParseIP(b.IP)
 			}
 			next.byPort[b.Port] = append(next.byPort[b.Port], r)
+			switch {
+			case b.Protocol != "https":
+				plain = append(plain, r)
+			case r.client != nil:
+				secure = append(secure, hostPolicy{host: strings.ToLower(b.Host), policy: r.client})
+			}
+		}
+		for _, r := range plain {
+			r.secure = secure
 		}
 	}
 	for port := range next.byPort {
@@ -550,7 +572,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.countForBan(banIP, r, status)
 	}()
-	if !s.clientCertGate(rw, r, t, route, port, local) {
+	r = r.WithContext(context.WithValue(r.Context(), routeKey{}, route))
+	r, ok := s.clientCertGate(rw, r, t, route, port, local)
+	if !ok {
 		return
 	}
 	rt.ServeHTTP(rw, r)
