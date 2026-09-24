@@ -10,11 +10,16 @@ import (
 
 // SiteSample is what one evaluation knows about a site: its live status
 // (Status.Traffic counts since the site's counters were created) and its
-// cumulative response time histogram.
+// cumulative response time histogram. A deployment slot is sampled as
+// the configuration it runs (model.SlotSite: Site.Slot set), and alerts
+// on it are the site's, apart from those on production.
 type SiteSample struct {
 	Site    *model.Site
 	Status  model.SiteStatus
 	Latency []int64 // per Options.LatencyBounds bucket, then slower
+	// Hold: the instances are being replaced on purpose (a swap prepares
+	// the slot): nothing is judged, what is pending or firing stays.
+	Hold bool
 }
 
 // ServerSample is what one evaluation knows about the machine. A negative

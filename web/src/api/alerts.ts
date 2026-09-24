@@ -64,6 +64,8 @@ export interface Alert {
   ruleId: string;
   /** Absent for the server's own alerts. */
   siteId?: string;
+  /** A deployment slot of the site (siteName is then "shop (staging)"); absent for production. */
+  slot?: string;
   siteName?: string;
   metric: AlertMetric | string;
   severity: AlertSeverity | string;

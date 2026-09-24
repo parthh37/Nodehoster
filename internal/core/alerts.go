@@ -67,12 +67,50 @@ func (c *Core) alertLoop(ctx context.Context) {
 	}
 }
 
-// alertSamples is every site's live status and response time histogram.
+// alertSamples is every site's live status and response time histogram,
+// and those of their deployment slots. Previews have no alerts: they are
+// temporary, and a pull request that does not start is no incident.
 func (c *Core) alertSamples() []alerts.SiteSample {
 	sites := c.Sites()
 	out := make([]alerts.SiteSample, 0, len(sites))
 	for _, s := range sites {
+		if s.IsPreview() {
+			continue
+		}
 		out = append(out, alerts.SiteSample{Site: s, Status: c.Status(s), Latency: c.Proxy.LatencyHistogram(s.ID)})
+		out = append(out, c.slotSamples(s)...)
+	}
+	return out
+}
+
+// slotSamples are a site's deployment slots, each as the configuration
+// it runs. A stopped slot measures as a stopped site (no alerts); the
+// slot a swap is preparing is held, its instances being replaced on
+// purpose.
+func (c *Core) slotSamples(s *model.Site) []alerts.SiteSample {
+	if len(s.Slots) == 0 {
+		return nil
+	}
+	swapping := ""
+	c.slots.mu.Lock()
+	if p := c.slots.active[s.ID]; p != nil {
+		swapping = p.Slot
+	}
+	c.slots.mu.Unlock()
+	var out []alerts.SiteSample
+	for _, sl := range s.Slots {
+		v := model.SlotSite(s, sl.Name)
+		if v == nil {
+			continue
+		}
+		key := model.SlotKey(s.ID, sl.Name)
+		st, ok := c.Procs.Status(key)
+		if !ok || sl.ActiveRelease == "" {
+			st = model.SiteStatus{State: model.StateStopped}
+		}
+		st.SiteID = s.ID
+		st.Traffic = c.Proxy.Traffic(key)
+		out = append(out, alerts.SiteSample{Site: v, Status: st, Latency: c.Proxy.LatencyHistogram(key), Hold: sl.Name == swapping})
 	}
 	return out
 }
@@ -165,7 +203,11 @@ func (c *Core) deliverAlerts(batch []alerts.Notice) {
 		if n.Kind == alerts.Resolve || (n.Kind == alerts.None && n.Alert.State == model.AlertResolved) {
 			typ, level = events.AlertResolved, "info"
 		}
-		c.Bus.Emit(level, typ, n.Alert.SiteID, n.Message)
+		msg := n.Message
+		if n.Alert.Slot != "" {
+			msg = "slot " + n.Alert.Slot + ": " + msg // the event is the site's
+		}
+		c.Bus.Emit(level, typ, n.Alert.SiteID, msg)
 	}
 	if to := c.Settings().Alerts.EmailTo; len(to) > 0 {
 		subject, body := c.alertMail(batch)
