@@ -9,7 +9,15 @@ function comparable(s: Site): unknown {
   void _c;
   void _u;
   void _a;
+  // A deployment slot's release is server-managed too.
+  if (rest.slots) return { ...rest, slots: rest.slots.map((sl) => ({ ...sl, activeRelease: undefined })) };
   return rest;
+}
+
+/** The draft's slots with the releases the server now reports for them. */
+function withSlotReleases(draft: Site, fresh: Site): Site['slots'] {
+  if (!draft.slots) return draft.slots;
+  return draft.slots.map((sl) => ({ ...sl, activeRelease: fresh.slots?.find((f) => f.name === sl.name)?.activeRelease }));
 }
 
 /**
@@ -29,7 +37,7 @@ export function useSiteDraft(view: SiteView | undefined) {
       setDraft(fresh);
     } else {
       // Keep the user's edits but pick up server-managed fields.
-      setDraft({ ...draft, activeRelease: fresh.activeRelease, updatedAt: fresh.updatedAt });
+      setDraft({ ...draft, activeRelease: fresh.activeRelease, slots: withSlotReleases(draft, fresh), updatedAt: fresh.updatedAt });
     }
     setBase(fresh);
     // Only react to new server data.

@@ -47,9 +47,17 @@ type Site struct {
 	// in the site's release, environment and identity.
 	Tasks []ScheduledTask `json:"tasks,omitempty"`
 
+	// Deployment slots (node and worker sites): staging copies with their
+	// own release, instances and bindings, swapped into production.
+	Slots []DeploymentSlot `json:"slots,omitempty"`
+
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
 	ActiveRelease string `json:"activeRelease,omitempty"`
+
+	// Slot is set only on the configuration derived for a deployment slot
+	// (SlotSite): deployments made with it go to that slot. Never stored.
+	Slot string `json:"-"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -67,6 +75,11 @@ type Binding struct {
 	// certificate for Host; "certificate" uses CertificateID.
 	CertMode      string `json:"certMode,omitempty"`
 	CertificateID string `json:"certificateId,omitempty"`
+
+	// Slot is the deployment slot the binding routes to ("" = production).
+	// Bindings always stay with their slot on a swap, like Azure's custom
+	// domains: only the releases change places.
+	Slot string `json:"slot,omitempty"`
 }
 
 const (
@@ -78,6 +91,10 @@ type EnvVar struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 	Secret bool   `json:"secret,omitempty"` // encrypted at rest, masked in the API
+	// SlotSetting (production's variables): the variable stays with
+	// production and is not given to deployment slots, like an Azure
+	// deployment slot setting.
+	SlotSetting bool `json:"slotSetting,omitempty"`
 }
 
 type NodeConfig struct {
@@ -425,6 +442,10 @@ type Deployment struct {
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 	User       string     `json:"user,omitempty"`
+
+	// Slot is the deployment slot the deployment was made to ("" =
+	// production). A swap moves the release, not this record.
+	Slot string `json:"slot,omitempty"`
 }
 
 // ReleaseDir is where a deployment's files live.

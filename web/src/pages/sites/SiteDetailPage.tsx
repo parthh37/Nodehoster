@@ -26,6 +26,7 @@ import { BindingLink, SiteHeaderActions } from './shared';
 import { OverviewTab } from './OverviewTab';
 import { LogsTab } from './LogsTab';
 import { TasksTab } from './TasksTab';
+import { SlotsTab } from './SlotsTab';
 import { DeployConfigCard, DeploymentsPanel } from './DeploymentsTab';
 import { BindingsEditor } from './editors/BindingsEditor';
 import { EnvEditor } from './editors/EnvEditor';
@@ -37,9 +38,9 @@ import { NodeAdvanced, NodeEssentials, NodeLoadBalancer, ProxyAdvanced, ProxyEss
 import { useSiteDraft } from './useSiteDraft';
 import type { SiteEditorProps } from './editors/types';
 
-type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'deployments' | 'tasks' | 'logs';
+type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'deployments' | 'slots' | 'tasks' | 'logs';
 
-const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'deployments', 'tasks'];
+const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'deployments', 'slots', 'tasks'];
 
 /** Which tab shows the field named in a validation error. */
 function tabForField(field: string | undefined, type: string): TabKey | null {
@@ -47,6 +48,7 @@ function tabForField(field: string | undefined, type: string): TabKey | null {
   // A worker has no Bindings or Routing tab; the settings tab shows the error in its banner.
   const http = type !== 'worker';
   if (field.startsWith('tasks')) return 'tasks';
+  if (field.startsWith('slots')) return runsNode(type) ? 'slots' : 'settings';
   if (field.startsWith('bindings')) return http ? 'bindings' : 'settings';
   if (field.startsWith('node.env')) return 'environment';
   if (field.startsWith('routing')) return http ? 'routing' : 'settings';
@@ -75,6 +77,7 @@ export function SiteDetailPage() {
     { key: 'environment', label: 'Environment', hidden: !runsNode(type) },
     { key: 'routing', label: 'Routing', hidden: worker },
     { key: 'deployments', label: 'Deployments', hidden: !runsNode(type) && type !== 'static' },
+    { key: 'slots', label: 'Slots', hidden: !runsNode(type) },
     { key: 'tasks', label: 'Tasks', hidden: !runsNode(type) },
     { key: 'logs', label: 'Logs' },
   ];
@@ -216,6 +219,8 @@ export function SiteDetailPage() {
         )}
         {/* Not in the fieldset: operators run and cancel tasks; the definitions are read-only for them. */}
         {tab === 'tasks' && editorProps && base && <TasksTab {...editorProps} savedSite={base} />}
+        {/* Like tasks: operators start, stop and swap slots; the slots' settings are read-only for them. */}
+        {tab === 'slots' && editorProps && base && <SlotsTab {...editorProps} savedSite={base} />}
       </FormErrors>
 
       {dirty && isAdmin && (

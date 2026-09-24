@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -141,8 +142,12 @@ func (a *API) siteMetrics(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	slot, _, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
 	mins := intParam(r, "minutes", 60, 7*24*60)
-	pts, err := a.c.Store.ListMetrics(r.Context(), s.ID, time.Now().Add(-time.Duration(mins)*time.Minute))
+	pts, err := a.c.Store.ListMetrics(r.Context(), model.SlotKey(s.ID, slot), time.Now().Add(-time.Duration(mins)*time.Minute))
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -157,9 +162,13 @@ func (a *API) siteLogs(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	slot, bySlot, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
 	n := intParam(r, "lines", 500, 5000)
 	if r.URL.Query().Get("type") == "access" {
-		lines := tailFile(a.c.Proxy.AccessLogPath(s.ID), n)
+		lines := tailFile(a.c.Proxy.AccessLogPath(model.SlotKey(s.ID, slot)), n)
 		out := make([]model.LogLine, 0, len(lines))
 		for _, l := range lines {
 			out = append(out, model.LogLine{Stream: "access", Instance: -1, Text: l})
@@ -168,6 +177,9 @@ func (a *API) siteLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lines := a.c.Procs.Logs(s.ID).Recent(n)
+	if bySlot {
+		lines = slices.DeleteFunc(lines, func(l model.LogLine) bool { return l.Slot != slot })
+	}
 	if lines == nil {
 		lines = []model.LogLine{}
 	}
@@ -179,13 +191,17 @@ func (a *API) siteLogStream(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	slot, bySlot, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
 	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
 	defer stop()
 	stream := newSSE(w)
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	if r.URL.Query().Get("type") == "access" {
-		a.followFile(ctx, stream, a.c.Proxy.AccessLogPath(s.ID), ping)
+		a.followFile(ctx, stream, a.c.Proxy.AccessLogPath(model.SlotKey(s.ID, slot)), ping)
 		return
 	}
 	ch, cancel := a.c.Procs.Logs(s.ID).Subscribe()
@@ -195,6 +211,9 @@ func (a *API) siteLogStream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case l := <-ch:
+			if bySlot && l.Slot != slot {
+				continue
+			}
 			if stream.send("log", l) != nil {
 				return
 			}
@@ -295,9 +314,16 @@ func (a *API) siteLogDownload(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	path, name := a.c.Procs.Logs(s.ID).Path(), "app.log"
+	slot, _, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
+	path, name := a.c.Procs.Logs(s.ID).Path(), "app.log" // every slot's lines
 	if r.URL.Query().Get("type") == "access" {
-		path, name = a.c.Proxy.AccessLogPath(s.ID), "access.log"
+		path, name = a.c.Proxy.AccessLogPath(model.SlotKey(s.ID, slot)), "access.log"
+		if slot != "" {
+			name = slot + "-access.log"
+		}
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -339,11 +365,16 @@ func (a *API) listDeployments(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	slot, bySlot, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
 	list, err := a.c.Store.ListDeployments(r.Context(), s.ID, 100)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
+	list = slices.DeleteFunc(list, func(d *model.Deployment) bool { return !matchesSlot(d.Slot, slot, bySlot) })
 	if list == nil {
 		list = []*model.Deployment{}
 	}
@@ -353,6 +384,10 @@ func (a *API) listDeployments(w http.ResponseWriter, r *http.Request) {
 func (a *API) deployZip(w http.ResponseWriter, r *http.Request) {
 	s := a.site(w, r)
 	if s == nil {
+		return
+	}
+	t, ok := a.deployTarget(w, s, r.URL.Query().Get("slot"))
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
@@ -378,12 +413,12 @@ func (a *API) deployZip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmp.Close()
-	dep, err := a.c.Deploy.DeployZip(context.Background(), s, tmp.Name(), user(r).Username)
+	dep, err := a.c.Deploy.DeployZip(context.Background(), t, tmp.Name(), user(r).Username)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	a.audit(r, "site.deploy", s.Name, "zip "+hdr.Filename)
+	a.audit(r, "site.deploy", s.Name, "zip "+hdr.Filename+slotDetail(t))
 	writeJSON(w, http.StatusAccepted, dep)
 }
 
@@ -394,16 +429,24 @@ func (a *API) deployGit(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Branch string `json:"branch"`
+		Slot   string `json:"slot"`
 	}
 	if r.ContentLength > 0 {
 		decode(r, &in)
 	}
-	dep, err := a.c.Deploy.DeployGit(context.Background(), s, in.Branch, "git", user(r).Username)
+	if in.Slot == "" {
+		in.Slot = r.URL.Query().Get("slot")
+	}
+	t, ok := a.deployTarget(w, s, in.Slot)
+	if !ok {
+		return
+	}
+	dep, err := a.c.Deploy.DeployGit(context.Background(), t, in.Branch, "git", user(r).Username)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	a.audit(r, "site.deploy", s.Name, "git")
+	a.audit(r, "site.deploy", s.Name, "git"+slotDetail(t))
 	writeJSON(w, http.StatusAccepted, dep)
 }
 
@@ -412,12 +455,16 @@ func (a *API) activateDeployment(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	dep, err := a.c.Deploy.Activate(r.Context(), s, chi.URLParam(r, "dep"))
+	t, ok := a.deployTarget(w, s, r.URL.Query().Get("slot"))
+	if !ok {
+		return
+	}
+	dep, err := a.c.Deploy.Activate(r.Context(), t, chi.URLParam(r, "dep"))
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	a.audit(r, "site.rollback", s.Name, dep.ID)
+	a.audit(r, "site.rollback", s.Name, dep.ID+slotDetail(t))
 	writeJSON(w, http.StatusOK, dep)
 }
 
@@ -534,12 +581,16 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "push to " + payload.Ref})
 		return
 	}
-	dep, err := a.c.Deploy.DeployGit(context.Background(), s, "", "webhook", "webhook")
+	t, ok := a.deployTarget(w, s, r.URL.Query().Get("slot")) // ?slot= in the webhook URL
+	if !ok {
+		return
+	}
+	dep, err := a.c.Deploy.DeployGit(context.Background(), t, "", "webhook", "webhook")
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook"})
+	a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook" + slotDetail(t)})
 	writeJSON(w, http.StatusAccepted, dep)
 }
 

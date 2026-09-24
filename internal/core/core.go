@@ -76,6 +76,7 @@ type Core struct {
 	running map[string]bool // desired state of non-node sites
 
 	backups backupState
+	slots   slotState
 	updates updateState
 	// UpdateFeed is where new releases come from (tests replace it).
 	UpdateFeed *update.Feed
@@ -167,7 +168,8 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
+		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.releasesInUse,
+		ActivateSlot: c.activateSlot, OnFinish: c.deployFinished,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
 	})
 
@@ -207,6 +209,7 @@ func (c *Core) Start() {
 			c.setRunning(s.ID, true)
 		}
 	}
+	c.startSlots(auto)
 	c.reload()
 	c.Mail.Start()
 	c.Tasks.Start()
@@ -569,7 +572,7 @@ func (c *Core) reload() {
 	routed := make([]*model.Site, 0, len(sites))
 	for _, s := range sites {
 		if s.Type != model.SiteWorker {
-			routed = append(routed, s)
+			routed = append(routed, c.routedViews(s)...) // production and its deployment slots
 		}
 	}
 	// A stopped node site still gets its bindings routed, so visitors see a
@@ -716,6 +719,9 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	}
 	in.Deploy.Git.Token = seal(in.Deploy.Git.Token, ex.Deploy.Git.Token)
 	in.Deploy.WebhookSecret = seal(in.Deploy.WebhookSecret, ex.Deploy.WebhookSecret)
+	if err := c.prepareSlots(in, existing); err != nil {
+		return err
+	}
 
 	// Basic auth: hash new passwords, keep existing hashes otherwise.
 	for i := range in.Routing.BasicAuth.Users {
@@ -784,6 +790,9 @@ func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*mode
 	if err != nil {
 		return nil, err
 	}
+	if err := c.swapBusy(id); err != nil {
+		return nil, err
+	}
 	in.ID = id
 	in.CreatedAt = existing.CreatedAt
 	in.ActiveRelease = existing.ActiveRelease
@@ -808,6 +817,9 @@ func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*mode
 
 // activateRelease is called by the deployer to switch a site to a release.
 func (c *Core) activateRelease(ctx context.Context, id, release string) error {
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
 	existing, err := c.Site(id)
@@ -845,6 +857,10 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 		c.sitesMu.Unlock()
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		c.sitesMu.Unlock()
+		return err
+	}
 	for _, s := range c.Sites() {
 		for _, l := range s.Routing.Locations {
 			if l.Kind == "site" && l.SiteID == id {
@@ -861,6 +877,7 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 	c.sitesMu.Unlock()
 	c.reload()
 	c.Proxy.ForgetSite(id)
+	c.forgetSlots(existing)
 
 	c.Tasks.Remove(id)
 	c.Procs.Remove(id)
@@ -901,6 +918,9 @@ func (c *Core) StartSite(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	if err := c.startSite(s); err != nil {
 		return err
 	}
@@ -911,6 +931,9 @@ func (c *Core) StartSite(id string) error {
 func (c *Core) StopSite(id string) error {
 	s, err := c.Site(id)
 	if err != nil {
+		return err
+	}
+	if err := c.swapBusy(id); err != nil {
 		return err
 	}
 	if s.RunsNode() {
@@ -930,6 +953,9 @@ func (c *Core) RestartSite(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	if s.RunsNode() {
 		err = c.Procs.Restart(id)
 	} else {
@@ -943,6 +969,9 @@ func (c *Core) RestartSite(id string) error {
 func (c *Core) RecycleSite(id string) error {
 	s, err := c.Site(id)
 	if err != nil {
+		return err
+	}
+	if err := c.swapBusy(id); err != nil {
 		return err
 	}
 	if !s.RunsNode() {
@@ -1013,6 +1042,7 @@ func Masked(s *model.Site) *model.Site {
 	}
 	m.Deploy.Git.Token = mask(m.Deploy.Git.Token)
 	m.Deploy.WebhookSecret = mask(m.Deploy.WebhookSecret)
+	maskSlots(m)
 	for i := range m.Routing.BasicAuth.Users {
 		m.Routing.BasicAuth.Users[i].PasswordHash = ""
 		m.Routing.BasicAuth.Users[i].Password = ""
@@ -1086,6 +1116,7 @@ func (c *Core) metricsLoop(ctx context.Context) {
 				cpu, mem := c.Procs.Usage(s.ID)
 				p := model.MetricPoint{Time: ts, Requests: req, Errors: errs, AvgLatency: lat, CPUPercent: cpu, MemoryBytes: mem}
 				c.Store.AddMetrics(ctx, s.ID, p)
+				c.recordSlotMetrics(ctx, s, ts)
 				tot.Requests += req
 				tot.Errors += errs
 				latSum += lat * float64(req)

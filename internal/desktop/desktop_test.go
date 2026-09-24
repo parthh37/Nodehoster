@@ -20,6 +20,7 @@ func TestBindingText(t *testing.T) {
 		{model.Binding{Protocol: "http", IP: "10.0.0.5", Port: 8080}, "http 10.0.0.5:8080", "http://10.0.0.5:8080/"},
 		{model.Binding{Protocol: "https", IP: "::1", Port: 8443}, "https [::1]:8443", "https://[::1]:8443/"},
 		{model.Binding{Protocol: "https", Port: 443, Host: "*.example.com"}, "https *:443 *.example.com", "https://localhost/"},
+		{model.Binding{Protocol: "http", Port: 80, Host: "staging.example.com", Slot: "staging"}, "http *:80 staging.example.com (staging)", "http://staging.example.com/"},
 	} {
 		if got := BindingText(tc.b); got != tc.text {
 			t.Errorf("BindingText(%+v) = %q, want %q", tc.b, got, tc.text)

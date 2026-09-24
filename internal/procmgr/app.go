@@ -44,6 +44,10 @@ type App struct {
 	watcher      *fileWatcher
 
 	backends atomic.Pointer[[]*Backend]
+
+	// The deployment slot the app is in (nil = production); a swap moves
+	// the app to another slot (see slots.go).
+	slot atomic.Pointer[string]
 }
 
 type exitInfo struct {
@@ -174,7 +178,7 @@ func (a *App) recycle(reason string) error {
 		}
 	}
 	if len(errs) == 0 {
-		a.m.opts.Bus.Info(events.SiteRecycled, a.id, "%s recycled (%s)", a.config().Name, reason)
+		a.m.opts.Bus.Info(events.SiteRecycled, a.id, "%s recycled (%s)", a.config().Name+a.slotSuffix(), reason)
 	}
 	return errors.Join(errs...)
 }
@@ -378,7 +382,7 @@ func (s *slot) run() {
 			site := a.config()
 			policy, code := site.Node.RestartPolicy, inst0.exitCode
 			a.logs.System("instance %d exited with code %d after %s", s.index, code, uptime.Round(time.Second))
-			a.m.opts.Bus.Warn(events.SiteCrashed, a.id, "%s instance %d exited unexpectedly (code %d)", site.Name, s.index, code)
+			a.m.opts.Bus.Warn(events.SiteCrashed, a.id, "%s instance %d exited unexpectedly (code %d)", site.Name+a.slotSuffix(), s.index, code)
 			if policy == "never" || (policy == "on-failure" && code == 0) {
 				if s.idle() {
 					return
@@ -550,7 +554,7 @@ func restartDelay(failures int, lastUptime time.Duration) time.Duration {
 
 func (a *App) tripRapidFail() {
 	a.mu.Lock()
-	name := a.site.Name
+	name := a.site.Name + a.slotSuffix()
 	// Detach the instances now, under the lock, so a Start or Restart issued
 	// while they are still stopping gets a fresh set of slots instead of
 	// having its new processes wiped from view (and orphaned) afterwards.
@@ -608,7 +612,7 @@ func (a *App) autoRecover() {
 		return
 	default:
 	}
-	if a.m.app(a.id) != a {
+	if a.m.app(a.key()) != a {
 		return
 	}
 	a.mu.Lock()
@@ -619,7 +623,7 @@ func (a *App) autoRecover() {
 	a.recoverTimer = nil
 	a.recoveries++
 	a.lastRecovery = time.Now()
-	attempt, name := a.recoveries, a.site.Name
+	attempt, name := a.recoveries, a.site.Name+a.slotSuffix()
 	a.mu.Unlock()
 
 	a.logs.System("automatic restart after rapid-fail protection (attempt %d)", attempt)

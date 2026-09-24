@@ -163,6 +163,11 @@ The desktop manager's local pipe always acts as `admin`.
 | POST | `/api/sites/{id}/logs/clear` | | 204 |
 | POST | `/api/sites/{id}/cache/purge` | `{path?}` | `{purged}` (operator; empties the response cache, or entries whose path starts with `path`) |
 
+`metrics`, `logs`, `logs/stream`, `logs/download` and `logs/search` take
+`?slot=production|<name>` for a [deployment slot](#deployment-slots): its
+metrics, its access log, or only the application lines its instances wrote
+(`LogLine.slot`; without `slot`, every slot's lines).
+
 ### Deployments
 
 | Method | Path | Body | Response |
@@ -176,6 +181,13 @@ The desktop manager's local pipe always acts as `admin`.
 
 Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 `X-Hub-Signature-256: sha256=<hmac of body with deploy.webhookSecret>`, or `?secret=`.
+
+`?slot=<name>` on `deploy/zip`, `deploy/git` (or `slot` in its body),
+`deployments/{depId}/activate` and the webhook URL targets a
+[deployment slot](#deployment-slots) instead of production (422 `slot` for
+a slot the site does not have). `Deployment.slot` records it;
+`GET .../deployments?slot=production|<name>` lists one slot's history. Any
+successful release can be activated into any slot.
 
 ### Background workers
 
@@ -243,6 +255,92 @@ status: running|succeeded|failed|timeout|cancelled|skipped, startedAt,
 finishedAt?, exitCode?, error?}`. Events: `task.failed` (error: non-zero
 exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 `task.cancel`.
+
+### Deployment slots
+
+Like Azure App Service deployment slots: node and worker sites have
+`slots: DeploymentSlot[]` (at most 4 besides production, edited with the
+site, admin), each running its own release on its own instances, with its
+own bindings, so a release can be tested (staging.example.com) before it
+goes live, then swapped in without a cold start.
+
+| Field | |
+|---|---|
+| `name` | 1-32 lower-case letters, digits or `-`, not `production`, unique |
+| `env` | the slot's own variables (`secret` supported, masked like the site's): they replace production's of the same name, or are added |
+| `instances` | 0 (default) = as many as production |
+| `autoSwap` | after a successful deployment to the slot, swap it into production (audited as `auto-swap`) |
+| `warmup` | `{paths: ["/"], statuses: "200-399", timeoutSec: 120}`: `statuses` are ranges and codes (`200-299,401`), `timeoutSec` 5-1800 for the whole warm-up |
+| `activeRelease` | the release the slot runs; NodeHoster's to manage (ignored on write, like `activeRelease`) |
+
+Settings: a slot runs with production's configuration except its **slot
+settings**, which stay with the slot on a swap: its `env` and instance
+count, production's variables marked `slotSetting: true` (`node.env[n]`:
+they stay in production and slots do not get them — the database URL, say)
+and bindings: `Binding.slot` names the slot a binding routes to (`""` =
+production; 422 `bindings[n].slot` for a slot that does not exist). Bindings
+never move on a swap, like Azure's custom domains. Deployments to a slot
+are built with the slot's variables; shared paths (`deploy.sharedPaths`)
+are shared by every slot. A slot needs automatic ports (422
+`node.portMode` with a fixed port) and is only served by this server's
+instances, never load balanced to other servers. Scheduled tasks run in
+production only, from production's release. A slot starts when something
+is deployed to it (and with the service, for sites that start
+automatically); it is started, stopped and recycled on its own. Its
+events, logs (`LogLine.slot`, `[staging 0 stdout]` in `app.log`), access
+log (`logs\sites\<id>\<slot>-access.log`), metrics and traffic are its own;
+rapid-fail protection, recycling, health checks and file watching apply to
+each slot's instances separately.
+
+A **swap** exchanges a slot's release with production's:
+
+1. *preparing*: the slot's instances are restarted with production's
+   settings, sticky ones included (a rolling recycle, only if something
+   differs), and scaled to production's instance count — like Azure
+   applying the target slot's settings to the source slot first. A stopped
+   slot is started.
+2. *warming*: every warm-up path is requested on every instance (with
+   production's host name, `X-Forwarded-Proto` and
+   `User-Agent: NodeHoster-Warmup`, redirects not followed) until it answers
+   an accepted status, retrying every second; a worker site has nothing to
+   warm up.
+3. *swapping*: the releases change places in the stored configuration
+   (a restart comes back with the swap done), then production's traffic
+   moves onto the warm instances in one step. Requests in flight on the old
+   production instances finish there; those instances become the slot and
+   are recycled onto the slot's settings. The response caches of both are
+   emptied. Session affinity keeps clients on the same instance number;
+   what a process kept in memory does not survive, as with a recycle.
+
+A failure before step 3 (an instance that does not start, a warm-up that
+times out, the service stopping) changes nothing: the slot goes back to its
+own settings (and is stopped again if the swap started it). Swapping again
+is the rollback. While a swap runs, the site's configuration, deployments,
+rollbacks, start/stop/restart/recycle and deletion answer 409, and a
+deployment in progress makes a swap answer 409. Production must be running
+(or stopped by rapid-fail protection); the slot must have a release (or be
+running: a slot without one runs production's application folder, as after a
+swap from a site that had never been deployed).
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/sites/{id}/slots` | viewer | `SlotsView`: `{slots: SlotStatus[], swap?: SwapProgress, lastSwap?: SwapResult}`, production first |
+| GET | `/api/sites/{id}/slots/{slot}/swap` | viewer | `SwapPreview`: `{slot, productionRelease, slotRelease, warmup, changes: string[], warnings: string[], blockers: string[]}` |
+| POST | `/api/sites/{id}/slots/{slot}/swap` | operator | 202 `SwapProgress`; the swap goes on in the background. 422 `slot` with the first blocker, 409 while a deployment or swap runs |
+| POST | `/api/sites/{id}/slots/{slot}/start` | operator | `SlotsView` (a slot without a release runs production's application folder) |
+| POST | `/api/sites/{id}/slots/{slot}/stop` | operator | `SlotsView` |
+| POST | `/api/sites/{id}/slots/{slot}/recycle` | operator | `SlotsView` |
+
+`{slot}` = `production` acts on the site itself for start, stop and recycle.
+`SlotStatus`: `{name, release?, status: SiteStatus, bindings, autoSwap?}`.
+`SwapProgress`: `{slot, phase: preparing|warming|swapping, message?, user?,
+auto?, startedAt}`. `SwapResult` (the last swap, kept until the service
+restarts): `{slot, succeeded, message, user?, auto?, startedAt, finishedAt,
+productionRelease?, slotRelease?}` (releases after the swap). Events:
+`slot.swapped` (info) and `slot.swap_failed` (error), also on the status
+pipe; audit: `site.slot.swap`, `site.slot.start|stop|recycle`, and
+deployments and rollbacks to a slot as `site.deploy` / `site.rollback` with
+`to <slot>` in the detail.
 
 ## Certificates
 

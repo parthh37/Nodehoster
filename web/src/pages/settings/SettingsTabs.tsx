@@ -309,6 +309,8 @@ export const EVENT_TYPES = [
   'site.recycled',
   'deploy.succeeded',
   'deploy.failed',
+  'slot.swapped',
+  'slot.swap_failed',
   'task.failed',
   'task.timeout',
   'cert.issued',

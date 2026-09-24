@@ -333,6 +333,12 @@ func TestParsers(t *testing.T) {
 	if l, ok := ParseApp("2026-03-01T02:30:05.123Z [-1 system]"); !ok || l.Instance != -1 || l.Text != "" {
 		t.Errorf("ParseApp empty = %+v %v", l, ok)
 	}
+	if l, ok := ParseApp("2026-03-01T02:30:05.123Z [staging 1 stdout] up"); !ok || l.Slot != "staging" || l.Instance != 1 || l.Stream != "stdout" || l.Text != "up" {
+		t.Errorf("ParseApp slot = %+v %v", l, ok)
+	}
+	if l, ok := ParseApp("2026-03-01T02:30:05.123Z [staging -1 system] swapped"); !ok || l.Slot != "staging" || l.Instance != -1 {
+		t.Errorf("ParseApp slot system = %+v %v", l, ok)
+	}
 	if _, ok := ParseApp("  at Object.<anonymous>"); ok {
 		t.Error("a continuation line parsed")
 	}

@@ -7,12 +7,14 @@ import (
 )
 
 // AppLine is a line of a site's app.log, as procmgr.LogSink writes it:
-// "2006-01-02T15:04:05.000Z07:00 [<instance> <stream>] <text>".
+// "2006-01-02T15:04:05.000Z07:00 [<instance> <stream>] <text>", or
+// "[<slot> <instance> <stream>]" for a deployment slot's lines.
 type AppLine struct {
 	Time     time.Time
 	Instance int
 	Stream   string
 	Text     string
+	Slot     string // "" = production
 }
 
 func ParseApp(line string) (AppLine, bool) {
@@ -31,6 +33,10 @@ func ParseApp(line string) (AppLine, bool) {
 			return AppLine{}, false
 		}
 	}
+	slot := ""
+	if first, after, ok := strings.Cut(head, " "); ok && first != "" && first[0] != '-' && (first[0] < '0' || first[0] > '9') {
+		slot, head = first, after // a slot's line: its name comes first
+	}
 	inst, stream, ok := strings.Cut(head, " ")
 	if !ok {
 		return AppLine{}, false
@@ -39,7 +45,7 @@ func ParseApp(line string) (AppLine, bool) {
 	if err != nil {
 		return AppLine{}, false
 	}
-	return AppLine{Time: t, Instance: n, Stream: stream, Text: text}, true
+	return AppLine{Time: t, Instance: n, Stream: stream, Text: text, Slot: slot}, true
 }
 
 // AccessTime reads the time of an access log line (combined format:

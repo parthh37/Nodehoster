@@ -52,10 +52,17 @@ const (
 // administrator did).
 const SecurityBanned = "security.banned"
 
+// Deployment slots: a swap moved a slot's release into production, or it
+// was abandoned (warm-up or preparation failed) and nothing changed.
+const (
+	SlotSwapped    = "slot.swapped"
+	SlotSwapFailed = "slot.swap_failed"
+)
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, SlotSwapped, SlotSwapFailed}
 
 type Bus struct {
 	store    *store.Store

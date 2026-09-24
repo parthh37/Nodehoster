@@ -16,7 +16,9 @@ import { useSitePermissions } from '@/hooks/useAuth';
 import { formatTime } from '@/lib/format';
 import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
+import { ALL_SLOTS, hasSlots, logSlotParam } from '@/lib/slots';
 import { LogSearch } from './LogSearch';
+import { LineSlot, LogSlotSelect } from './slots/LogSlot';
 
 const MAX_LINES = 5000;
 const RENDER_LINES = 2000;
@@ -54,6 +56,10 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Deployment slots: whose lines, or whose access log.
+  const slotted = hasSlots(site);
+  const [slot, setSlot] = useState(ALL_SLOTS);
+  const slotParam = slotted ? logSlotParam(slot, type === 'access') : undefined;
   const pausedRef = useRef(false);
   const bufferRef = useRef<LogLine[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -95,10 +101,10 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
           append([l]);
         }
       },
-    });
+    }, slotParam);
 
     sitesApi
-      .logs(site.id, type, 500)
+      .logs(site.id, type, 500, slotParam)
       .then((initial) => {
         if (cancelled) return;
         const list = initial ?? [];
@@ -116,7 +122,7 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
       cancelled = true;
       h.close();
     };
-  }, [site.id, type, append]);
+  }, [site.id, type, append, slotParam]);
 
   const resume = () => {
     setPaused(false);
@@ -173,6 +179,7 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
             ...(hasAccess ? [{ value: 'access' as const, label: 'Access log' }] : []),
           ]}
         />
+        {slotted && <LogSlotSelect site={site} value={slot} onChange={setSlot} access={type === 'access'} />}
         <Input className="w-56" prefix={<Search className="h-3.5 w-3.5" />} placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {type === 'app' && (
           <div className="flex items-center gap-3 px-1">
@@ -214,7 +221,7 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
           <Button size="sm" variant="ghost" icon={<Eraser className="h-3.5 w-3.5" />} onClick={() => setLines([])} title="Clear the view (files are kept)">
             Clear
           </Button>
-          <a href={sitesApi.logsDownloadUrl(site.id, type)} download>
+          <a href={sitesApi.logsDownloadUrl(site.id, type, type === 'access' ? slotParam : undefined)} download>
             <Button size="sm" variant="ghost" icon={<Download className="h-3.5 w-3.5" />}>
               Download
             </Button>
@@ -257,6 +264,7 @@ function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode 
             >
               <span className="shrink-0 select-none text-zinc-500">{formatTime(l.t)}</span>
               {multiInstance && <span className="w-5 shrink-0 select-none text-right text-zinc-500">#{l.i}</span>}
+              {slotted && slot === ALL_SLOTS && <LineSlot slot={l.slot} />}
               <span className="min-w-0 flex-1">{l.m}</span>
             </div>
           ))

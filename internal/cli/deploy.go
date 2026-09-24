@@ -19,14 +19,14 @@ import (
 func init() {
 	register(
 		&Command{Name: "deploy", Args: "<site>", MinArgs: 1, MaxArgs: 1,
-			Summary: "Deploy --zip <file> or --git [--branch b], showing the log",
+			Summary: "Deploy --zip <file> or --git [--branch b], showing the log (--slot s)",
 			Setup:   deployCmd},
 		&Command{Name: "rollback", Args: "<site> [<release-id>]", MinArgs: 1, MaxArgs: 2,
-			Summary: "Activate an earlier release (default: the previous good one)",
-			Setup:   func(*flag.FlagSet) Runner { return rollback }},
+			Summary: "Activate an earlier release (default: the previous good one; --slot s)",
+			Setup:   rollbackCmd},
 		&Command{Name: "releases", Args: "<site>", MinArgs: 1, MaxArgs: 1,
-			Summary: "List a site's deployments (* = active)",
-			Setup:   func(*flag.FlagSet) Runner { return releases }},
+			Summary: "List a site's deployments (* = active; --slot s)",
+			Setup:   releasesCmd},
 	)
 }
 
@@ -35,6 +35,7 @@ func deployCmd(fs *flag.FlagSet) Runner {
 	git := fs.Bool("git", false, "deploy from the site's git repository")
 	branch := fs.String("branch", "", "git branch (default: the site's)")
 	noWait := fs.Bool("no-wait", false, "return once the deployment has started")
+	slotName := slotFlag(fs)
 	return func(e *Env, args []string) error {
 		if (*zipFile == "") == !*git {
 			return usagef("use either --zip <file> or --git")
@@ -46,29 +47,34 @@ func deployCmd(fs *flag.FlagSet) Runner {
 		if err != nil {
 			return err
 		}
+		slot, err := checkSlot(s, *slotName)
+		if err != nil {
+			return err
+		}
 		var dep model.Deployment
 		if *git {
 			var body any
 			if *branch != "" {
 				body = map[string]string{"branch": *branch}
 			}
-			err = e.Client.Post(e.Ctx, sitePath(s)+"/deploy/git", body, &dep)
+			err = e.Client.Post(e.Ctx, sitePath(s)+"/deploy/git"+slotQuery(slot), body, &dep)
 		} else {
 			f, ferr := os.Open(*zipFile)
 			if ferr != nil {
 				return ferr
 			}
 			defer f.Close()
-			err = e.Client.UploadFile(e.Ctx, sitePath(s)+"/deploy/zip", "file", filepath.Base(*zipFile), f, &dep)
+			err = e.Client.UploadFile(e.Ctx, sitePath(s)+"/deploy/zip"+slotQuery(slot), "file", filepath.Base(*zipFile), f, &dep)
 		}
 		if err != nil {
 			return err
 		}
+		label := siteLabel(s, slot)
 		if *noWait {
 			if e.JSON {
 				return e.printJSON(dep)
 			}
-			e.printf("Deployment %s of %s started. Follow it with: nodehoster releases %s\n", dep.ID, s.Name, s.Name)
+			e.printf("Deployment %s of %s started. Follow it with: nodehoster releases %s\n", dep.ID, label, s.Name)
 			return nil
 		}
 		final, err := e.followDeployment(s, dep.ID)
@@ -81,9 +87,9 @@ func deployCmd(fs *flag.FlagSet) Runner {
 			}
 		}
 		if final.Status != "succeeded" {
-			return fmt.Errorf("deployment %s of %s %s: %s", final.ID, s.Name, final.Status, final.Message)
+			return fmt.Errorf("deployment %s of %s %s: %s", final.ID, label, final.Status, final.Message)
 		}
-		e.printf("Deployment %s of %s succeeded.\n", final.ID, s.Name)
+		e.printf("Deployment %s of %s succeeded.\n", final.ID, label)
 		return nil
 	}
 }
@@ -121,8 +127,18 @@ func (e *Env) followDeployment(s *localapi.Site, depID string) (*model.Deploymen
 }
 
 func (e *Env) deployments(s *localapi.Site) (json.RawMessage, []model.Deployment, error) {
+	return e.slotDeployments(s, "", false)
+}
+
+// slotDeployments lists the deployments made to one slot when bySlot is
+// set ("" = production), else all of them.
+func (e *Env) slotDeployments(s *localapi.Site, slot string, bySlot bool) (json.RawMessage, []model.Deployment, error) {
 	var list []model.Deployment
-	raw, err := e.get(sitePath(s)+"/deployments", &list)
+	path := sitePath(s) + "/deployments"
+	if bySlot {
+		path += "?slot=" + url.QueryEscape(slotOrProduction(slot))
+	}
+	raw, err := e.get(path, &list)
 	return raw, list, err
 }
 
@@ -148,43 +164,63 @@ func previousRelease(active string, list []model.Deployment) (*model.Deployment,
 	return nil, errors.New("there is no earlier successful release to roll back to")
 }
 
-func rollback(e *Env, args []string) error {
-	s, err := e.resolveSite(args[0])
-	if err != nil {
-		return err
-	}
-	var target string
-	if len(args) > 1 {
-		target = args[1]
-	} else {
-		_, list, err := e.deployments(s)
+func rollbackCmd(fs *flag.FlagSet) Runner {
+	slotName := slotFlag(fs)
+	return func(e *Env, args []string) error {
+		s, err := e.resolveSite(args[0])
 		if err != nil {
 			return err
 		}
-		prev, err := previousRelease(s.ActiveRelease, list)
+		slot, err := checkSlot(s, *slotName)
 		if err != nil {
 			return err
 		}
-		target = prev.ID
+		var target string
+		if len(args) > 1 {
+			target = args[1]
+		} else {
+			// Any earlier release, whichever slot it was deployed to:
+			// swaps move releases between slots.
+			_, list, err := e.deployments(s)
+			if err != nil {
+				return err
+			}
+			prev, err := previousRelease(s.ReleaseIn(slot), list)
+			if err != nil {
+				return err
+			}
+			target = prev.ID
+		}
+		var dep model.Deployment
+		raw, err := e.post(sitePath(s)+"/deployments/"+url.PathEscape(target)+"/activate"+slotQuery(slot), &dep)
+		if err != nil {
+			return err
+		}
+		if e.JSON {
+			return e.printJSON(raw)
+		}
+		e.printf("%s now runs release %s (deployed %s from %s).\n", siteLabel(s, slot), dep.ID, localTime(dep.StartedAt), dep.Source)
+		return nil
 	}
-	var dep model.Deployment
-	raw, err := e.post(sitePath(s)+"/deployments/"+url.PathEscape(target)+"/activate", &dep)
-	if err != nil {
-		return err
-	}
-	if e.JSON {
-		return e.printJSON(raw)
-	}
-	e.printf("%s now runs release %s (deployed %s from %s).\n", s.Name, dep.ID, localTime(dep.StartedAt), dep.Source)
-	return nil
 }
 
-func releases(e *Env, args []string) error {
+func releasesCmd(fs *flag.FlagSet) Runner {
+	slotName := fs.String("slot", "", "only the deployments made to this slot (production for the site's own)")
+	return func(e *Env, args []string) error {
+		return releases(e, args, *slotName)
+	}
+}
+
+func releases(e *Env, args []string, slotName string) error {
 	s, err := e.resolveSite(args[0])
 	if err != nil {
 		return err
 	}
-	raw, list, err := e.deployments(s)
+	slot, err := checkSlot(s, slotName)
+	if err != nil {
+		return err
+	}
+	raw, list, err := e.slotDeployments(s, slot, slotName != "")
 	if err != nil || e.JSON {
 		if err == nil {
 			err = e.printJSON(raw)
@@ -200,6 +236,11 @@ func releases(e *Env, args []string) error {
 		mark := ""
 		if d.ID == s.ActiveRelease {
 			mark = "*"
+		}
+		for _, sl := range s.Slots { // the slot running it
+			if d.ID == sl.ActiveRelease {
+				mark = sl.Name
+			}
 		}
 		took := "-"
 		if d.FinishedAt != nil {

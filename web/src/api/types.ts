@@ -17,12 +17,16 @@ export interface Binding {
   host: string;
   certMode?: 'auto' | 'certificate' | '';
   certificateId?: string;
+  /** Deployment slot the binding routes to; "" or absent = production. */
+  slot?: string;
 }
 
 export interface EnvVar {
   name: string;
   value: string;
   secret?: boolean;
+  /** Production variable that stays in production and is not given to deployment slots. */
+  slotSetting?: boolean;
 }
 
 export interface HealthCheck {
@@ -360,6 +364,8 @@ export interface Site {
   /** Scheduled tasks (node and worker sites). */
   tasks?: ScheduledTask[];
   activeRelease?: string;
+  /** Deployment slots besides production (node and worker sites). */
+  slots?: DeploymentSlot[];
   createdAt: string;
   updatedAt: string;
 }
@@ -382,6 +388,8 @@ export interface Deployment {
   startedAt: string;
   finishedAt?: string | null;
   user?: string;
+  /** Deployment slot the deployment was made to; "" = production. */
+  slot?: string;
 }
 
 // ---------------------------------------------------------------- scheduled tasks
@@ -533,6 +541,8 @@ export interface LogLine {
   s: LogStream | string;
   i: number;
   m: string;
+  /** Deployment slot whose instance wrote the line; "" = production. */
+  slot?: string;
 }
 
 export type LogType = 'app' | 'access';
@@ -1328,4 +1338,87 @@ export interface LogSearchParams {
   until?: string;
   limit?: number;
   cursor?: string;
+  /** Deployment slot: filters application lines, or picks the slot's access log. */
+  slot?: string;
+}
+
+// ---------------------------------------------------------------- deployment slots
+
+/** How a slot's instances are warmed up before a swap. */
+export interface WarmupConfig {
+  /** Requested on every instance; default ["/"]. */
+  paths: string[];
+  /** Accepted statuses, e.g. "200-399" (the default) or "200-299,401". */
+  statuses: string;
+  /** For all instances and paths together, 5..1800; default 120. */
+  timeoutSec: number;
+}
+
+/** A second copy of a node or worker site with its own release, instances and bindings. */
+export interface DeploymentSlot {
+  name: string;
+  /** The slot's own variables: override production's of the same name. */
+  env?: EnvVar[];
+  /** 0 or absent = as many as production. */
+  instances?: number;
+  /** Swap into production after a successful deployment to this slot. */
+  autoSwap: boolean;
+  warmup: WarmupConfig;
+  /** Managed by the server; ignored on save. */
+  activeRelease?: string;
+}
+
+export interface SlotStatus {
+  /** "production" or the slot's name. */
+  name: string;
+  release?: string;
+  status: SiteStatus;
+  bindings: Binding[] | null;
+  autoSwap?: boolean;
+}
+
+export type SwapPhase = 'preparing' | 'warming' | 'swapping';
+
+export interface SwapProgress {
+  slot: string;
+  phase: SwapPhase | string;
+  message?: string;
+  user?: string;
+  /** Started by auto-swap after a deployment. */
+  auto?: boolean;
+  startedAt: string;
+}
+
+export interface SwapResult {
+  slot: string;
+  succeeded: boolean;
+  message: string;
+  user?: string;
+  auto?: boolean;
+  startedAt: string;
+  finishedAt: string;
+  /** Releases after the swap (before it, when it failed). */
+  productionRelease?: string;
+  slotRelease?: string;
+}
+
+/** GET /sites/{id}/slots: production first. */
+export interface SlotsView {
+  slots: SlotStatus[] | null;
+  /** Present while a swap runs. */
+  swap?: SwapProgress | null;
+  lastSwap?: SwapResult | null;
+}
+
+/** What swapping a slot into production would do. */
+export interface SwapPreview {
+  slot: string;
+  productionRelease: string;
+  slotRelease: string;
+  warmup: WarmupConfig;
+  /** Plain-language steps, in order. */
+  changes: string[] | null;
+  warnings: string[] | null;
+  /** Non-empty: the swap would be refused. */
+  blockers: string[] | null;
 }

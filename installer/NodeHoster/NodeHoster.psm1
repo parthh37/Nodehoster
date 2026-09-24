@@ -115,6 +115,7 @@ function ConvertTo-NHLogLine($Line, [string] $Site) {
       Stream     = $l.s
       Instance   = $l.i
       Text       = $l.m
+      Slot       = $l.slot # a deployment slot's line; empty for production
     }
   }
 }
@@ -286,10 +287,15 @@ The .zip archive to deploy.
 Deploys from the git repository configured on the site.
 .PARAMETER Branch
 The git branch (default: the site's).
+.PARAMETER Slot
+Deploys to this deployment slot (e.g. staging) instead of production;
+Switch-NHSlot then swaps it into production.
 .EXAMPLE
 Publish-NHSite shop -ZipPath .\build\shop.zip
 .EXAMPLE
 Publish-NHSite shop -Git -Branch release
+.EXAMPLE
+Publish-NHSite shop .\build\shop.zip -Slot staging
 #>
 function Publish-NHSite {
   [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Zip')]
@@ -303,10 +309,12 @@ function Publish-NHSite {
     [Parameter(Mandatory, ParameterSetName = 'Git')]
     [switch] $Git,
     [Parameter(ParameterSetName = 'Git')]
-    [string] $Branch
+    [string] $Branch,
+    [string] $Slot
   )
   process {
     $cliArgs = @('deploy', $Name)
+    if ($Slot) { $cliArgs += @('--slot', $Slot) }
     if ($PSCmdlet.ParameterSetName -eq 'Zip') {
       $zip = (Resolve-Path -LiteralPath $ZipPath -ErrorAction Stop).ProviderPath
       $cliArgs += @('--zip', $zip)
@@ -327,19 +335,26 @@ function Publish-NHSite {
 Gets a NodeHoster site's deployments (releases), newest first.
 .PARAMETER Name
 The site's name or ID. Accepts pipeline input.
+.PARAMETER Slot
+Only the deployments made to this slot ("production" for the site's own).
 .EXAMPLE
 Get-NHRelease shop | Where-Object Status -eq 'failed'
+.EXAMPLE
+Get-NHRelease shop -Slot staging
 #>
 function Get-NHRelease {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
     [Alias('SiteName')]
-    [string[]] $Name
+    [string[]] $Name,
+    [string] $Slot
   )
   process {
     foreach ($n in $Name) {
-      try { Add-NHType (Invoke-NHCli @('releases', $n)) 'NodeHoster.Deployment' }
+      $cliArgs = @('releases', $n)
+      if ($Slot) { $cliArgs += @('--slot', $Slot) }
+      try { Add-NHType (Invoke-NHCli $cliArgs) 'NodeHoster.Deployment' }
       catch { $PSCmdlet.WriteError($_) }
     }
   }
@@ -355,6 +370,9 @@ the release given with -ReleaseId. The switch is a zero-downtime recycle.
 The site's name or ID.
 .PARAMETER ReleaseId
 The release (deployment ID) to activate; see Get-NHRelease.
+.PARAMETER Slot
+Rolls this deployment slot back instead of production. (To roll
+production back after a swap, swap again: Switch-NHSlot.)
 .EXAMPLE
 Undo-NHDeployment shop
 .EXAMPLE
@@ -367,11 +385,13 @@ function Undo-NHDeployment {
     [Alias('SiteName')]
     [string] $Name,
     [Parameter(Position = 1)]
-    [string] $ReleaseId
+    [string] $ReleaseId,
+    [string] $Slot
   )
   process {
     $cliArgs = @('rollback', $Name)
     if ($ReleaseId) { $cliArgs += $ReleaseId }
+    if ($Slot) { $cliArgs += @('--slot', $Slot) }
     if (-not $PSCmdlet.ShouldProcess($Name, 'roll back')) { return }
     Add-NHType (Invoke-NHCli $cliArgs) 'NodeHoster.Deployment'
   }
@@ -392,10 +412,14 @@ How many recent lines (default 100).
 Keeps following new lines.
 .PARAMETER Access
 The access log instead of the application's output.
+.PARAMETER Slot
+Only this deployment slot's lines ("production" for the site's own).
 .EXAMPLE
 Get-NHLog shop -Tail 20
 .EXAMPLE
 Get-NHLog shop -Follow | Where-Object Stream -eq 'stderr'
+.EXAMPLE
+Get-NHLog shop -Slot staging -Access
 #>
 function Get-NHLog {
   [CmdletBinding()]
@@ -406,11 +430,13 @@ function Get-NHLog {
     [ValidateRange(0, 5000)]
     [int] $Tail = 100,
     [switch] $Follow,
-    [switch] $Access
+    [switch] $Access,
+    [string] $Slot
   )
   process {
     $cliArgs = @('logs', $Name, '-n', "$Tail")
     if ($Access) { $cliArgs += '--access' }
+    if ($Slot) { $cliArgs += @('--slot', $Slot) }
     if (-not $Follow) {
       ConvertTo-NHLogLine (Invoke-NHCli $cliArgs) $Name
       return
@@ -628,6 +654,99 @@ function Start-NHBackup {
   Add-NHType $run 'NodeHoster.BackupRun'
 }
 
+Update-TypeData -TypeName NodeHoster.Slot -DefaultDisplayPropertySet Site, Name, State, Ready, Release, AutoSwap -Force
+Update-TypeData -TypeName NodeHoster.SwapResult -DefaultDisplayPropertySet Slot, Succeeded, ProductionRelease, SlotRelease, Message -Force
+
+<#
+.SYNOPSIS
+Gets a NodeHoster site's deployment slots: production and its staging slots.
+.DESCRIPTION
+One object per slot, production first, with its state, ready instances,
+release and bindings (status and bindings properties).
+.PARAMETER Name
+The site's name or ID. Accepts pipeline input.
+.EXAMPLE
+Get-NHSlot shop
+.EXAMPLE
+Get-NHSite | Get-NHSlot | Where-Object Name -ne 'production'
+#>
+function Get-NHSlot {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name
+  )
+  process {
+    foreach ($n in $Name) {
+      try {
+        $view = Invoke-NHCli @('slot', 'list', $n)
+        foreach ($s in @($view.slots)) {
+          if ($null -eq $s) { continue }
+          $ready = @($s.status.instances | Where-Object { $_.state -eq 'ready' }).Count
+          Add-Member -InputObject $s -NotePropertyName Site -NotePropertyValue $n -Force
+          Add-Member -InputObject $s -NotePropertyName State -NotePropertyValue $s.status.state -Force
+          Add-Member -InputObject $s -NotePropertyName Ready -NotePropertyValue "$ready/$(@($s.status.instances).Count)" -Force
+          if (-not $s.PSObject.Properties['autoSwap']) { Add-Member -InputObject $s -NotePropertyName autoSwap -NotePropertyValue $false -Force }
+          if (-not $s.PSObject.Properties['release']) { Add-Member -InputObject $s -NotePropertyName release -NotePropertyValue $null -Force }
+          Add-NHType $s 'NodeHoster.Slot'
+        }
+      } catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Swaps a NodeHoster deployment slot into production, like an Azure slot swap.
+.DESCRIPTION
+The slot's instances restart with production's settings, are warmed up
+(its warm-up paths must answer an accepted status on every instance),
+then take production's traffic at once; the old production release
+becomes the slot. Swapping again is the rollback. Shows the swap's
+progress and returns its result; a swap that fails (production then
+stays as it was) is an error.
+.PARAMETER Name
+The site's name or ID.
+.PARAMETER Slot
+The slot to swap into production (default: the site's only slot).
+.PARAMETER NoWait
+Returns once the swap has started.
+.EXAMPLE
+Switch-NHSlot shop
+.EXAMPLE
+Publish-NHSite shop .\build\shop.zip -Slot staging; Switch-NHSlot shop -Slot staging -Confirm:$false
+#>
+function Switch-NHSlot {
+  [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string] $Name,
+    [Parameter(Position = 1)]
+    [string] $Slot,
+    [switch] $NoWait
+  )
+  process {
+    $what = 'swap the deployment slot into production'
+    if ($Slot) { $what = "swap slot $Slot into production" }
+    if (-not $PSCmdlet.ShouldProcess($Name, $what)) { return }
+    $cliArgs = @('slot', 'swap', $Name)
+    if ($Slot) { $cliArgs += $Slot }
+    $cliArgs += '--yes'
+    if ($NoWait) {
+      Invoke-NHCli ($cliArgs + '--no-wait')
+      return
+    }
+    $lines = @(Invoke-NHCliLive $cliArgs)
+    $res = ConvertFrom-Json -InputObject ($lines -join "`n")
+    foreach ($p in 'productionRelease', 'slotRelease') {
+      if (-not $res.PSObject.Properties[$p]) { Add-Member -InputObject $res -NotePropertyName $p -NotePropertyValue $null -Force }
+    }
+    Add-NHType $res 'NodeHoster.SwapResult'
+  }
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
-  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup
+  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup, Get-NHSlot, Switch-NHSlot

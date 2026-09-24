@@ -26,6 +26,7 @@ func logsCmd(fs *flag.FlagSet) Runner {
 	n := fs.Int("n", 100, "number of recent lines")
 	follow := fs.Bool("f", false, "keep following new lines until Ctrl+C")
 	access := fs.Bool("access", false, "the access log instead of the application's output")
+	slot := fs.String("slot", "", "only this deployment slot's lines (production for the site's own)")
 	return func(e *Env, args []string) error {
 		if *n < 0 {
 			return usagef("-n must be 0 or more")
@@ -37,6 +38,12 @@ func logsCmd(fs *flag.FlagSet) Runner {
 		q := url.Values{}
 		if *access {
 			q.Set("type", "access")
+		}
+		if *slot != "" {
+			if _, err := checkSlot(s, *slot); err != nil {
+				return err
+			}
+			q.Set("slot", *slot)
 		}
 		var lines []model.LogLine
 		if *n > 0 {
@@ -85,6 +92,10 @@ func (e *Env) printLogLine(l model.LogLine) {
 	}
 	if l.Stream == "access" || l.Instance < 0 {
 		fmt.Fprintln(e.Stdout, l.Text)
+		return
+	}
+	if l.Slot != "" {
+		fmt.Fprintf(e.Stdout, "%s %s:%s[%d] %s\n", localTime(l.Time), l.Slot, l.Stream, l.Instance, l.Text)
 		return
 	}
 	fmt.Fprintf(e.Stdout, "%s %s[%d] %s\n", localTime(l.Time), l.Stream, l.Instance, l.Text)
