@@ -441,6 +441,31 @@ func TestEcosystemLiterals(t *testing.T) {
 	}
 }
 
+// A deeply nested upload must be refused, not overflow the stack: a Go
+// stack overflow is fatal and would take the service down.
+func TestEcosystemNestingIsBounded(t *testing.T) {
+	deep := "module.exports = " + strings.Repeat("[", 2<<20)
+	for _, name := range []string{"ecosystem.config.js", "apps"} {
+		_, err := Preview(model.ImportPM2, []byte(deep), name, Options{})
+		if err == nil || !strings.Contains(err.Error(), "nested more than") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Not valid JSON (encoding/json has its own depth limit), then read as
+	// a literal.
+	if _, err := Preview(model.ImportPM2, []byte(strings.Repeat("[", 2<<20)), "apps", Options{}); err == nil || !strings.Contains(err.Error(), "nested more than") {
+		t.Errorf("bare array: %v", err)
+	}
+	// The limit itself is accepted.
+	ok := strings.Repeat("[", maxJSDepth) + strings.Repeat("]", maxJSDepth)
+	if _, err := parseEcosystem(ok); err != nil {
+		t.Errorf("%d levels: %v", maxJSDepth, err)
+	}
+	if _, err := parseEcosystem("[" + ok + "]"); err == nil {
+		t.Errorf("%d levels accepted", maxJSDepth+1)
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	for in, want := range map[any]int{"300M": 300, "1G": 1024, "512K": 1, "2gb": 2048, 536870912.0: 512, "1.5G": 1536} {
 		if got, ok := memoryMB(in); !ok || got != want {

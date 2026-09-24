@@ -34,10 +34,17 @@ const errNotLiteral = "NodeHoster never runs an uploaded ecosystem file, so it c
 	"Run `pm2 jlist > apps.json` on the old server (with the apps started) and import apps.json instead."
 
 type jsParser struct {
-	src  string
-	pos  int
-	line int
+	src   string
+	pos   int
+	line  int
+	depth int // arrays and objects being read
 }
+
+// maxJSDepth bounds the nesting of arrays and objects. The parser is
+// recursive and a Go stack overflow cannot be recovered: an upload of a few
+// megabytes of "[" would otherwise end the service and every site with it.
+// Real ecosystem files nest a handful of levels.
+const maxJSDepth = 256
 
 // parseEcosystem reads `module.exports = <literal>` (or `export default`,
 // or a bare literal such as `pm2 prettylist` output).
@@ -184,9 +191,15 @@ func (p *jsParser) value() (any, error) {
 	switch {
 	case n == 0:
 		return nil, p.errf("unexpected end of file")
-	case c == '{':
-		return p.object()
-	case c == '[':
+	case c == '{' || c == '[':
+		if p.depth >= maxJSDepth {
+			return nil, p.errf("arrays and objects are nested more than %d levels deep; this is not a PM2 configuration", maxJSDepth)
+		}
+		p.depth++
+		defer func() { p.depth-- }()
+		if c == '{' {
+			return p.object()
+		}
 		return p.array()
 	case c == '\'' || c == '"' || c == '`':
 		return p.concat()
