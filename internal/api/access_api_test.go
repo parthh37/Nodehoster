@@ -637,3 +637,38 @@ func TestSiteStreamsEndWhenAccessIsLost(t *testing.T) {
 		resp.Body.Close()
 	}
 }
+
+// TestRestrictedTokenCannotChangeItsOwnUser: the users list is an
+// administrator's, but a restricted token must not use it to do to its
+// owner's account what the account endpoints refuse it.
+func TestRestrictedTokenCannotChangeItsOwnUser(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	rec := e.do(http.MethodPost, "/api/tokens", map[string]any{"name": "ops", "role": "admin"}, admin...)
+	expect(t, rec, http.StatusCreated)
+	tok := withBearer(decodeJSON[struct {
+		Token string `json:"token"`
+	}](t, rec).Token)
+	me := decodeJSON[struct {
+		User model.User `json:"user"`
+	}](t, e.do(http.MethodGet, "/api/auth/me", nil, tok)).User
+
+	for _, change := range []map[string]any{
+		{"password": "a-new-password-1"},
+		{"resetTotp": true},
+		{"role": "viewer"},
+		{"disabled": false},
+	} {
+		expect(t, e.do(http.MethodPut, "/api/users/"+me.ID, change, tok), http.StatusForbidden)
+	}
+	// Other users are still the token's to manage, and an unrestricted
+	// token still manages its own account.
+	other := e.user("olga", model.RoleOperator, false)
+	expect(t, e.do(http.MethodPut, "/api/users/"+other.ID, map[string]any{"password": "a-new-password-2"}, tok), http.StatusOK)
+	owner, err := e.c.Store.GetUser(context.Background(), me.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, e.do(http.MethodPut, "/api/users/"+me.ID, map[string]any{"resetTotp": true}, withBearer(e.token(owner))), http.StatusOK)
+}

@@ -120,7 +120,8 @@ listed site (at most `operator`, so `role: "admin"` is refused with
 `siteIds`). The effective access is always the intersection of the token's
 restriction and its owner's current access: downgrading the user, or removing
 a grant, downgrades the token too. A restricted token cannot use the account
-endpoints (`/api/auth/password`, `/api/auth/totp/*`, `/api/tokens`): 403.
+endpoints (`/api/auth/password`, `/api/auth/totp/*`, `/api/tokens`), nor
+`PUT /api/users/{id}` on its owner (an `admin`-restricted token): 403.
 
 The desktop manager's local pipe always acts as `admin`.
 

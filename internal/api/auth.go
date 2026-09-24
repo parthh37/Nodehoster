@@ -331,6 +331,12 @@ func (a *API) lastAdmin(r *http.Request, id string) bool {
 
 func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	// An administrator's token restricted to, say, role admin cannot
+	// change its owner's password, role or two-factor authentication
+	// here either: it would get round the account endpoints' rule.
+	if id == user(r).ID && restrictedToken(w, r) {
+		return
+	}
 	u, err := a.c.Store.GetUser(r.Context(), id)
 	if err != nil {
 		a.fail(w, err)

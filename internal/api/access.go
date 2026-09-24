@@ -126,12 +126,22 @@ func (a *API) requireFiltered(next http.Handler) http.Handler {
 // unrestrictedToken refuses requests made with a restricted API token.
 func unrestrictedToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if t, _ := r.Context().Value(ctxToken).(*model.APIToken); t != nil && t.Restricted() {
-			writeErr(w, http.StatusForbidden, "a restricted API token cannot manage the account")
+		if restrictedToken(w, r) {
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// restrictedToken refuses (403) a request made with a restricted API token,
+// for the account endpoints and for a change to the token's own user
+// through /users/{id}.
+func restrictedToken(w http.ResponseWriter, r *http.Request) bool {
+	if t, _ := r.Context().Value(ctxToken).(*model.APIToken); t != nil && t.Restricted() {
+		writeErr(w, http.StatusForbidden, "a restricted API token cannot manage the account")
+		return true
+	}
+	return false
 }
 
 // currentAccess works the caller's access out again from the store, for a
