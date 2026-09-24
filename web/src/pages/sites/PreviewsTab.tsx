@@ -249,7 +249,7 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                               const r = await confirm({
                                 title: `Approve ${describePreview(p.preview)} at ${commit}?`,
                                 message: p.preview.fork
-                                  ? `This ${pullRequestWord(p.preview.provider)} comes from a fork. Its install and build commands, then its code, will run on this server (with the service's privileges unless the site runs as a separate account). Review the changes of commit ${commit} first: only that commit is deployed, and each new push needs approval again.`
+                                  ? `This ${pullRequestWord(p.preview.provider)} comes from a fork. Its install and build commands, then its code, will run on this server (${site.type === 'static' ? "with the service's privileges: static sites cannot run as a separate account" : "with the service's privileges unless the site runs as a separate account"}). Review the changes of commit ${commit} first: only that commit is deployed, and each new push needs approval again.`
                                   : `Commit ${commit} will be built and deployed on this server. Only that commit is deployed; each new push needs approval again.`,
                                 danger: !!p.preview.fork,
                                 confirmLabel: 'Approve and deploy',
@@ -400,7 +400,8 @@ function PreviewSettingsCard({ site, update, readOnly }: SiteEditorProps) {
               />
               {p.allowForks && (
                 <Callout tone="danger" icon={<ShieldAlert />}>
-                  Fork code runs on this server, with the NodeHoster service's privileges unless the site runs as a separate account (Run as). Approve only
+                  Fork code runs on this server, with the NodeHoster service's privileges{' '}
+                  {site.type === 'static' ? '(static sites have no Run as account: their builds always run as the service)' : 'unless the site runs as a separate account (Run as)'}. Approve only
                   commits you have reviewed: a malicious pull request could read this server's files and anything the site's account can reach. Fork previews
                   never get the site's secrets. Turning this off deletes the fork previews.
                 </Callout>

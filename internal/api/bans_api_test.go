@@ -212,6 +212,21 @@ func TestBanEnforcementInProxy(t *testing.T) {
 		return res.StatusCode
 	}
 
+	// banned asks until the client is refused (or 5s pass) and returns the
+	// last answer: the proxy counts an answer after sending it, so the
+	// next request, on a new connection, can arrive before the count does.
+	banned := func(port int, from string, hdr ...string) int {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			got := get(port, "/", from, hdr...)
+			if got == http.StatusForbidden || time.Now().After(deadline) {
+				return got
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
 	// A trap path bans at once, on every site but the exempt one.
 	if got := get(normal, "/wp-login.php", "203.0.113.5"); got != http.StatusForbidden {
 		t.Fatalf("trap path: %d", got)
@@ -240,7 +255,7 @@ func TestBanEnforcementInProxy(t *testing.T) {
 	for range 3 {
 		get(normal, "/missing", "203.0.113.7")
 	}
-	if got := get(normal, "/", "203.0.113.7"); got != http.StatusForbidden {
+	if got := banned(normal, "203.0.113.7"); got != http.StatusForbidden {
 		t.Fatalf("after 3 404s: %d", got)
 	}
 
@@ -256,7 +271,7 @@ func TestBanEnforcementInProxy(t *testing.T) {
 	for range 3 {
 		get(private, "/", "203.0.113.9", "Authorization", "Basic dTp3cm9uZw==")
 	}
-	if got := get(private, "/", "203.0.113.9", "Authorization", "Basic dTpyaWdodA=="); got != http.StatusForbidden {
+	if got := banned(private, "203.0.113.9", "Authorization", "Basic dTpyaWdodA=="); got != http.StatusForbidden {
 		t.Fatalf("after 3 wrong passwords: %d", got)
 	}
 
