@@ -638,6 +638,7 @@ func (c *Core) commitSwap(id, slot, prodRel, slotRel string) error {
 		c.Store.PutSite(ctx, cur) // nothing moved: keep the configuration as it runs
 		return err
 	}
+	c.Secrets.SwapRecords(id, model.SlotKey(id, slot)) // the processes changed places with what they read
 	c.cacheMu.Lock()
 	c.sites[id] = next
 	c.cacheMu.Unlock()

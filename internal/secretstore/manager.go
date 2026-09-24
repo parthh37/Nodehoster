@@ -506,6 +506,24 @@ func (m *Manager) record(key string, vals map[model.SecretRef]string) {
 	m.started[key] = siteRecord{at: m.opts.Now(), hashes: hs}
 }
 
+// SwapRecords exchanges what is remembered about two keys' processes: a
+// deployment slot swap makes the slot's processes production's and the
+// other way round, and they keep the values they started with.
+func (m *Manager) SwapRecords(a, b string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ra, okA := m.started[a]
+	rb, okB := m.started[b]
+	delete(m.started, a)
+	delete(m.started, b)
+	if okA {
+		m.started[b] = ra
+	}
+	if okB {
+		m.started[a] = rb
+	}
+}
+
 // Forget drops what is remembered about key's processes (deleted or
 // stopped).
 func (m *Manager) Forget(key string) {

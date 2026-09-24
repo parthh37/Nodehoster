@@ -463,6 +463,42 @@ func TestWatchKeepsSlotRecordsApart(t *testing.T) {
 	}
 }
 
+// A swap makes the slot's processes production's: they keep the values
+// they started with, so production is not recycled for a rotation its new
+// processes already have.
+func TestSwapRecordsFollowTheProcesses(t *testing.T) {
+	var mu sync.Mutex
+	var changed []string
+	m, p, clock := testManager(t, Options{
+		Watched: func() map[string][]model.SecretRef {
+			return map[string][]model.SecretRef{"site1": {ref("app#A")}}
+		},
+		Changed: func(key string, refs []string) {
+			mu.Lock()
+			changed = append(changed, key)
+			mu.Unlock()
+		},
+	})
+	m.stores["vault"].cfg.WatchIntervalSec = 60
+	ctx := context.Background()
+	m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{Record: true, Key: "site1"})
+	m.tick(ctx) // schedules the first watch
+
+	// The secret rotates; the slot, prepared for a swap with production's
+	// settings, starts with the new value, then takes production's place.
+	p.set("app#A", "a2")
+	m.Resolve(ctx, []model.SecretRef{ref("app#A")}, ResolveOptions{Fresh: true, Record: true, Key: "site1@staging"})
+	m.SwapRecords("site1", "site1@staging")
+
+	clock.Add(61 * time.Second)
+	m.tick(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(changed) != 0 {
+		t.Fatalf("production recycled for a value its processes started with: %v", changed)
+	}
+}
+
 // The HTTP client never follows a redirect to another server: requests
 // carry credentials in headers and bodies that Go would send along.
 func TestRedirectToAnotherServerIsRefused(t *testing.T) {
