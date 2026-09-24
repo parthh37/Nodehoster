@@ -37,6 +37,7 @@ IIS Manager, with a status icon in the notification area.
 
 **Reverse proxy & request pipeline**
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
+- **HTTP/3 (QUIC)**, off by default: one switch opens a UDP listener next to every HTTPS listener and advertises it with `Alt-Svc`; same sites, certificates and client certificate rules, 0-RTT off, graceful shutdown; access logs and metrics show the protocol. Allow UDP on the HTTPS ports in firewalls and cloud security groups in front of the server (setup's Windows Firewall rule already covers it)
 - Upstream load balancing: round-robin (weighted), least connections, IP hash, random; active and passive health checks
 - **Session affinity** like ARR's client affinity: a signed, opaque cookie keeps each client on its instance, server or upstream (works behind CDNs/NAT, survives zero-downtime recycles, WebSockets included); moved and re-issued when the backend goes down
 - HTTPS redirect, HSTS, **Brotli and gzip compression** (negotiated by q-value, pre-compressed `.br`/`.gz` static files), request body limit, upstream timeout
@@ -66,6 +67,8 @@ IIS Manager, with a status icon in the notification area.
 - Automatic certificates per binding ("certMode: auto") with renewal at ⅔ of lifetime
 - DNS providers: Cloudflare, Route 53, Azure DNS, **Windows DNS Server (RFC 2136 / GSS-TSIG)**, DigitalOcean, GoDaddy, Namecheap, Hetzner, OVH, Gandi, Porkbun, Linode, Vultr, DNSimple, NameSilo, IONOS, netcup, ClouDNS, Duck DNS, HTTP request, external program
 - Import PFX/PEM, create self-signed, export PFX/PEM, expiry warnings
+- **Client certificates (mutual TLS)** per HTTPS binding, like IIS "Require SSL" + client certificates: ignore, accept or require, trusted CA bundle, optional allow list of subjects or SHA-256 fingerprints, per-path requirement (`/admin` only); bindings sharing an IP and port each keep their own policy (chosen by SNI, 421 for mismatched requests); the application gets `X-Client-Verify`, `X-Client-Cert` (URL-escaped PEM, like nginx), `-Subject` and `-Fingerprint`, and client-supplied copies are always stripped
+- **OCSP stapling** for certificates with a responder: responses verified, cached on disk (restarts staple without the CA), refreshed halfway to expiry with back-off, never stapled once expired; `cert.revoked` and Must-Staple warnings; status per certificate in both consoles. Let's Encrypt ended OCSP in 2025, so its certificates simply show "no responder"
 
 **Deployments**
 - Upload a `.zip` or deploy from **git** (token auth never exposed in the process list)
@@ -95,8 +98,9 @@ IIS Manager, with a status icon in the notification area.
 Download `NodeHoster-<version>-setup.exe` (release files are hosted on S3;
 the GitHub release page links to them) and run it. The installer registers
 the **NodeHoster** service (automatic, delayed start, restart on failure),
-opens the firewall for the program, starts it and checks that it is running.
-Upgrades install over the top; sites and data are kept. A first
+opens the firewall for the program (every port it binds, TCP and UDP, so
+HTTP/3 needs no extra rule on the server itself), starts it and checks that
+it is running. Upgrades install over the top; sites and data are kept. A first
 installation also asks whether NodeHoster may install its own updates (see
 [Updates](#updates)).
 
@@ -240,6 +244,9 @@ nodehoster task list <site>                  scheduled tasks, next run, last res
 nodehoster task run <site> <task> [--no-wait]  run now, showing its output until it ends
 nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
 nodehoster cert list | cert renew <id|name|domain>
+nodehoster cert ocsp <id|name|domain>        ask the certificate's OCSP responder now
+nodehoster tls                               TLS settings and the HTTP/3 (UDP) listeners
+nodehoster tls set [--http3 on|off] [--http2 on|off] [--min-version 1.2|1.3]
 nodehoster backup <file>                     .zip: the full archive (encrypted with the backup
                                              passphrase, if set); any other name: the configuration (JSON)
 nodehoster backup run | backup history [-n 10]  back up to the destinations now; recent backups
@@ -268,8 +275,9 @@ PowerShell 5.1 and PowerShell 7, which wraps these commands and returns
 objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
-`Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
+[-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
+`Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`. They take site names from the pipeline:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -399,8 +407,8 @@ cmd/nodehoster        entry point, CLI, admin listener
 cmd/nodehoster-manager desktop manager and status icon (Win32, walk)
 internal/core         composition root; site lifecycle
 internal/procmgr      process supervisor (+ agent/ injected into apps)
-internal/proxy        listeners, binding match, request pipeline, load balancing
-internal/certs        ACME (lego), import/export, renewal
+internal/proxy        listeners (TCP, QUIC), binding match, mTLS, request pipeline, load balancing
+internal/certs        ACME (lego), import/export, renewal, OCSP stapling
 internal/deploy       zip/git deployments and releases
 internal/nodeversions Node.js runtime installer
 internal/deps         Git lookup and MinGit installer (nodehoster deps)

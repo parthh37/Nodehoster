@@ -336,6 +336,13 @@ func (a *API) prometheus(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "nodehoster_requests_total{%s,code=%q} %d\n", label(s), code, v)
 		}
 	}
+	metric("nodehoster_requests_by_protocol_total", "Requests served, by HTTP version", "counter")
+	for _, s := range sites {
+		p := a.c.Proxy.Protocols(s.ID)
+		for proto, v := range map[string]int64{"HTTP/1.1": p.HTTP1, "HTTP/2": p.HTTP2, "HTTP/3": p.HTTP3} {
+			fmt.Fprintf(&b, "nodehoster_requests_by_protocol_total{%s,protocol=%q} %d\n", label(s), proto, v)
+		}
+	}
 	metric("nodehoster_bytes_sent_total", "Response bytes sent", "counter")
 	for i, s := range sites {
 		fmt.Fprintf(&b, "nodehoster_bytes_sent_total{%s} %d\n", label(s), statuses[i].Traffic.BytesOut)

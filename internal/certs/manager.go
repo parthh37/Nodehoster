@@ -58,6 +58,8 @@ type Manager struct {
 	issuing  map[string]bool
 	failures map[string]int
 	warned   map[string]string // id -> date an expiry warning was sent
+
+	ocsp ocspState // OCSP stapling (ocsp.go)
 }
 
 func New(st *store.Store, box *secrets.Box, dir, acmeDir string, log *slog.Logger, bus *events.Bus, settings func() model.Settings) *Manager {
@@ -84,6 +86,7 @@ func (m *Manager) Load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer m.ocspLoadAll() // after the unlock below
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range list {
@@ -366,6 +369,7 @@ func (m *Manager) save(c *model.Certificate, certPEM, keyPEM []byte) error {
 	m.mu.Lock()
 	m.cache[c.ID] = &pair
 	m.mu.Unlock()
+	m.ocspTrack(c.ID, &pair, false)
 	return nil
 }
 
@@ -591,6 +595,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		}
 	}
 	m.mu.Unlock()
+	m.ocspForget(id)
 	os.RemoveAll(filepath.Join(m.dir, id))
 	m.log.Info("certificate deleted", "name", c.Name)
 	return nil
@@ -656,8 +661,12 @@ func safeFileName(s string) string {
 	return b.String()
 }
 
-// Run renews due certificates and warns about expiring ones until ctx ends.
+// Run renews due certificates, keeps OCSP staples fresh and warns about
+// expiring certificates until ctx ends.
 func (m *Manager) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	wg.Go(func() { m.runOCSP(ctx) })
+	defer wg.Wait()
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	// First pass shortly after start, once listeners are up for HTTP-01.

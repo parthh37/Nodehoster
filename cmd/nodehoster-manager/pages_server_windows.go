@@ -63,6 +63,7 @@ type certView struct {
 		SiteName string `json:"siteName"`
 		Binding  string `json:"binding"`
 	} `json:"usedBy"`
+	OCSP *model.OCSPStatus `json:"ocsp"`
 }
 
 // certLevel is how urgent a certificate is: failed or expired, expiring
@@ -74,7 +75,7 @@ func certLevel(c certView) desktop.Level {
 	case c.NotAfter != nil && time.Until(*c.NotAfter) < 14*24*time.Hour:
 		return desktop.LevelWarning
 	}
-	return desktop.LevelOK
+	return desktop.OCSPLevel(c.OCSP) // revoked, or Must-Staple without a staple
 }
 
 type certsPage struct {
@@ -85,7 +86,7 @@ type certsPage struct {
 	find  *walk.LineEdit
 	count *walk.Label
 
-	renew, copyDomains, refresh, console *command
+	renew, copyDomains, refresh, console, ocsp *command
 }
 
 func (s *certsPage) init(m *manager) *page {
@@ -102,11 +103,12 @@ func (s *certsPage) init(m *manager) *page {
 			walk.Clipboard().SetText(strings.Join(c.Domains, ", "))
 		}
 	})
+	s.ocsp = newCommand("Check OCSP now", desktop.IconShield, func() { s.checkOCSPSelected(m) }) // pages_tls_windows.go
 	s.refresh = newCommand("Refresh", desktop.IconRefresh, func() { m.refresh(true) })
 	s.console = newCommand("Request or import…", desktop.IconConsole, func() { m.openConsolePath("/certificates") })
-	s.list.onSelect = func() { setEnabled(s.current() != nil && m.connected(), s.renew, s.copyDomains) }
+	s.list.onSelect = func() { setEnabled(s.current() != nil && m.connected(), s.renew, s.copyDomains, s.ocsp) }
 	s.list.color = func(row, col int) (walk.Color, bool) {
-		if row >= len(s.certs) || (col != 2 && col != 5) {
+		if row >= len(s.certs) || (col != 2 && col != 5 && col != 8) {
 			return 0, false
 		}
 		if l := certLevel(s.certs[row]); l != desktop.LevelOK {
@@ -140,9 +142,9 @@ func (s *certsPage) content(m *manager) []Widget {
 	return []Widget{
 		s.bar.widget(),
 		searchRow(&s.find, &s.count, "Search names, domains, sites", &s.list),
-		s.list.viewWith(tableOpts{name: "certificates", sortable: true, menu: menu(s.renew, s.copyDomains, nil, s.refresh)},
+		s.list.viewWith(tableOpts{name: "certificates", sortable: true, menu: menu(s.renew, s.ocsp, s.copyDomains, nil, s.refresh)},
 			col("Name", 180), col("Domains", 240), col("Status", 110), col("Issuer", 170),
-			col("Expires", 100), col("Expiry", 150), col("Renews", 70), col("Used by", 200)),
+			col("Expires", 100), col("Expiry", 150), col("Renews", 70), col("Used by", 200), col("OCSP", 200)),
 		hint("Request certificates from Let's Encrypt or another ACME CA, and import or export PFX/PEM files, in the web console. Automatic certificates renew by themselves."),
 	}
 }
@@ -150,7 +152,7 @@ func (s *certsPage) content(m *manager) []Widget {
 func (s *certsPage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Certificates", s.console, s.refresh,
-		"Selected certificate", s.renew, s.copyDomains,
+		"Selected certificate", s.renew, s.ocsp, s.copyDomains,
 	)
 }
 
@@ -180,19 +182,19 @@ func (s *certsPage) redraw(m *manager) {
 			soon++
 		}
 		keys[i] = c.ID
-		rows[i] = []string{c.Name, strings.Join(c.Domains, ", "), status, c.Issuer, expires, expiry, yesNo(c.AutoRenew), strings.Join(used, ", ")}
+		rows[i] = []string{c.Name, strings.Join(c.Domains, ", "), status, c.Issuer, expires, expiry, yesNo(c.AutoRenew), strings.Join(used, ", "), c.OCSP.Summary()}
 	}
 	s.list.set(keys, rows)
 	updateCount(s.count, &s.list)
 	switch {
 	case bad > 0:
-		s.bar.show(barError, plural(bad, "certificate")+" expired or failed to renew. Select one to see why, then renew it.", "", nil)
+		s.bar.show(barError, plural(bad, "certificate")+" expired, failed to renew or have an OCSP problem (revoked, or Must-Staple without a staple). Select one to see why.", "", nil)
 	case soon > 0:
 		s.bar.show(barWarning, plural(soon, "certificate")+" expire within two weeks.", "", nil)
 	default:
 		s.bar.hide()
 	}
-	setEnabled(s.current() != nil && m.connected(), s.renew, s.copyDomains)
+	setEnabled(s.current() != nil && m.connected(), s.renew, s.copyDomains, s.ocsp)
 }
 
 func (s *certsPage) renewSelected(m *manager) {

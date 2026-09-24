@@ -141,6 +141,7 @@ var noticeTypes = map[string]bool{
 	events.SiteCrashed: true, events.SiteFailed: true, events.SiteUnhealthy: true,
 	events.DeployFailed: true, events.DeploySucceeded: true,
 	events.CertFailed: true, events.CertExpiring: true, events.UpstreamDown: true,
+	events.CertRevoked: true, events.CertStapling: true,
 	events.MailFailed: true, events.MailError: true,
 	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
 }

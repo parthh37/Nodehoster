@@ -126,6 +126,7 @@ Update-TypeData -TypeName NodeHoster.Certificate -DefaultDisplayPropertySet Name
 Update-TypeData -TypeName NodeHoster.Task -DefaultDisplayPropertySet Site, Name, Schedule, Enabled, NextRunAt, LastStatus -Force
 Update-TypeData -TypeName NodeHoster.TaskRun -DefaultDisplayPropertySet Id, TaskName, Status, StartedAt, Trigger, ExitCode, Error -Force
 Update-TypeData -TypeName NodeHoster.BackupRun -DefaultDisplayPropertySet StartedAt, Trigger, Status, File, Size, Error -Force
+Update-TypeData -TypeName NodeHoster.TlsSetting -DefaultDisplayPropertySet MinVersion, Http2, Http3, Http3Listeners -Force
 
 <#
 .SYNOPSIS
@@ -628,6 +629,82 @@ function Start-NHBackup {
   Add-NHType $run 'NodeHoster.BackupRun'
 }
 
+<#
+.SYNOPSIS
+Asks the OCSP responder of NodeHoster certificates now and returns them.
+.DESCRIPTION
+NodeHoster staples OCSP responses by itself, refreshing them halfway to
+their expiry; this checks at once (after the CA fixed its responder, say).
+The ocsp property tells the result: state none (no responder, as for
+Let's Encrypt), good, revoked, unknown or error, and whether a response is
+stapled. Accepts certificates from Get-NHCertificate on the pipeline.
+.PARAMETER Id
+A certificate's ID, name or domain (from the pipeline: its id).
+.EXAMPLE
+Update-NHCertificateOcsp shop.example.com | Select-Object name, @{ n = 'ocsp'; e = { $_.ocsp.state } }
+.EXAMPLE
+Get-NHCertificate | Where-Object { $_.ocsp.state -eq 'error' } | Update-NHCertificateOcsp
+#>
+function Update-NHCertificateOcsp {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('Name')]
+    [string[]] $Id
+  )
+  process {
+    foreach ($n in $Id) {
+      try { Add-NHType (Invoke-NHCli @('cert', 'ocsp', $n)) 'NodeHoster.Certificate' }
+      catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Gets NodeHoster's TLS settings: minimum TLS version, HTTP/2, HTTP/3.
+.DESCRIPTION
+http3Listeners lists the UDP (QUIC) listeners HTTP/3 opened next to the
+HTTPS listeners, and the ones that could not be opened.
+.EXAMPLE
+Get-NHTlsSetting
+#>
+function Get-NHTlsSetting {
+  [CmdletBinding()]
+  param()
+  Add-NHType (Invoke-NHCli @('tls')) 'NodeHoster.TlsSetting'
+}
+
+<#
+.SYNOPSIS
+Changes NodeHoster's TLS settings for every HTTPS binding.
+.DESCRIPTION
+Only the settings given change; listeners follow at once. HTTP/3 opens a
+UDP listener on each HTTPS port (setup's Windows Firewall rule allows the
+program, UDP included; open UDP on firewalls in front of the server too).
+.EXAMPLE
+Set-NHTlsSetting -Http3 $true
+.EXAMPLE
+Set-NHTlsSetting -MinVersion 1.3
+#>
+function Set-NHTlsSetting {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Nullable[bool]] $Http3,
+    [Nullable[bool]] $Http2,
+    [ValidateSet('1.2', '1.3')]
+    [string] $MinVersion
+  )
+  $cliArgs = @('tls', 'set')
+  if ($null -ne $Http3) { $cliArgs += @('--http3', $(if ($Http3) { 'on' } else { 'off' })) }
+  if ($null -ne $Http2) { $cliArgs += @('--http2', $(if ($Http2) { 'on' } else { 'off' })) }
+  if ($MinVersion) { $cliArgs += @('--min-version', $MinVersion) }
+  if ($cliArgs.Count -eq 2) { throw 'Give at least one of -Http3, -Http2 or -MinVersion.' }
+  if (-not $PSCmdlet.ShouldProcess('TLS settings', 'change')) { return }
+  Add-NHType (Invoke-NHCli $cliArgs) 'NodeHoster.TlsSetting'
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
-  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup
+  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
+  Update-NHCertificateOcsp, Get-NHTlsSetting, Set-NHTlsSetting

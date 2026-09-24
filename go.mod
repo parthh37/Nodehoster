@@ -17,6 +17,7 @@ require (
 	github.com/klauspost/compress v1.20.0
 	github.com/pkg/sftp v1.13.11
 	github.com/pquerna/otp v1.5.0
+	github.com/quic-go/quic-go v0.63.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/tailscale/walk v0.0.0-20260702185836-28b80ea70d3b
 	golang.org/x/crypto v0.54.0
@@ -89,6 +90,7 @@ require (
 	github.com/ovh/go-ovh v1.9.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/tailscale/win v0.0.0-20260619195133-2d76c33a64c1 // indirect

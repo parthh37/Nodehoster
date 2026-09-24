@@ -51,6 +51,7 @@ type route struct {
 	host    string // "" = any, "*.example.com" = wildcard
 	binding model.Binding
 	site    *siteRuntime
+	client  *clientPolicy // client certificates; nil = not asked for
 }
 
 // routeTable is immutable once built; Reload swaps in a new one.
@@ -66,6 +67,7 @@ type listener struct {
 	port    int
 	ln      net.Listener
 	srv     *http.Server
+	h3      *h3Listener // instead of ln and srv for a QUIC listener
 	closing atomic.Bool
 }
 
@@ -91,6 +93,9 @@ type Server struct {
 
 	affKeyOnce sync.Once
 	affKey     []byte
+
+	policies map[string]*clientPolicy // compiled client certificate policies by key (reloadMu)
+	h3       atomic.Pointer[h3Ports]  // ports with a QUIC listener, for Alt-Svc
 
 	// backends lists a node site's ready instances; the process manager's
 	// in production, replaceable in tests.
@@ -190,7 +195,7 @@ func (s *Server) Reload(sites []*model.Site, running func(*model.Site) bool) {
 			continue // stopped sites keep their runtime (for locations) but no bindings
 		}
 		for _, b := range site.Bindings {
-			r := &route{host: b.Host, binding: b, site: rt}
+			r := &route{host: b.Host, binding: b, site: rt, client: s.clientPolicyFor(b)}
 			if b.IP != "" {
 				r.ip = net.ParseIP(b.IP)
 			}
@@ -200,6 +205,7 @@ func (s *Server) Reload(sites []*model.Site, running func(*model.Site) bool) {
 	for port := range next.byPort {
 		sortRoutes(next.byPort[port])
 	}
+	s.prunePolicies(next)
 	s.table.Store(next)
 	for id, rt := range old.sites {
 		keep := false
@@ -294,6 +300,7 @@ func (s *Server) reconcileListeners(t *routeTable) {
 			}
 		}
 	}
+	s.addHTTP3(want)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,11 +311,11 @@ func (s *Server) reconcileListeners(t *routeTable) {
 			// away (for example by the same port switching protocol);
 			// in-flight requests drain in the background.
 			l.closing.Store(true)
-			l.ln.Close()
+			l.closeSocket()
 			go func(l *listener) {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				l.srv.Shutdown(ctx)
+				l.shutdown(ctx)
 			}(l)
 			s.deps.Log.Info("listener closed", "proto", l.proto, "addr", l.addr)
 		}
@@ -321,20 +328,24 @@ func (s *Server) reconcileListeners(t *routeTable) {
 		}
 		l, err := s.listen(w)
 		if err != nil {
-			s.failed[w.addr] = err
-			if prevFailed[w.addr] == nil { // report once, not on every retry
+			s.failed[w.failKey()] = err
+			if prevFailed[w.failKey()] == nil { // report once, not on every retry
 				s.deps.Bus.Error("server.listen", "", "cannot listen on %s (%s): %v", w.addr, w.proto, err)
 			}
 			continue
 		}
-		if prevFailed[w.addr] != nil {
+		if prevFailed[w.failKey()] != nil {
 			s.deps.Bus.Info("server.listen", "", "now listening on %s (%s)", w.addr, w.proto)
 		}
 		s.listeners[key] = l
 	}
+	s.updateH3Ports()
 }
 
 func (s *Server) listen(w wantListener) (*listener, error) {
+	if w.proto == protoH3 {
+		return s.listenH3(w)
+	}
 	st := s.deps.Settings()
 	ln, err := net.Listen("tcp", w.addr)
 	if err != nil {
@@ -377,38 +388,26 @@ func (s *Server) tlsConfigFor(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 	if st.TLS.HTTP2 {
 		protos = []string{"h2", "http/1.1"}
 	}
-	return &tls.Config{
+	cfg := &tls.Config{
 		MinVersion:     min,
 		NextProtos:     protos,
 		GetCertificate: s.getCertificate,
-	}, nil
+	}
+	if r := s.handshakeRoute(hello); r != nil && r.client != nil {
+		r.client.configure(cfg)
+	}
+	return cfg, nil
 }
 
 // getCertificate selects the certificate for a handshake from the binding
 // that matches the local address and SNI host name.
 func (s *Server) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	port, local := 443, net.IP(nil)
-	if hello.Conn != nil {
-		if a, ok := hello.Conn.LocalAddr().(*net.TCPAddr); ok {
-			port, local = a.Port, a.IP
-		}
-	}
-	t := s.table.Load()
 	host := strings.ToLower(hello.ServerName)
-	r := t.match(port, local, host)
-	if r == nil && host != "" {
-		// No binding for this name: fall back to the port's default binding
-		// so the client gets a proper 404 page over TLS rather than an alert.
-		r = t.match(port, local, "")
-	}
+	// No binding for this name: the port's default binding answers, so the
+	// client gets a proper 404 page over TLS rather than an alert.
+	r := s.handshakeRoute(hello)
 	if r == nil {
-		for _, rr := range t.byPort[port] {
-			r = rr
-			break
-		}
-	}
-	if r == nil {
-		return nil, fmt.Errorf("no https binding on port %d", port)
+		return nil, errors.New("no https binding on this port")
 	}
 	b := r.binding
 	var c *tls.Certificate
@@ -464,7 +463,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		wg.Add(1)
 		go func(l *listener) {
 			defer wg.Done()
-			l.srv.Shutdown(ctx)
+			l.shutdown(ctx)
 		}(l)
 	}
 	wg.Wait()
@@ -482,6 +481,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	t := s.table.Load()
 	route := t.match(port, local, hostOnly(r.Host))
+	s.advertiseHTTP3(w, r, port, local, route)
 
 	// Automatic IP banning comes first, before anything a site does; a
 	// site that opts out neither refuses banned clients nor counts
@@ -537,11 +537,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			in = 0
 		}
 		rt.stats.record(status, in, rw.written, d)
+		rt.stats.countProto(r.ProtoMajor)
 		if rt.access != nil {
 			s.writeAccess(rt, r, status, rw.written, d)
 		}
 		s.countForBan(banIP, r, status)
 	}()
+	if !s.clientCertGate(rw, r, t, route, port, local) {
+		return
+	}
 	rt.ServeHTTP(rw, r)
 }
 
@@ -618,7 +622,7 @@ func (s *Server) writeAccess(rt *siteRuntime, r *http.Request, status int, size 
 			Time: now, Source: model.LogSourceAccess, Level: logship.AccessLevel(status), SiteID: rt.site.ID,
 			Message: fmt.Sprintf("%s %s %d %d %.1fms", r.Method, r.URL.RequestURI(), status, size, ms),
 			Access: &logship.AccessFields{Method: r.Method, Path: r.URL.RequestURI(), Status: status, Bytes: size, DurationMs: ms,
-				ClientIP: ip, Host: r.Host, UserAgent: r.UserAgent(), Referer: r.Referer()},
+				ClientIP: ip, Host: r.Host, UserAgent: r.UserAgent(), Referer: r.Referer(), Protocol: r.Proto},
 		})
 	}
 }

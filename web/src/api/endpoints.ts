@@ -2,6 +2,7 @@
 
 import { http, qs } from './client';
 import type {
+  TLSView,
   ACMEOptions,
   AdminSettings,
   Ban,
@@ -185,11 +186,18 @@ export const certsApi = {
   selfSigned: (body: { name: string; domains: string[]; validDays: number }) =>
     http.post<CertificateView>('/api/certificates/selfsigned', body),
   renew: (id: string) => http.post<CertificateView>(`/api/certificates/${enc(id)}/renew`),
+  /** Asks the certificate's OCSP responder now. */
+  checkOcsp: (id: string) => http.post<CertificateView>(`/api/certificates/${enc(id)}/ocsp`),
   update: (id: string, body: { name: string; autoRenew: boolean }) =>
     http.put<CertificateView>(`/api/certificates/${enc(id)}`, body),
   remove: (id: string) => http.del(`/api/certificates/${enc(id)}`),
   export: (id: string, format: 'pfx' | 'pem', password: string | undefined, fallbackName: string) =>
     http.download('POST', `/api/certificates/${enc(id)}/export`, { format, password: password || undefined }, fallbackName),
+};
+
+export const tlsApi = {
+  /** TLS settings and the HTTP/3 (UDP) listeners they opened. */
+  get: () => http.get<TLSView>('/api/tls'),
 };
 
 export const nodeApi = {

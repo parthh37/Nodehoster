@@ -67,6 +67,9 @@ type Binding struct {
 	// certificate for Host; "certificate" uses CertificateID.
 	CertMode      string `json:"certMode,omitempty"`
 	CertificateID string `json:"certificateId,omitempty"`
+	// ClientCert (HTTPS only) asks clients for a certificate: mutual TLS.
+	// nil = ignore, as before.
+	ClientCert *ClientCertPolicy `json:"clientCert,omitempty"`
 }
 
 const (

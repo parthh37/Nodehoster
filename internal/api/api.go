@@ -157,6 +157,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/server/metrics", a.serverMetrics)
 		r.Get("/certificates", a.listCerts)
 		r.Get("/certificates/{id}", a.getCert)
+		r.Get("/tls", a.getTLS)
 		r.Get("/node/available", a.nodeAvailable)
 		r.Get("/mail/status", a.mailStatus)
 		r.Get("/mail/queue", a.mailQueue)
@@ -164,6 +165,7 @@ func (a *API) routes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleOperator))
 		r.Post("/certificates/{id}/renew", a.renewCert)
+		r.Post("/certificates/{id}/ocsp", a.checkCertOCSP)
 		r.Get("/mail/health", a.mailHealth)
 		r.Post("/mail/queue/retry", a.mailRetryAll)
 		r.Post("/mail/queue/{id}/retry", a.mailRetry)
@@ -182,6 +184,7 @@ func (a *API) routes(r chi.Router) {
 		r.Delete("/node/versions/{version}", a.removeNode)
 		r.Get("/settings", a.getSettings)
 		r.Put("/settings", a.putSettings)
+		r.Put("/tls", a.putTLS)
 		r.Post("/settings/webhooks/test", a.testWebhook)
 		r.Post("/rewrite/import", a.rewriteImport)
 		r.Post("/import/preview", a.importPreview)

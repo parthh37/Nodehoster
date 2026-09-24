@@ -21,6 +21,7 @@ import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { KEY_TYPES } from '../certificates/CertDialogs';
 import type { SettingsTabProps } from './SettingsPage';
+import { Http3Status } from './Http3Status';
 
 // ---------------------------------------------------------------- ACME
 
@@ -315,6 +316,8 @@ export const EVENT_TYPES = [
   'cert.renewed',
   'cert.failed',
   'cert.expiring',
+  'cert.revoked',
+  'cert.stapling',
   'server.started',
   'security.banned',
   'backup.completed',
@@ -555,6 +558,17 @@ export function TlsTab({ s, update }: SettingsTabProps) {
               label="HTTP/2"
               description="Negotiated with ALPN on HTTPS bindings."
             />
+            <Switch
+              checked={!!s.tls.http3}
+              onChange={(v) =>
+                update((d) => {
+                  d.tls.http3 = v;
+                })
+              }
+              label="HTTP/3 (QUIC)"
+              description="A UDP listener on the same port as every HTTPS listener, advertised with Alt-Svc. Same sites, certificates and client certificate rules."
+            />
+            <Http3Status enabled={!!s.tls.http3} />
           </FormSection>
         </Sections>
       </Card>
