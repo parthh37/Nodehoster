@@ -70,7 +70,14 @@ export function DeployConfigCard({ site, update, readOnly }: SiteEditorProps) {
             description="Vault / OpenBao, Infisical or Bitwarden Secrets Manager (Settings → Secret stores). A stored token is removed."
           />
         </FormSection>
-        <FormSection title="Build" description="Commands run in the release folder before it is activated.">
+        <FormSection
+          title="Build"
+          description={
+            site.type === 'static'
+              ? 'Commands run in the release folder before it is activated. Static sites have no Run as account: these commands run as the NodeHoster service (SYSTEM), so build only code you trust.'
+              : 'Commands run in the release folder before it is activated, as the site\'s Run as account when it has one, otherwise as the NodeHoster service.'
+          }
+        >
           <Field label="Install command" path="deploy.installCommand">
             <Input mono value={d.installCommand ?? ''} placeholder={runsNode(site.type) ? 'npm ci --omit=dev' : ''} onChange={(e) => set({ installCommand: e.target.value })} />
           </Field>

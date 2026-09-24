@@ -435,7 +435,8 @@ pull request is listed **awaiting approval** and nothing of it is fetched
 until an operator approves its head commit (Previews tab, `nodehoster
 preview approve`, `Approve-NHPreview`, the Manager's Previews page): its
 install and build commands and then its code run on the server, with the
-service's privileges unless the site runs as a separate account. Only the
+service's privileges unless the site runs as a separate account (a static
+site cannot: its previews always build as SYSTEM). Only the
 approved commit is built (the pull request's ref is checked before
 anything runs), each new push waits for approval again while the approved
 build keeps serving, fork previews never get the site's secrets, and
@@ -522,7 +523,11 @@ processes is the same for all of them; what differs is how they start:
   `.bun-cache`, `.deno-cache`, `.pip-cache`, `.nuget`) that a run-as
   account can change. **Give a site that builds code you do not fully
   trust, such as pull request previews, a run-as account**: without one,
-  that code runs as SYSTEM.
+  that code runs as SYSTEM. **Static sites have no run-as account: their
+  install and build commands, and those of their previews, always run as
+  SYSTEM** (the deployment log says who runs them). Build only code you
+  trust as a static site; to build untrusted code (fork previews, say), make
+  it a Node.js site with a run-as account that serves the built files.
 - **Scheduled tasks** and **background workers** run with the site's
   runtime: a Python site's task is `python <script>` in its virtual
   environment; package scripts are for Node.js, Bun and Deno.
@@ -662,10 +667,14 @@ Python's `-m venv`) as that account too, in a Job Object, with `TEMP` in
 site's folder that the account can change, never run as SYSTEM. The
 service still extracts the upload or clones the repository and links the
 shared paths, into a release folder the account cannot open until then,
-and opens it for the commands. If you turn a site's run-as account off,
-delete the caches in its folder (`.npm-cache`, `.bun-cache`,
-`.deno-cache`, `.pip-cache`, `.nuget`, `.dotnet`): the account could have
-changed them, and SYSTEM would now build with them.
+and opens it for the commands. Linking works in the site's folder by
+handle and does not follow links or junctions there: a shared path in
+`shared\` (or a folder on the way to it, `shared\` included) that is one
+fails the deployment, so the account cannot point the service at other
+folders; keep shared paths plain files and folders. If you turn a site's
+run-as account off, delete the caches in its folder (`.npm-cache`,
+`.bun-cache`, `.deno-cache`, `.pip-cache`, `.nuget`, `.dotnet`): the
+account could have changed them, and SYSTEM would now build with them.
 
 Run unelevated (for development), the server also admits its own account,
 so it does not lock itself out of a data folder it created.

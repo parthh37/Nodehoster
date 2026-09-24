@@ -86,8 +86,30 @@ func TestDeployRunsSiteCommandsAsItsAccount(t *testing.T) {
 	if got.Status != "succeeded" || len(rec.calls) != before || !strings.Contains(log, "installing") {
 		t.Fatalf("status %s, %d run-as calls\n%s", got.Status, len(rec.calls)-before, log)
 	}
-	if strings.Contains(log, "commands run as") {
-		t.Errorf("a site without an account says it has one:\n%s", log)
+	if !strings.Contains(log, "commands run as the NodeHoster service (the site has no run-as account)") {
+		t.Errorf("a site without an account does not say who runs its commands:\n%s", log)
+	}
+}
+
+// TestDeployStaticSiteSaysItBuildsAsTheService: a static site has no
+// run-as account, so its build runs as the service, and its log says so.
+func TestDeployStaticSiteSaysItBuildsAsTheService(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	rec := &runAsRecorder{}
+	h.d.runAsAccount = rec.run
+	site := h.staticSite(t, "staticbuild", func(s *model.Site) { s.Deploy.BuildCommand = "echo building" })
+	got, log := h.deployLog(t, site, []zipEntry{{name: "index.html", body: "<p>hi</p>"}})
+	if got.Status != "succeeded" || len(rec.calls) != 0 || !strings.Contains(log, "building") {
+		t.Fatalf("status %s, %d run-as calls\n%s", got.Status, len(rec.calls), log)
+	}
+	if !strings.Contains(log, "commands run as the NodeHoster service (static sites have no run-as account)") {
+		t.Errorf("the log does not say the build runs as the service:\n%s", log)
+	}
+	// Nothing to run, nothing said.
+	quiet := h.staticSite(t, "staticplain", nil)
+	if _, log := h.deployLog(t, quiet, []zipEntry{{name: "index.html", body: "x"}}); strings.Contains(log, "commands run as") {
+		t.Errorf("a deployment without commands talks about them:\n%s", log)
 	}
 }
 
