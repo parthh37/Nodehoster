@@ -96,6 +96,31 @@ var migrations = []string{
 		mem INTEGER NOT NULL,
 		PRIMARY KEY (site_id, ts)
 	) WITHOUT ROWID;`,
+	// Per-site permissions. users.sites holds the JSON grants of a
+	// site-scoped user (role "sites"), NULL for everyone else; tokens.role
+	// and tokens.site_ids restrict a token, '' and NULL meaning "as the
+	// owner". Existing rows keep NULL/'' and so behave exactly as before.
+	`ALTER TABLE users ADD COLUMN sites TEXT;
+	ALTER TABLE tokens ADD COLUMN role TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tokens ADD COLUMN site_ids TEXT;`,
+	// Single sign-on: users.sso marks a user created by an SSO sign-in.
+	`ALTER TABLE users ADD COLUMN sso INTEGER NOT NULL DEFAULT 0;`,
+	// Scheduled task run history (see model.TaskRun).
+	`CREATE TABLE task_runs (
+		id TEXT PRIMARY KEY,
+		site_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		task_name TEXT NOT NULL,
+		trigger TEXT NOT NULL,
+		user TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		started INTEGER NOT NULL,
+		finished INTEGER,
+		exit_code INTEGER,
+		log_path TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX task_runs_task ON task_runs(site_id, task_id, started DESC);`,
 }
 
 func Open(path string) (*Store, error) {
@@ -207,7 +232,19 @@ func (s *Store) DeleteSite(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, q := range []string{`DELETE FROM sites WHERE id = ?`, `DELETE FROM deployments WHERE site_id = ?`, `DELETE FROM metrics WHERE site_id = ?`} {
+	for _, q := range []string{
+		`DELETE FROM sites WHERE id = ?1`,
+		`DELETE FROM deployments WHERE site_id = ?1`,
+		`DELETE FROM metrics WHERE site_id = ?1`,
+		`DELETE FROM task_runs WHERE site_id = ?1`,
+		// Grants and token restrictions naming the site go with it. A
+		// token restricted to only this site is left restricted to no
+		// site ('[]'), never widened to NULL ("every site").
+		`UPDATE users SET sites = (SELECT json_group_array(json(value)) FROM json_each(users.sites) WHERE json_extract(value, '$.siteId') IS NOT ?1)
+			WHERE sites IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(users.sites) WHERE json_extract(value, '$.siteId') = ?1)`,
+		`UPDATE tokens SET site_ids = (SELECT json_group_array(value) FROM json_each(tokens.site_ids) WHERE value IS NOT ?1)
+			WHERE site_ids IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(tokens.site_ids) WHERE value = ?1)`,
+	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return err
 		}
@@ -393,6 +430,36 @@ func (s *Store) ListEvents(ctx context.Context, siteID string, limit int) ([]mod
 	}
 	defer rows.Close()
 	out := []model.Event{}
+	for rows.Next() {
+		var e model.Event
+		var t int64
+		if err := rows.Scan(&e.ID, &t, &e.Level, &e.Type, &e.SiteID, &e.Message); err != nil {
+			return nil, err
+		}
+		e.Time = fromMS(t)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ListSiteEvents is ListEvents over several sites at once (what a
+// site-scoped user may see); server-wide events are never included.
+func (s *Store) ListSiteEvents(ctx context.Context, siteIDs []string, limit int) ([]model.Event, error) {
+	out := []model.Event{}
+	if len(siteIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(siteIDs)+1)
+	for _, id := range siteIDs {
+		args = append(args, id)
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, time, level, type, site_id, message FROM events
+		WHERE site_id IN (?`+strings.Repeat(", ?", len(siteIDs)-1)+`) ORDER BY id DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	for rows.Next() {
 		var e model.Event
 		var t int64

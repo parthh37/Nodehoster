@@ -12,7 +12,9 @@ import { AreaChart } from '@/components/Charts';
 import { Segmented } from '@/components/Tabs';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, formatCompact, formatMs, formatNumber, formatPercent, formatUptime, relativeTime } from '@/lib/format';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
+import { CachePanel } from './CachePanel';
 
 const RANGES = [
   { value: '15', label: '15m' },
@@ -23,6 +25,8 @@ const RANGES = [
 
 export function OverviewTab({ site, status }: { site: SiteView; status: SiteStatus | undefined }) {
   const now = useNow(1000);
+  // A background worker serves no HTTP: no traffic, ports, health or requests.
+  const worker = site.type === 'worker';
   const t = status?.traffic;
   const total = t?.requests ?? 0;
   const pct = (n: number | undefined) => (total ? `${((100 * (n ?? 0)) / total).toFixed(1)}%` : '');
@@ -35,20 +39,40 @@ export function OverviewTab({ site, status }: { site: SiteView; status: SiteStat
         </Callout>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Requests/s" value={formatNumber(t?.rps ?? 0, 2)} sub="last minute" />
-        <Stat label="Requests" value={formatCompact(total)} sub={`${formatBytes(t?.bytesIn)} in · ${formatBytes(t?.bytesOut)} out`} />
-        <Stat label="Avg latency" value={formatMs(t?.avgLatencyMs ?? 0)} />
-        <Stat label="2xx / 3xx" value={<span className="text-emerald-700 dark:text-emerald-400">{formatCompact(t?.status2xx ?? 0)}</span>} sub={`${pct(t?.status2xx)} · 3xx ${formatCompact(t?.status3xx ?? 0)}`} />
-        <Stat label="4xx" value={formatCompact(t?.status4xx ?? 0)} tone={(t?.status4xx ?? 0) > 0 ? 'amber' : 'default'} sub={pct(t?.status4xx)} />
-        <Stat label="5xx" value={formatCompact(t?.status5xx ?? 0)} tone={(t?.status5xx ?? 0) > 0 ? 'red' : 'default'} sub={pct(t?.status5xx)} />
-      </div>
+      {worker ? (
+        <WorkerStats site={site} status={status} />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <Stat label="Requests/s" value={formatNumber(t?.rps ?? 0, 2)} sub="last minute" />
+          <Stat label="Requests" value={formatCompact(total)} sub={`${formatBytes(t?.bytesIn)} in · ${formatBytes(t?.bytesOut)} out`} />
+          <Stat label="Avg latency" value={formatMs(t?.avgLatencyMs ?? 0)} />
+          <Stat label="2xx / 3xx" value={<span className="text-emerald-700 dark:text-emerald-400">{formatCompact(t?.status2xx ?? 0)}</span>} sub={`${pct(t?.status2xx)} · 3xx ${formatCompact(t?.status3xx ?? 0)}`} />
+          <Stat label="4xx" value={formatCompact(t?.status4xx ?? 0)} tone={(t?.status4xx ?? 0) > 0 ? 'amber' : 'default'} sub={pct(t?.status4xx)} />
+          <Stat label="5xx" value={formatCompact(t?.status5xx ?? 0)} tone={(t?.status5xx ?? 0) > 0 ? 'red' : 'default'} sub={pct(t?.status5xx)} />
+        </div>
+      )}
 
-      {site.type === 'node' && <InstancesCard site={site} status={status} now={now} />}
+      {runsNode(site.type) && <InstancesCard site={site} status={status} now={now} />}
       {site.type === 'proxy' && <UpstreamsCard status={status} />}
       {site.type === 'node' && site.node?.loadBalancer?.enabled && <UpstreamsCard status={status} title="Servers" />}
+      {site.routing?.cache?.enabled && (site.type === 'node' || site.type === 'proxy') && <CachePanel site={site} status={status} />}
 
       <MetricsCard site={site} />
+    </div>
+  );
+}
+
+/** Process totals of a worker, in place of the traffic figures of a site that serves HTTP. */
+function WorkerStats({ site, status }: { site: SiteView; status: SiteStatus | undefined }) {
+  const inst = (status?.instances ?? []).filter((i) => i.state !== 'exited' && i.state !== 'crashed');
+  const ready = inst.filter((i) => i.state === 'ready').length;
+  const restarts = (status?.instances ?? []).reduce((n, i) => n + i.restarts, 0);
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Stat label="Running instances" value={`${ready}/${Math.max(inst.length, site.node?.instances ?? 1)}`} sub="Background worker · no HTTP" />
+      <Stat label="CPU" value={formatPercent(inst.reduce((n, i) => n + i.cpuPercent, 0))} sub="all instances" />
+      <Stat label="Memory" value={formatBytes(inst.reduce((n, i) => n + i.memoryBytes, 0))} sub="all instances" />
+      <Stat label="Restarts" value={formatNumber(restarts)} tone={restarts > 0 ? 'amber' : 'default'} />
     </div>
   );
 }
@@ -56,29 +80,31 @@ export function OverviewTab({ site, status }: { site: SiteView; status: SiteStat
 function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStatus | undefined; now: number }) {
   const inst = [...(status?.instances ?? [])].sort((a, b) => a.index - b.index);
   const agent = site.node?.agentEnabled;
+  const http = site.type !== 'worker';
+  const ports = !http ? 'no port' : site.node?.portMode === 'fixed' ? `fixed port ${site.node.fixedPort}` : 'automatic ports';
   return (
-    <Card title="Instances" description={`${site.node?.instances ?? 1} configured · ${site.node?.portMode === 'fixed' ? `fixed port ${site.node.fixedPort}` : 'automatic ports'}`} flush>
+    <Card title="Instances" description={`${site.node?.instances ?? 1} configured · ${ports}`} flush>
       <Table>
         <THead>
           <tr>
             <Th>#</Th>
             <Th>PID</Th>
-            <Th>Port</Th>
+            {http && <Th>Port</Th>}
             <Th>State</Th>
-            <Th>Health</Th>
+            {http && <Th>Health</Th>}
             <Th className="text-right">Uptime</Th>
             <Th className="text-right">Restarts</Th>
             <Th className="text-right">CPU</Th>
             <Th className="text-right">Memory</Th>
             <Th className="text-right" title="Reported by the NodeHoster agent">Heap</Th>
             <Th className="text-right" title="Reported by the NodeHoster agent">Loop lag</Th>
-            <Th className="text-right">Requests</Th>
+            {http && <Th className="text-right">Requests</Th>}
             <Th>Last exit</Th>
           </tr>
         </THead>
         <TBody>
           {inst.length === 0 && (
-            <TableMessage colSpan={13}>
+            <TableMessage colSpan={http ? 13 : 10}>
               {status?.state === 'stopped' || !status ? 'The site is stopped. Start it to launch its processes.' : 'Waiting for instances…'}
             </TableMessage>
           )}
@@ -90,23 +116,27 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
                 <Td>
                   <Mono>{i.pid || '—'}</Mono>
                 </Td>
-                <Td>
-                  <Mono>{i.port || '—'}</Mono>
-                </Td>
+                {http && (
+                  <Td>
+                    <Mono>{i.port || '—'}</Mono>
+                  </Td>
+                )}
                 <Td>
                   <StateBadge state={i.state} />
                 </Td>
-                <Td>
-                  {running ? (
-                    i.healthy ? (
-                      <Badge tone="green">healthy</Badge>
+                {http && (
+                  <Td>
+                    {running ? (
+                      i.healthy ? (
+                        <Badge tone="green">healthy</Badge>
+                      ) : (
+                        <Badge tone="amber">unhealthy</Badge>
+                      )
                     ) : (
-                      <Badge tone="amber">unhealthy</Badge>
-                    )
-                  ) : (
-                    <span className="text-zinc-400">—</span>
-                  )}
-                </Td>
+                      <span className="text-zinc-400">—</span>
+                    )}
+                  </Td>
+                )}
                 <Td className="text-right tabular">{running ? formatUptime(i.startedAt, now) : '—'}</Td>
                 <Td className={cn('text-right tabular', i.restarts > 0 && 'text-amber-600 dark:text-amber-400')}>{i.restarts}</Td>
                 <Td className="text-right tabular">{running ? formatPercent(i.cpuPercent) : '—'}</Td>
@@ -121,7 +151,7 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
                 <Td className={cn('text-right tabular', (i.eventLoopLagMs ?? 0) > 100 && 'text-amber-600 dark:text-amber-400')}>
                   {i.eventLoopLagMs ? formatMs(i.eventLoopLagMs) : <span className="text-zinc-400">—</span>}
                 </Td>
-                <Td className="text-right tabular">{formatCompact(i.requests)}</Td>
+                {http && <Td className="text-right tabular">{formatCompact(i.requests)}</Td>}
                 <Td className="whitespace-nowrap text-xs">
                   {i.lastExitCode !== undefined && i.lastExitCode !== null ? (
                     <span title={i.lastExitAt ? new Date(i.lastExitAt).toLocaleString() : undefined}>
@@ -199,7 +229,8 @@ function MetricsCard({ site }: { site: SiteView }) {
   });
   const pts = q.data ?? [];
   const times = pts.map((p) => p.t);
-  const isNode = site.type === 'node';
+  const isNode = runsNode(site.type);
+  const http = site.type !== 'worker';
 
   return (
     <Card title="Metrics" description="One point per minute" actions={<Segmented options={[...RANGES]} value={range} onChange={setRange} />}>
@@ -209,19 +240,23 @@ function MetricsCard({ site }: { site: SiteView }) {
         <EmptyState compact icon={<Cpu />} title="No metrics yet" description="Metrics are recorded every minute while the site is running." />
       ) : (
         <div className={cn('grid gap-6', isNode ? 'lg:grid-cols-2' : 'lg:grid-cols-2')}>
-          <ChartBlock title="Requests & errors">
-            <AreaChart
-              times={times}
-              format={formatCompact}
-              series={[
-                { label: 'Requests', values: pts.map((p) => p.req), className: 'text-accent-600 dark:text-accent-400' },
-                { label: 'Errors', values: pts.map((p) => p.err), className: 'text-red-500' },
-              ]}
-            />
-          </ChartBlock>
-          <ChartBlock title="Average latency">
-            <AreaChart times={times} format={(v) => formatMs(v)} series={[{ label: 'Latency', values: pts.map((p) => p.lat), className: 'text-violet-500' }]} />
-          </ChartBlock>
+          {http && (
+            <>
+              <ChartBlock title="Requests & errors">
+                <AreaChart
+                  times={times}
+                  format={formatCompact}
+                  series={[
+                    { label: 'Requests', values: pts.map((p) => p.req), className: 'text-accent-600 dark:text-accent-400' },
+                    { label: 'Errors', values: pts.map((p) => p.err), className: 'text-red-500' },
+                  ]}
+                />
+              </ChartBlock>
+              <ChartBlock title="Average latency">
+                <AreaChart times={times} format={(v) => formatMs(v)} series={[{ label: 'Latency', values: pts.map((p) => p.lat), className: 'text-violet-500' }]} />
+              </ChartBlock>
+            </>
+          )}
           {isNode && (
             <>
               <ChartBlock title="CPU">

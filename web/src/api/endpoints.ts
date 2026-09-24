@@ -4,15 +4,31 @@ import { http, qs } from './client';
 import type {
   ACMEOptions,
   AdminSettings,
+  Ban,
+  BanRequest,
   APIToken,
   AuditEntry,
+  AuthMethods,
   AvailableNode,
+  BackupDestination,
+  BackupObject,
+  BackupStatus,
+  BackupTestResult,
   CertificateView,
   CreatedToken,
   DNSCatalogEntry,
   Deployment,
+  ImportApplyRequest,
+  ImportApplyResult,
+  ImportPreview,
+  ImportSource,
   LogLine,
+  LogSearchParams,
+  LogSearchResult,
+  LogTarget,
+  LogTargetStatus,
   LogType,
+  MailHealth,
   MailMessage,
   MailStatus,
   MailTest,
@@ -22,13 +38,21 @@ import type {
   NHEvent,
   NodeVersions,
   RewriteImport,
+  RestoreResult,
   RewriteImportRequest,
   Role,
   ServerInfo,
   Settings,
   Site,
+  SiteGrant,
   SiteStatus,
+  SharedSize,
   SiteView,
+  SSOSettings,
+  SSOTestResult,
+  TaskRun,
+  TaskRunStart,
+  TaskView,
   TOTPSetup,
   User,
   WebhookTarget,
@@ -45,6 +69,9 @@ export const authApi = {
   totpSetup: () => http.post<TOTPSetup>('/api/auth/totp/setup'),
   totpEnable: (code: string) => http.post('/api/auth/totp/enable', { code }),
   totpDisable: (code: string) => http.post('/api/auth/totp/disable', { code }),
+  methods: () => http.get<AuthMethods>('/api/auth/methods', { noAuthRedirect: true }),
+  /** A browser navigation (not fetch): the server redirects to the identity provider. */
+  ssoStartUrl: (next?: string) => `/api/auth/oidc/start${qs({ next: next && next !== '/' ? next : undefined })}`,
 };
 
 export const serverApi = {
@@ -53,14 +80,41 @@ export const serverApi = {
   events: (limit = 100, siteId?: string) => http.get<NHEvent[]>(`/api/events${qs({ limit, siteId })}`),
   audit: (limit = 100, offset = 0) => http.get<AuditEntry[]>(`/api/audit${qs({ limit, offset })}`),
   backupUrl: '/api/backup',
-  restore: (file: File) => {
+  /** An archive with the configured contents and passphrase. */
+  backupArchiveUrl: '/api/backup?format=zip',
+  restore: (file: File, passphrase?: string) => {
     const fd = new FormData();
     fd.append('file', file);
-    return http.post('/api/restore', fd);
+    if (passphrase) fd.append('passphrase', passphrase);
+    return http.post<RestoreResult>('/api/restore', fd);
   },
 };
 
+export const logShippingApi = {
+  status: () => http.get<LogTargetStatus[]>('/api/logshipping/status'),
+  test: (t: LogTarget) => http.post('/api/logshipping/test', t),
+  searchServerLog: (p: LogSearchParams, signal?: AbortSignal) =>
+    http.get<LogSearchResult>(`/api/server/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
+};
+
+export const backupsApi = {
+  status: () => http.get<BackupStatus>('/api/backups'),
+  run: () => http.post<BackupStatus>('/api/backups/run'),
+  test: (d: BackupDestination) => http.post<BackupTestResult>('/api/backups/test', d),
+  sharedSizes: () => http.get<SharedSize[]>('/api/backups/shared-sizes'),
+  files: (destId: string) => http.get<BackupObject[]>(`/api/backups/destinations/${enc(destId)}/files`),
+  restoreFrom: (destId: string, file: string, passphrase?: string) =>
+    http.post<RestoreResult>(`/api/backups/destinations/${enc(destId)}/restore`, { file, passphrase: passphrase || undefined }),
+};
+
 export type SiteAction = 'start' | 'stop' | 'restart' | 'recycle';
+
+export const bansApi = {
+  list: () => http.get<Ban[]>('/api/bans'),
+  ban: (body: BanRequest) => http.post<Ban>('/api/bans', body),
+  /** Also takes any address inside a banned range. */
+  unban: (address: string) => http.del(`/api/bans/${enc(address)}`),
+};
 
 export const sitesApi = {
   list: () => http.get<SiteView[]>('/api/sites'),
@@ -74,6 +128,9 @@ export const sitesApi = {
   logs: (id: string, type: LogType, lines = 500) => http.get<LogLine[]>(`/api/sites/${enc(id)}/logs${qs({ type, lines })}`),
   logsDownloadUrl: (id: string, type: LogType) => `/api/sites/${enc(id)}/logs/download${qs({ type })}`,
   clearLogs: (id: string) => http.post(`/api/sites/${enc(id)}/logs/clear`),
+  purgeCache: (id: string, path?: string) => http.post<{ purged: number }>(`/api/sites/${enc(id)}/cache/purge`, path ? { path } : {}),
+  searchLogs: (id: string, p: LogSearchParams, signal?: AbortSignal) =>
+    http.get<LogSearchResult>(`/api/sites/${enc(id)}/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
 
   deployments: (id: string) => http.get<Deployment[]>(`/api/sites/${enc(id)}/deployments`),
   deployZip: (id: string, file: File) => {
@@ -86,6 +143,17 @@ export const sitesApi = {
   activate: (id: string, depId: string) =>
     http.post<Deployment>(`/api/sites/${enc(id)}/deployments/${enc(depId)}/activate`),
   deploymentLog: (id: string, depId: string) => http.text(`/api/sites/${enc(id)}/deployments/${enc(depId)}/log`),
+};
+
+/** Scheduled tasks. Definitions are edited as part of the site (sitesApi.update). */
+export const tasksApi = {
+  list: (id: string) => http.get<TaskView[]>(`/api/sites/${enc(id)}/tasks`),
+  /** `task` is the task's id or name. */
+  run: (id: string, task: string) => http.post<TaskRunStart>(`/api/sites/${enc(id)}/tasks/${enc(task)}/run`),
+  runs: (id: string, task?: string, limit = 50) => http.get<TaskRun[]>(`/api/sites/${enc(id)}/runs${qs({ task, limit })}`),
+  cancel: (id: string, runId: string) => http.post<TaskRun>(`/api/sites/${enc(id)}/runs/${enc(runId)}/cancel`),
+  log: (id: string, runId: string) => http.text(`/api/sites/${enc(id)}/runs/${enc(runId)}/log`),
+  logDownloadUrl: (id: string, runId: string) => `/api/sites/${enc(id)}/runs/${enc(runId)}/log${qs({ download: true })}`,
 };
 
 export interface AcmeRequest {
@@ -131,20 +199,28 @@ export const settingsApi = {
   testWebhook: (w: WebhookTarget) => http.post('/api/settings/webhooks/test', w),
   getAdmin: () => http.get<AdminSettings>('/api/settings/admin'),
   putAdmin: (a: AdminSettings) => http.put<AdminSettings>('/api/settings/admin', a),
+  ssoCallbackUrl: () => http.get<{ redirectUrl: string }>('/api/settings/sso/callback-url'),
+  ssoTest: (s: SSOSettings) => http.post<SSOTestResult>('/api/settings/sso/test', s),
 };
 
 export const usersApi = {
   list: () => http.get<User[]>('/api/users'),
-  create: (body: { username: string; password: string; role: Role }) => http.post<User>('/api/users', body),
-  update: (id: string, body: { role?: Role; disabled?: boolean; password?: string }) =>
+  /** sso: signs in with single sign-on only (no password). */
+  create: (body: { username: string; password?: string; sso?: boolean; role: Role; sites?: SiteGrant[] }) => http.post<User>('/api/users', body),
+  update: (id: string, body: { role?: Role; sites?: SiteGrant[]; disabled?: boolean; password?: string }) =>
     http.put<User>(`/api/users/${enc(id)}`, body),
   remove: (id: string) => http.del(`/api/users/${enc(id)}`),
 };
 
 export const tokensApi = {
   list: () => http.get<APIToken[]>('/api/tokens'),
-  create: (name: string, expiresDays?: number) =>
-    http.post<CreatedToken>('/api/tokens', expiresDays ? { name, expiresDays } : { name }),
+  create: (name: string, expiresDays?: number, restrict?: { role?: Role | ''; siteIds?: string[] }) =>
+    http.post<CreatedToken>('/api/tokens', {
+      name,
+      ...(expiresDays ? { expiresDays } : {}),
+      ...(restrict?.role ? { role: restrict.role } : {}),
+      ...(restrict?.siteIds?.length ? { siteIds: restrict.siteIds } : {}),
+    }),
   revoke: (id: string) => http.del(`/api/tokens/${enc(id)}`),
 };
 
@@ -158,6 +234,13 @@ export const mailApi = {
   remove: (id: string) => http.del(`/api/mail/queue/${enc(id)}`),
   emlUrl: (id: string) => `/api/mail/queue/${enc(id)}/eml`,
   test: (body: MailTest) => http.post<MailMessage>('/api/mail/test', body),
+  /** Deliverability checks for the configured sending domains plus `domains`; takes up to ~25 s. */
+  health: (domains: string[] = [], signal?: AbortSignal) => {
+    const sp = new URLSearchParams();
+    for (const d of domains) sp.append('domain', d);
+    const q = sp.toString();
+    return http.get<MailHealth>(`/api/mail/health${q ? `?${q}` : ''}`, { signal });
+  },
 };
 
 export const rewriteApi = {
@@ -166,4 +249,21 @@ export const rewriteApi = {
 
 export const mimeApi = {
   defaults: () => http.get<MimeMap[]>('/api/mime/defaults'),
+};
+
+/** Importing sites from IIS, an iisnode web.config or PM2 (administrators). */
+export const importApi = {
+  /** Reads an uploaded file or pasted text; `name`/`appRoot` are for a single web.config. */
+  preview: (source: Exclude<ImportSource, 'local-iis'>, input: File | string, extra: { name?: string; appRoot?: string } = {}) => {
+    if (typeof input === 'string') return http.post<ImportPreview>('/api/import/preview', { source, text: input, ...extra });
+    const fd = new FormData();
+    fd.append('source', source);
+    fd.append('file', input);
+    if (extra.name) fd.append('name', extra.name);
+    if (extra.appRoot) fd.append('appRoot', extra.appRoot);
+    return http.post<ImportPreview>('/api/import/preview', fd);
+  },
+  /** This server's applicationHost.config (Windows with IIS only). */
+  previewLocalIIS: () => http.post<ImportPreview>('/api/import/preview', { source: 'local-iis' }),
+  apply: (req: ImportApplyRequest) => http.post<ImportApplyResult>('/api/import/apply', req),
 };

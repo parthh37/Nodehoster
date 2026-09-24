@@ -1,6 +1,7 @@
 # Installs, upgrades, downgrades and uninstalls a built NodeHoster setup and
 # checks the machine after each step: the service, its pipes and web console,
-# the firewall rule, the PATH, the status icon's Run entry and the data.
+# the firewall rule, the PATH, the status icon's Run entry, the PowerShell
+# module and the data.
 #
 #   powershell -File installer\test.ps1 -Setup dist\NodeHoster-1.2.3-setup.exe -Version 1.2.3
 #
@@ -21,6 +22,7 @@ $Data = Join-Path $env:ProgramData "NodeHoster"
 $UninstallKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6F1B3C2A-9D4E-4E7B-A1C5-2B7D9E0F4A11}_is1"
 $EnvKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 $RunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+$ModuleDir = Join-Path $env:ProgramFiles "WindowsPowerShell\Modules\NodeHoster"
 
 if (Get-Service NodeHoster -ErrorAction SilentlyContinue) { throw "NodeHoster is already installed on this machine" }
 
@@ -57,6 +59,20 @@ function PathEntries { @((SystemPath) -split ";" | Where-Object { $_.TrimEnd("\"
 function FirewallRule { netsh advfirewall firewall show rule name=NodeHoster | Out-Null; $LASTEXITCODE -eq 0 }
 function RunValue { (Get-ItemProperty $RunKey -ErrorAction SilentlyContinue).NodeHosterStatus }
 function ServicePid { (Get-CimInstance Win32_Service -Filter "Name='NodeHoster'").ProcessId }
+
+# The module imports from the machine-wide module path, and its commands
+# reach the service through nodehoster.exe and the admin pipe.
+function Check-Module($what) {
+  Check (@(Get-ChildItem $ModuleDir -Directory).Count -eq 1) "${what}: one version of the PowerShell module is installed"
+  Import-Module NodeHoster -Force -ErrorAction Stop
+  $m = Get-Module NodeHoster
+  Check ($m.Version.ToString() -eq (Split-Path $m.ModuleBase -Leaf)) "${what}: the module's version ($($m.Version)) matches its folder"
+  Check (@(Get-Command -Module NodeHoster).Count -eq 15) "${what}: the module exports its commands"
+  $sites = @(Get-NHSite -ErrorAction Stop)
+  Check ($sites.Count -eq 0) "${what}: Get-NHSite answers (no sites)"
+  Check (@(Get-NHEvent -Count 5 -ErrorAction Stop).Count -ge 1) "${what}: Get-NHEvent answers"
+  Remove-Module NodeHoster
+}
 
 # The service reports running before its listeners are up.
 function Wait-Console {
@@ -102,6 +118,9 @@ Check (FirewallRule) "the firewall rule exists"
 Check ((RunValue) -like "*nodehoster-manager.exe*--tray*") "the status icon starts at sign-in"
 $ver = (Get-Item "$App\nodehoster.exe").VersionInfo
 Check ($ver.ProductName -eq "NodeHoster") "nodehoster.exe has version information ($($ver.FileVersion))"
+Check-Module "install"
+& "$App\nodehoster.exe" site list | Out-Null
+Check ($LASTEXITCODE -eq 0) "nodehoster site list talks to the service"
 $password = Get-Content "$Data\initial-admin-password.txt" -Raw
 $pid1 = ServicePid
 
@@ -112,6 +131,7 @@ Check ((ServicePid) -ne $pid1) "the service was restarted"
 Check ((Get-Content "$Data\initial-admin-password.txt" -Raw) -eq $password) "the data was kept"
 Check ((PathEntries).Count -eq 1) "the PATH entry was not duplicated"
 Check (-not (RunValue)) "the unchecked status icon no longer starts at sign-in"
+Check-Module "upgrade"
 
 Write-Host "Downgrade"
 # Pretend a newer version is installed.
@@ -133,6 +153,7 @@ Check (-not (Get-Service NodeHoster -ErrorAction SilentlyContinue)) "the service
 Check (-not (FirewallRule)) "the firewall rule was removed"
 Check ((PathEntries).Count -eq 0) "the program folder was removed from the PATH"
 Check (-not (RunValue)) "the status icon no longer starts at sign-in"
+Check (-not (Test-Path $ModuleDir)) "the PowerShell module was removed"
 Check (Test-Path "$Data\nodehoster.db") "an unattended uninstall keeps the data"
 
 Remove-Item -Recurse -Force $Data

@@ -41,7 +41,7 @@ func (a *API) site(w http.ResponseWriter, r *http.Request) *model.Site {
 
 func (a *API) listSites(w http.ResponseWriter, r *http.Request) {
 	out := []siteView{}
-	for _, s := range a.c.Sites() {
+	for _, s := range visibleSites(access(r), a.c.Sites()) {
 		out = append(out, a.view(s))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -179,18 +179,20 @@ func (a *API) siteLogStream(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
+	defer stop()
 	stream := newSSE(w)
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	if r.URL.Query().Get("type") == "access" {
-		a.followFile(r.Context(), stream, a.c.Proxy.AccessLogPath(s.ID), ping)
+		a.followFile(ctx, stream, a.c.Proxy.AccessLogPath(s.ID), ping)
 		return
 	}
 	ch, cancel := a.c.Procs.Logs(s.ID).Subscribe()
 	defer cancel()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case l := <-ch:
 			if stream.send("log", l) != nil {
@@ -439,12 +441,23 @@ func (a *API) deploymentLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	depID := filepath.Base(chi.URLParam(r, "dep"))
-	lines, done, cancel, running := a.c.Deploy.Subscribe(depID)
+	// Live output is keyed by deployment alone: make sure it is this
+	// site's, or a user of one site could follow another site's deploy.
+	if dep, err := a.c.Store.GetDeployment(r.Context(), depID); err != nil || dep.SiteID != s.ID {
+		writeErr(w, http.StatusNotFound, "log not found")
+		return
+	}
+	// Send what has been written so far, then follow. The backlog ends
+	// exactly where the live lines begin, or a line written while this
+	// request starts would be sent twice.
+	backlog, lines, done, cancel, running := a.c.Deploy.Subscribe(depID)
 	defer cancel()
+	if !running {
+		backlog, _ = a.c.Deploy.Log(s.ID, depID)
+	}
 	stream := newSSE(w)
-	// Send what has been written so far, then follow.
-	if data, err := a.c.Deploy.Log(s.ID, depID); err == nil && len(data) > 0 {
-		stream.send("log", string(data))
+	if len(backlog) > 0 {
+		stream.send("log", string(backlog))
 	}
 	finish := func() {
 		if dep, err := a.c.Store.GetDeployment(r.Context(), depID); err == nil {
@@ -455,11 +468,13 @@ func (a *API) deploymentLogStream(w http.ResponseWriter, r *http.Request) {
 		finish()
 		return
 	}
+	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
+	defer stop()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case l := <-lines:
 			if stream.send("log", l) != nil {
@@ -506,7 +521,7 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyWebhook(r, body, secret) {
-		a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "webhook.rejected", Target: s.Name})
+		a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "webhook.rejected", Target: s.Name})
 		writeErr(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -524,7 +539,7 @@ func (a *API) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	a.c.Store.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook"})
+	a.c.AddAudit(r.Context(), model.AuditEntry{Time: time.Now(), User: "webhook", IP: clientIP(r), Action: "site.deploy", Target: s.Name, Detail: "webhook"})
 	writeJSON(w, http.StatusAccepted, dep)
 }
 

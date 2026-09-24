@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/ipban"
+	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 )
@@ -35,6 +38,12 @@ type Deps struct {
 	Settings func() model.Settings
 	SitesDir string
 	LogsDir  string
+	// AffinityKey signs session affinity cookies; persisted by the caller
+	// so cookies survive restarts. A random key is used when empty.
+	AffinityKey []byte
+	// Bans is automatic IP banning; nil in tests that do not need it.
+	Bans *ipban.Manager
+	Ship *logship.Shipper // access log shipping; may be nil
 }
 
 type route struct {
@@ -79,6 +88,13 @@ type Server struct {
 
 	trustedMu sync.RWMutex
 	trusted   []*net.IPNet
+
+	affKeyOnce sync.Once
+	affKey     []byte
+
+	// backends lists a node site's ready instances; the process manager's
+	// in production, replaceable in tests.
+	backends func(id string) []*procmgr.Backend
 }
 
 func New(deps Deps) *Server {
@@ -90,6 +106,7 @@ func New(deps Deps) *Server {
 		stats:     map[string]*siteStats{},
 	}
 	s.table.Store(&routeTable{byPort: map[int][]*route{}, sites: map[string]*siteRuntime{}})
+	s.backends = deps.Procs.Backends
 	deps.Certs.HTTP.HasPort80 = s.hasHTTPPort80
 	go s.retryFailedListeners()
 	return s
@@ -465,6 +482,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	t := s.table.Load()
 	route := t.match(port, local, hostOnly(r.Host))
+
+	// Automatic IP banning comes first, before anything a site does; a
+	// site that opts out neither refuses banned clients nor counts
+	// against them.
+	var banIP net.IP
+	if bans := s.deps.Bans; bans != nil && (route == nil || !route.site.site.Routing.Banning.Exempt) {
+		client := s.clientIP(r)
+		r = r.WithContext(context.WithValue(r.Context(), ctxClientIP, client))
+		banIP = net.ParseIP(client)
+		traps := route == nil || !route.site.site.Routing.Banning.AllowTrapPaths
+		if bans.Banned(banIP) || (traps && bans.Trap(banIP, r.URL.Path)) {
+			refuseBanned(w)
+			return
+		}
+	}
+
 	st := s.deps.Settings()
 	if route == nil {
 		if st.Proxy.ServerHeader != "" {
@@ -477,6 +510,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fmt.Fprintf(w, defaultPage, templateEscape(hostOnly(r.Host)))
 		}
+		// Scanners mostly probe addresses, not host names.
+		s.countForBan(banIP, r, http.StatusNotFound)
 		return
 	}
 	rt := route.site
@@ -505,8 +540,63 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if rt.access != nil {
 			s.writeAccess(rt, r, status, rw.written, d)
 		}
+		s.countForBan(banIP, r, status)
 	}()
 	rt.ServeHTTP(rw, r)
+}
+
+// countForBan counts an answer against the client for automatic IP
+// banning. A 401 counts only for a failed sign-in (see triedPassword). 403
+// does not count: it answers who the client is, not a failed sign-in, and
+// is also what a ban or an IP restriction answers.
+func (s *Server) countForBan(ip net.IP, r *http.Request, status int) {
+	if ip == nil {
+		return
+	}
+	switch {
+	case status == http.StatusUnauthorized && triedPassword(r):
+		s.deps.Bans.Record(ip, ipban.AuthFailure)
+	case status == http.StatusNotFound:
+		s.deps.Bans.Record(ip, ipban.NotFound)
+	case status == http.StatusTooManyRequests:
+		s.deps.Bans.Record(ip, ipban.RateLimited)
+	}
+}
+
+// triedPassword reports whether a request that was answered 401 was a
+// guess at a password: basic authentication credentials (NodeHoster's own
+// or the application's), or a submitted form (a login page that answers
+// 401). Everything else a 401 answers is an ordinary client whose session
+// ran out: a page asked to sign in, a single-page app's expired bearer
+// token, a heartbeat POST, a CORS preflight. Counting those would ban a
+// whole office behind one NAT address from every site.
+func triedPassword(r *http.Request) bool {
+	if r.Method == http.MethodOptions {
+		return false
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		scheme, _, _ := strings.Cut(strings.TrimSpace(auth), " ")
+		return strings.EqualFold(scheme, "Basic")
+	}
+	if r.Method != http.MethodPost {
+		return false
+	}
+	mt, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	mt = strings.ToLower(strings.TrimSpace(mt))
+	return mt == "application/x-www-form-urlencoded" || mt == "multipart/form-data"
+}
+
+// refuseBanned answers a banned client with a bare 403. Closing the
+// connection instead would, behind a CDN or load balancer, drop a
+// connection other clients' requests share and show up there as errors;
+// Connection: close still ends a direct client's keep-alive.
+func refuseBanned(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Connection", "close")
+	w.WriteHeader(http.StatusForbidden)
+	io.WriteString(w, "Forbidden\n")
 }
 
 // writeAccess appends a line in combined log format plus host and duration.
@@ -519,9 +609,18 @@ func (s *Server) writeAccess(rt *siteRuntime, r *http.Request, status int, size 
 	if ref == "" {
 		ref = "-"
 	}
+	now, ip, ms := time.Now(), s.clientIP(r), float64(d.Microseconds())/1000
 	fmt.Fprintf(rt.access, "%s - %s [%s] %q %d %d %q %q %s %.1fms\n",
-		s.clientIP(r), user, time.Now().Format("02/Jan/2006:15:04:05 -0700"),
-		r.Method+" "+r.URL.RequestURI()+" "+r.Proto, status, size, ref, ua, r.Host, float64(d.Microseconds())/1000)
+		ip, user, now.Format("02/Jan/2006:15:04:05 -0700"),
+		r.Method+" "+r.URL.RequestURI()+" "+r.Proto, status, size, ref, ua, r.Host, ms)
+	if sh := s.deps.Ship; sh.Wants(model.LogSourceAccess) {
+		sh.Ship(logship.Record{
+			Time: now, Source: model.LogSourceAccess, Level: logship.AccessLevel(status), SiteID: rt.site.ID,
+			Message: fmt.Sprintf("%s %s %d %d %.1fms", r.Method, r.URL.RequestURI(), status, size, ms),
+			Access: &logship.AccessFields{Method: r.Method, Path: r.URL.RequestURI(), Status: status, Bytes: size, DurationMs: ms,
+				ClientIP: ip, Host: r.Host, UserAgent: r.UserAgent(), Referer: r.Referer()},
+		})
+	}
 }
 
 func templateEscape(s string) string {
@@ -541,7 +640,10 @@ func (s *Server) trustsForwarded(r *http.Request) bool {
 }
 
 // clientIP is the real client address: the peer, or, behind trusted proxies,
-// the right-most untrusted address in X-Forwarded-For.
+// the right-most untrusted address in X-Forwarded-For. Only the entries
+// trusted proxies appended are believed: an entry that cannot be read ends
+// the walk at the peer, because everything to its left may have been
+// written by the client (to pick someone else's address, or dodge a ban).
 func (s *Server) clientIP(r *http.Request) string {
 	if v, ok := r.Context().Value(ctxClientIP).(string); ok {
 		return v
@@ -550,16 +652,43 @@ func (s *Server) clientIP(r *http.Request) string {
 	if !s.trustsForwarded(r) {
 		return peer
 	}
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	parts := strings.Split(forwardedFor(r), ",")
 	s.trustedMu.RLock()
 	defer s.trustedMu.RUnlock()
 	for i := len(parts) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(parts[i])
-		if parsed := net.ParseIP(ip); parsed != nil && !inNets(parsed, s.trusted) {
-			return ip
+		ip := forwardedIP(parts[i])
+		if ip == nil {
+			return peer
+		}
+		if !inNets(ip, s.trusted) {
+			return ip.String()
 		}
 	}
 	return peer
+}
+
+// forwardedFor is the X-Forwarded-For chain, from every header line: a
+// proxy that adds its own line rather than appending to the client's must
+// not leave the client's line to be read as the whole chain.
+func forwardedFor(r *http.Request) string {
+	return strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+}
+
+// forwardedIP reads an X-Forwarded-For entry: an address, or an address
+// with a port as some load balancers write it (Azure Application Gateway:
+// 203.0.113.7:51234, [2001:db8::7]:51234). nil when it is neither.
+func forwardedIP(entry string) net.IP {
+	entry = strings.TrimSpace(entry)
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(entry); err == nil {
+		return net.ParseIP(host)
+	}
+	if strings.HasPrefix(entry, "[") && strings.HasSuffix(entry, "]") {
+		return net.ParseIP(entry[1 : len(entry)-1])
+	}
+	return nil
 }
 
 // ---- status for the API

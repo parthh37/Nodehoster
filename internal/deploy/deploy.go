@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ type Options struct {
 	// Activate points the site at a release and applies it (a rolling
 	// recycle for Node.js sites).
 	Activate func(ctx context.Context, siteID, release string) error
+	// InUse lists releases of a site still used by something other than
+	// its processes, such as a scheduled task run that started before a
+	// deployment: pruning keeps them. Optional.
+	InUse func(siteID string) []string
 }
 
 type Deployer struct {
@@ -60,16 +65,19 @@ func New(opts Options) *Deployer {
 
 // depLog is a deployment's output: written to a file and streamed live.
 type depLog struct {
-	mu   sync.Mutex
-	f    *os.File
-	subs map[chan string]struct{}
-	done chan struct{}
+	mu      sync.Mutex
+	f       *os.File
+	path    string
+	written int64 // bytes in the file so far
+	subs    map[chan string]struct{}
+	done    chan struct{}
 }
 
 func (l *depLog) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n, err := l.f.Write(p)
+	l.written += int64(n)
 	s := string(p)
 	for ch := range l.subs {
 		select {
@@ -93,24 +101,49 @@ func (d *Deployer) Log(siteID, depID string) ([]byte, error) {
 	return os.ReadFile(d.logPath(siteID, depID))
 }
 
-// Subscribe streams a running deployment's output. The done channel closes
-// when it finishes. It returns ok=false when the deployment is not running.
-func (d *Deployer) Subscribe(depID string) (lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
+// subscribe adds a live subscriber and returns how many bytes of the file
+// were written before it: those are not sent to it, everything after is.
+func (l *depLog) subscribe() (ch chan string, offset int64, cancel func()) {
+	ch = make(chan string, 256)
+	l.mu.Lock()
+	l.subs[ch] = struct{}{}
+	offset = l.written
+	l.mu.Unlock()
+	return ch, offset, func() {
+		l.mu.Lock()
+		delete(l.subs, ch)
+		l.mu.Unlock()
+	}
+}
+
+// Subscribe follows a running deployment: backlog is its output so far
+// and lines what it writes next, each chunk in exactly one of them (the
+// backlog is read up to where the subscription starts, so a line written
+// in between is neither sent twice nor lost). The done channel closes
+// when it finishes. It returns ok=false when the deployment is not
+// running: its log file (Log) is then complete.
+func (d *Deployer) Subscribe(depID string) (backlog []byte, lines <-chan string, done <-chan struct{}, cancel func(), ok bool) {
 	d.mu.Lock()
 	l := d.logs[depID]
 	d.mu.Unlock()
 	if l == nil {
-		return nil, nil, func() {}, false
+		return nil, nil, nil, func() {}, false
 	}
-	ch := make(chan string, 256)
-	l.mu.Lock()
-	l.subs[ch] = struct{}{}
-	l.mu.Unlock()
-	return ch, l.done, func() {
-		l.mu.Lock()
-		delete(l.subs, ch)
-		l.mu.Unlock()
-	}, true
+	ch, offset, cancel := l.subscribe()
+	return readPrefix(l.path, offset), ch, l.done, cancel, true
+}
+
+// readPrefix reads the first n bytes of a file. The file only grows, so
+// they do not change while it is being written to.
+func readPrefix(path string, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, n)
+	m, _ := io.ReadFull(f, buf)
+	return buf[:m]
 }
 
 func newReleaseID() string {
@@ -141,7 +174,7 @@ func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user str
 		d.finish(site.ID, id)
 		return nil, nil, err
 	}
-	l := &depLog{f: f, subs: map[chan string]struct{}{}, done: make(chan struct{})}
+	l := &depLog{f: f, path: lp, subs: map[chan string]struct{}{}, done: make(chan struct{})}
 	d.mu.Lock()
 	d.logs[id] = l
 	d.mu.Unlock()
@@ -288,7 +321,7 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		return err
 	}
 	workDir := dep.ReleaseDir
-	if site.Type == model.SiteNode && site.Node.AppRoot != "" && !filepath.IsAbs(site.Node.AppRoot) {
+	if site.RunsNode() && site.Node.AppRoot != "" && !filepath.IsAbs(site.Node.AppRoot) {
 		workDir = filepath.Join(dep.ReleaseDir, site.Node.AppRoot)
 	}
 	env, err := d.commandEnv(site)
@@ -326,7 +359,7 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env := os.Environ()
 	version := ""
-	if site.Type == model.SiteNode {
+	if site.RunsNode() {
 		version = site.Node.NodeVersion
 	}
 	if version == "" {
@@ -335,12 +368,12 @@ func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	rt, err := d.opts.ResolveNode(version)
 	if err == nil {
 		env = prependPath(env, filepath.Dir(rt.Exe))
-	} else if site.Type == model.SiteNode {
+	} else if site.RunsNode() {
 		return nil, err
 	}
 	env = append(env, "npm_config_cache="+filepath.Join(d.opts.SitesDir, site.ID, ".npm-cache"),
 		"npm_config_update_notifier=false", "CI=true")
-	if site.Type == model.SiteNode {
+	if site.RunsNode() {
 		for _, e := range site.Node.Env {
 			v := e.Value
 			if e.Secret {
@@ -439,12 +472,18 @@ func (d *Deployer) Activate(ctx context.Context, site *model.Site, depID string)
 	return dep, nil
 }
 
-// prune deletes releases beyond KeepReleases, never the active one or the
-// one that was active before the latest deployment.
+// prune deletes releases beyond KeepReleases, never the active one, the
+// one that was active before the latest deployment (its processes may
+// still be draining) or one a task run in progress uses. Those in use are
+// deleted by a later deployment.
 func (d *Deployer) prune(ctx context.Context, site *model.Site, previous string) {
 	current, err := d.opts.Store.GetSite(ctx, site.ID)
 	if err != nil {
 		return
+	}
+	var inUse []string
+	if d.opts.InUse != nil {
+		inUse = d.opts.InUse(site.ID)
 	}
 	keep := max(current.Deploy.KeepReleases, 1)
 	list, err := d.opts.Store.ListDeployments(ctx, site.ID, 1000)
@@ -459,6 +498,9 @@ func (d *Deployer) prune(ctx context.Context, site *model.Site, previous string)
 		}
 		if dep.ID == current.ActiveRelease || dep.ID == previous || kept < keep {
 			kept++
+			continue
+		}
+		if slices.Contains(inUse, dep.ID) {
 			continue
 		}
 		os.RemoveAll(dep.ReleaseDir)

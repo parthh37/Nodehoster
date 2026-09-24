@@ -16,7 +16,14 @@ const (
 	SiteProxy    SiteType = "proxy"    // reverse proxy to arbitrary upstream URLs
 	SiteStatic   SiteType = "static"   // static files from a directory
 	SiteRedirect SiteType = "redirect" // redirect every request elsewhere
+	// A managed Node.js process without HTTP: a queue consumer, a bot, a
+	// long-running script. Supervised like a node site but never routed.
+	SiteWorker SiteType = "worker"
 )
+
+// RunsNode reports whether the site is Node.js processes supervised by the
+// process manager (node and worker sites, both configured by Node).
+func (s *Site) RunsNode() bool { return s.Type == SiteNode || s.Type == SiteWorker }
 
 // Site is the unit of hosting, the equivalent of an IIS site: a set of
 // bindings plus what answers the requests arriving on them.
@@ -35,6 +42,10 @@ type Site struct {
 
 	Routing RoutingConfig `json:"routing"`
 	Deploy  DeployConfig  `json:"deploy"`
+
+	// Scheduled tasks (node and worker sites): scripts run on a schedule
+	// in the site's release, environment and identity.
+	Tasks []ScheduledTask `json:"tasks,omitempty"`
 
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
@@ -341,7 +352,51 @@ type RoutingConfig struct {
 	Maintenance      MaintenanceConfig `json:"maintenance"`
 	ErrorPages       map[string]string `json:"errorPages,omitempty"` // "502" -> HTML
 	AccessLog        bool              `json:"accessLog"`
+	Affinity         AffinityConfig    `json:"affinity"`
+	Cache            CacheConfig       `json:"cache"`
+	Banning          SiteBanning       `json:"banning"`
 }
+
+// CacheConfig is an in-memory response cache in front of a node or proxy
+// site, like IIS output caching or ARR's cache: GET and HEAD responses that are
+// cacheable by HTTP's rules (Cache-Control, Expires, Vary) are answered
+// from memory. The budget is per site, so one busy site cannot evict
+// another's entries; the server's worst case is the sum of the budgets.
+type CacheConfig struct {
+	Enabled     bool `json:"enabled"`
+	MaxMemoryMB int  `json:"maxMemoryMB"` // this site's budget; least recently used entries are evicted
+	MaxObjectKB int  `json:"maxObjectKB"` // larger responses are passed through, not stored
+	// DefaultTTLSec applies to responses without Cache-Control max-age,
+	// s-maxage or Expires. 0 = cache only responses that declare freshness.
+	DefaultTTLSec int      `json:"defaultTtlSec,omitempty"`
+	VaryByQuery   string   `json:"varyByQuery"`           // all | none | listed
+	QueryParams   []string `json:"queryParams,omitempty"` // the parameters that matter when varyByQuery is listed
+	VaryHeaders   []string `json:"varyHeaders,omitempty"` // request headers that select a variant, on top of the response's Vary
+	BypassPaths   []string `json:"bypassPaths,omitempty"` // path prefixes never cached, e.g. /api
+}
+
+// CacheStats are shown with a site's status.
+type CacheStats struct {
+	Entries  int     `json:"entries"`
+	Bytes    int64   `json:"bytes"`
+	Hits     int64   `json:"hits"`
+	Misses   int64   `json:"misses"`
+	HitRatio float64 `json:"hitRatio"` // hits / (hits + misses), 0-1
+}
+
+// AffinityConfig is ARR's "client affinity": a cookie pins a client to the
+// backend that answered it first, whichever way the site spreads requests
+// (a node site's instances, its load-balanced servers, a proxy site's
+// upstreams). Unlike ip_hash it survives CDNs, NAT and changing client
+// addresses, which Socket.IO long-polling and in-memory sessions need.
+type AffinityConfig struct {
+	Enabled     bool   `json:"enabled"`
+	CookieName  string `json:"cookieName"`            // "" = NHAffinity
+	LifetimeSec int    `json:"lifetimeSec,omitempty"` // 0 = until the browser closes
+}
+
+// DefaultAffinityCookie is the affinity cookie's name unless one is set.
+const DefaultAffinityCookie = "NHAffinity"
 
 type GitSource struct {
 	Repo   string `json:"repo,omitempty"`

@@ -6,10 +6,13 @@
 ; service, and opens the firewall for the program (all ports it binds, so
 ; bindings added later need no new rules). Also installs NodeHoster Manager
 ; (nodehoster-manager.exe, the desktop console) and starts its status icon
-; in the notification area at every sign-in unless that task is unchecked.
+; in the notification area at every sign-in unless that task is unchecked,
+; and the NodeHoster PowerShell module (Get-NHSite, Publish-NHSite...) for
+; every user, in {commonpf64}\WindowsPowerShell\Modules.
 ; Upgrades stop the service first and start it again afterwards; installing
 ; an older version over a newer one asks first. Uninstalling removes the
-; service, the firewall rule, the PATH entry and the status icon; data in
+; service, the firewall rule, the PATH entry, the status icon and the
+; PowerShell module; data in
 ; %ProgramData%\NodeHoster is kept unless the user chooses to remove it.
 ;
 ; Unattended install (for scripts and remote management):
@@ -35,6 +38,10 @@
   #define SourceDir "..\dist"
 #endif
 #define AppGuid "{6F1B3C2A-9D4E-4E7B-A1C5-2B7D9E0F4A11}"
+; The PowerShell module's version (X.Y.Z of WinVersion): its folder is
+; named after it, and PowerShell requires the manifest to say the same.
+#define ModuleVersion Copy(WinVersion, 1, RPos(".", WinVersion) - 1)
+#define ModuleDir "{commonpf64}\WindowsPowerShell\Modules\NodeHoster"
 
 [Setup]
 AppId={#StringChange(AppGuid, "{", "{{")}
@@ -77,6 +84,18 @@ Name: "statusicon"; Description: "Show the NodeHoster status icon in the notific
 Source: "{#SourceDir}\nodehoster.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\nodehoster-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
+; The module sits in a machine-wide module folder so that every session
+; finds it (Import-Module NodeHoster); it runs {app}\nodehoster.exe.
+Source: "NodeHoster\NodeHoster.psm1"; DestDir: "{#ModuleDir}\{#ModuleVersion}"; Flags: ignoreversion
+Source: "NodeHoster\NodeHoster.psd1"; DestDir: "{#ModuleDir}\{#ModuleVersion}"; Flags: ignoreversion; AfterInstall: StampModuleVersion
+
+[InstallDelete]
+; An upgrade replaces the previous version's module folder instead of
+; leaving it next to the new one.
+Type: filesandordirs; Name: "{#ModuleDir}"
+
+[UninstallDelete]
+Type: dirifempty; Name: "{#ModuleDir}"
 
 [Icons]
 Name: "{autoprograms}\NodeHoster Manager"; Filename: "{app}\nodehoster-manager.exe"; Comment: "Manage NodeHoster sites and the service"
@@ -162,6 +181,24 @@ begin
     Result := 1
   else
     Result := 0;
+end;
+
+// The module manifest in the repository says 0.0.0; PowerShell only loads a
+// module from a version folder whose manifest has the same version.
+procedure StampModuleVersion;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+  FileName: string;
+begin
+  FileName := ExpandConstant(CurrentFileName);
+  if not LoadStringsFromFile(FileName, Lines) then
+    exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+    if Pos('ModuleVersion', TrimLeft(Lines[I])) = 1 then
+      Lines[I] := '  ModuleVersion = ''{#ModuleVersion}''';
+  if not SaveStringsToFile(FileName, Lines, False) then
+    Log('Could not set the version of ' + FileName);
 end;
 
 // --- Versions -------------------------------------------------------------

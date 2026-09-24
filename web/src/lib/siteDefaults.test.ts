@@ -13,8 +13,12 @@ import {
   defaultRedirect,
   defaultRouting,
   defaultStatic,
+  defaultTask,
+  defaultWorker,
   newSite,
   normalizeSite,
+  normalizeTask,
+  runsNode,
   siteTypeLabel,
   toSite,
 } from './siteDefaults';
@@ -22,7 +26,10 @@ import {
 // Server documents can be partial or contain nulls for fields the TS types declare as required.
 const asSite = (v: unknown) => v as Site;
 
-const ALL_TYPES: SiteType[] = ['node', 'proxy', 'static', 'redirect'];
+const ALL_TYPES: SiteType[] = ['node', 'worker', 'proxy', 'static', 'redirect'];
+
+// The config block of each type; a worker is configured by `node` like a node site.
+const CONFIG_KEY = { node: 'node', worker: 'node', proxy: 'proxy', static: 'static', redirect: 'redirect' } as const;
 
 describe('SITE_TYPES / siteTypeLabel', () => {
   it('lists every site type once', () => {
@@ -32,6 +39,7 @@ describe('SITE_TYPES / siteTypeLabel', () => {
   it('returns the label for known types and the raw value otherwise', () => {
     expect(siteTypeLabel('node')).toBe('Node.js app');
     expect(siteTypeLabel('redirect')).toBe('Redirect');
+    expect(siteTypeLabel('worker')).toBe('Background worker');
     expect(siteTypeLabel('ftp')).toBe('ftp');
   });
 });
@@ -129,16 +137,37 @@ describe('newSite', () => {
     const s = newSite(type);
     expect(s.type).toBe(type);
     expect(s.autoStart).toBe(true);
-    expect(s.bindings).toHaveLength(1);
-    expect(s.bindings[0]).toMatchObject({ protocol: 'http', port: 80 });
     for (const other of ALL_TYPES) {
-      if (other === type) expect(s[other]).toBeDefined();
-      else expect(s[other]).toBeUndefined();
+      if (CONFIG_KEY[other] === CONFIG_KEY[type]) expect(s[CONFIG_KEY[other]]).toBeDefined();
+      else expect(s[CONFIG_KEY[other]]).toBeUndefined();
     }
   });
 
-  it('sets an install command only for node sites', () => {
+  it.each(ALL_TYPES.filter((t) => t !== 'worker'))('gives a %s site one http binding on port 80', (type) => {
+    const s = newSite(type);
+    expect(s.bindings).toHaveLength(1);
+    expect(s.bindings[0]).toMatchObject({ protocol: 'http', port: 80 });
+  });
+
+  it('creates a worker without bindings or health check', () => {
+    const s = newSite('worker');
+    expect(s.bindings).toEqual([]);
+    expect(s.node).toEqual(defaultWorker());
+    expect(s.node!.healthCheck.enabled).toBe(false);
+    expect(s.node!.portMode).toBe('auto');
+    expect(s.node!.loadBalancer.enabled).toBe(false);
+  });
+
+  it('starts node and worker sites with an empty task list, others without one', () => {
+    expect(newSite('node').tasks).toEqual([]);
+    expect(newSite('worker').tasks).toEqual([]);
+    expect(newSite('proxy').tasks).toBeUndefined();
+    expect(newSite('static').tasks).toBeUndefined();
+  });
+
+  it('sets an install command only for node and worker sites', () => {
     expect(newSite('node').deploy.installCommand).toBe('npm ci --omit=dev');
+    expect(newSite('worker').deploy.installCommand).toBe('npm ci --omit=dev');
     expect(newSite('static').deploy.installCommand).toBe('');
   });
 
@@ -224,6 +253,39 @@ describe('normalizeSite', () => {
     expect(s.node).toEqual(defaultNode());
   });
 
+  it('fills a missing worker config with worker defaults (no health check)', () => {
+    const s = normalizeSite(asSite({ type: 'worker' }));
+    expect(s.node).toEqual(defaultWorker());
+    expect(s.tasks).toEqual([]);
+  });
+
+  it('merges a partial worker config like a node one', () => {
+    const s = normalizeSite(asSite({ type: 'worker', node: { script: 'consumer.js', env: null, recycle: { memoryLimitMB: 256 } } }));
+    expect(s.node!.script).toBe('consumer.js');
+    expect(s.node!.env).toEqual([]);
+    expect(s.node!.recycle).toEqual({ memoryLimitMB: 256 });
+    expect(s.node!.healthCheck.enabled).toBe(false);
+  });
+
+  it('normalizes tasks of node and worker sites', () => {
+    const s = normalizeSite(
+      asSite({
+        type: 'node',
+        tasks: [
+          { id: 't1', name: 'cleanup', schedule: '', script: 'cleanup.js', enabled: true, timeoutSec: 0, overlap: '' },
+          { id: 't2', name: 'report', schedule: '@daily', npmScript: 'report', args: null, env: [{ name: 'A', value: '1' }], enabled: false, timeoutSec: 60, overlap: 'queue' },
+        ],
+      }),
+    );
+    expect(s.tasks![0]).toEqual({ ...defaultTask(), id: 't1', name: 'cleanup', schedule: '', script: 'cleanup.js' });
+    expect(s.tasks![1]).toMatchObject({ npmScript: 'report', script: '', args: [], env: [{ name: 'A', value: '1' }], enabled: false, timeoutSec: 60, overlap: 'queue' });
+    expect(normalizeSite(asSite({ type: 'node', tasks: null })).tasks).toEqual([]);
+  });
+
+  it('leaves tasks alone on other site types', () => {
+    expect(normalizeSite(asSite({ type: 'proxy' })).tasks).toBeUndefined();
+  });
+
   it('merges a partial node config over defaults', () => {
     const s = normalizeSite(
       asSite({
@@ -299,6 +361,27 @@ describe('normalizeSite', () => {
     expect(s.node).toBeUndefined();
     expect(s.proxy).toBeUndefined();
     expect(s.redirect).toBeUndefined();
+  });
+});
+
+describe('runsNode', () => {
+  it('is true for node and worker sites only', () => {
+    expect(ALL_TYPES.filter(runsNode)).toEqual(['node', 'worker']);
+    expect(runsNode(undefined)).toBe(false);
+  });
+});
+
+describe('tasks', () => {
+  it('defaultTask is enabled, runs daily at 03:00 and skips overlapping runs', () => {
+    expect(defaultTask()).toEqual({ id: '', name: '', schedule: '0 3 * * *', script: '', npmScript: '', args: [], enabled: true, timeoutSec: 3600, overlap: 'skip', env: [] });
+    const a = defaultTask();
+    a.env!.push({ name: 'X', value: '1' });
+    expect(defaultTask().env).toEqual([]);
+  });
+
+  it('normalizeTask keeps an empty schedule and explicit values', () => {
+    const t = normalizeTask({ id: 'x', name: 'n', schedule: '', enabled: false, timeoutSec: 604800, overlap: 'allow' });
+    expect(t).toEqual({ ...defaultTask(), id: 'x', name: 'n', schedule: '', enabled: false, timeoutSec: 604800, overlap: 'allow' });
   });
 });
 

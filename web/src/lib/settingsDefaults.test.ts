@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MailSettings, Settings } from '@/api/types';
-import { defaultMail, nodemailerSnippet, normalizeMail, normalizeSettings, pickupPath, smtpClientHost } from './settingsDefaults';
+import { defaultMail, nodemailerSnippet, normalizeMail, normalizeSettings, normalizeSSO, pickupPath, smtpClientHost } from './settingsDefaults';
 
 describe('normalizeMail', () => {
   it('fills an all-zero document like the server', () => {
@@ -61,6 +61,9 @@ describe('normalizeSettings', () => {
     expect(s.mail).toEqual(defaultMail());
     expect(s.dnsProviders).toEqual([]);
     expect(s.proxy.trustedProxies).toEqual([]);
+    expect(s.sso).toEqual(normalizeSSO(undefined));
+    expect(s.sso.usernameClaim).toBe('preferred_username');
+    expect(s.sso.roleMap).toEqual([]);
   });
 });
 

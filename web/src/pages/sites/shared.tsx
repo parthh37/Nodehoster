@@ -2,9 +2,10 @@ import { ExternalLink, Play, RefreshCw, RotateCw, Square } from 'lucide-react';
 import type { Binding, SiteState, SiteView } from '@/api/types';
 import { IconButton, Button } from '@/components/Button';
 import { bindingHref, bindingLabel } from '@/lib/bindings';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { useSiteActions } from '@/hooks/useSiteActions';
-import { usePermissions } from '@/hooks/useAuth';
+import { useSitePermissions } from '@/hooks/useAuth';
 
 export function BindingLink({ b, className }: { b: Binding; className?: string }) {
   const href = bindingHref(b);
@@ -37,7 +38,7 @@ const canStop = (s: SiteState | undefined) => !!s && s !== 'stopped';
 /** Row-level icon actions for the sites table. */
 export function SiteRowActions({ site, state }: { site: SiteView; state: SiteState | undefined }) {
   const { run, pending } = useSiteActions();
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   if (!canOperate) return null;
   const busy = pending?.id === site.id;
   return (
@@ -47,7 +48,7 @@ export function SiteRowActions({ site, state }: { site: SiteView; state: SiteSta
       ) : (
         <IconButton label="Stop" icon={<Square className="h-3.5 w-3.5" />} disabled={busy} onClick={() => run(site.id, site.name, 'stop')} />
       )}
-      {site.type === 'node' && (
+      {runsNode(site.type) && (
         <IconButton
           label="Recycle (zero-downtime)"
           icon={<RefreshCw className="h-3.5 w-3.5" />}
@@ -63,7 +64,7 @@ export function SiteRowActions({ site, state }: { site: SiteView; state: SiteSta
 /** Header action buttons for the site detail page. */
 export function SiteHeaderActions({ site, state }: { site: SiteView; state: SiteState | undefined }) {
   const { run, pending } = useSiteActions();
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   const busy = pending?.id === site.id ? pending.action : undefined;
   const browse = (site.bindings ?? []).map((b) => bindingHref(b)).find(Boolean);
   return (
@@ -80,7 +81,7 @@ export function SiteHeaderActions({ site, state }: { site: SiteView; state: Site
               Stop
             </Button>
           )}
-          {site.type === 'node' && (
+          {runsNode(site.type) && (
             <Button
               icon={<RefreshCw className="h-3.5 w-3.5" />}
               loading={busy === 'recycle'}
@@ -96,14 +97,17 @@ export function SiteHeaderActions({ site, state }: { site: SiteView; state: Site
           </Button>
         </>
       )}
-      <Button
-        icon={<ExternalLink className="h-3.5 w-3.5" />}
-        disabled={!browse}
-        onClick={() => browse && window.open(browse, '_blank', 'noopener')}
-        title={browse ?? 'No browsable binding'}
-      >
-        Browse
-      </Button>
+      {/* A background worker serves no HTTP: nothing to browse. */}
+      {site.type !== 'worker' && (
+        <Button
+          icon={<ExternalLink className="h-3.5 w-3.5" />}
+          disabled={!browse}
+          onClick={() => browse && window.open(browse, '_blank', 'noopener')}
+          title={browse ?? 'No browsable binding'}
+        >
+          Browse
+        </Button>
+      )}
     </>
   );
 }

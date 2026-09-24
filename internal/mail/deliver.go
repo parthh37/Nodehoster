@@ -239,10 +239,7 @@ func (s *Server) deliverGroup(ctx context.Context, cfg model.MailSettings, from 
 // mailHosts returns the domain's mail servers in preference order: its MX
 // records, or the domain itself when it has none (RFC 5321 §5.1).
 func (s *Server) mailHosts(ctx context.Context, domain string) ([]string, *deliveryError) {
-	var r Resolver = net.DefaultResolver
-	if s.opt.Resolver != nil {
-		r = s.opt.Resolver
-	}
+	r := s.resolver()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	mxs, err := r.LookupMX(ctx, domain)

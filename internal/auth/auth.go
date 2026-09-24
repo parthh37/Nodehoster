@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -145,6 +146,7 @@ func (s *Service) ResetPassword(ctx context.Context, username string) (string, e
 	}
 	u.PasswordHash, u.MustChange, u.Disabled = string(hash), true, false
 	u.TOTPEnabled, u.TOTPSecret = false, ""
+	u.SSO = false // a password makes an SSO-created user an ordinary one
 	if err := s.store.PutUser(ctx, u); err != nil {
 		return "", err
 	}
@@ -185,6 +187,13 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 		s.fail(key)
 		return nil, "", ErrInvalid
 	}
+	if u.PasswordHash == "" {
+		// A user created by single sign-on has no password. Spend the
+		// same time as a wrong one, so the answer does not tell them apart.
+		bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
+		s.fail(key)
+		return nil, "", ErrInvalid
+	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		s.fail(key)
 		return nil, "", ErrInvalid
@@ -209,14 +218,24 @@ func (s *Service) Login(ctx context.Context, username, password, code, ip, ua st
 	delete(s.failures, key)
 	s.mu.Unlock()
 
+	token, err := s.newSession(ctx, u, ip, ua)
+	if err != nil {
+		return nil, "", err
+	}
+	return u, token, nil
+}
+
+// newSession creates a session for a user who just signed in (with a
+// password or single sign-on) and records the sign-in time.
+func (s *Service) newSession(ctx context.Context, u *store.UserRecord, ip, ua string) (string, error) {
 	token := randomString(32)
 	if err := s.store.CreateSession(ctx, sha(token), u.ID, ip, ua, time.Now().Add(SessionTTL)); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	now := time.Now()
 	u.LastLogin = &now
 	s.store.PutUser(ctx, u)
-	return u, token, nil
+	return token, nil
 }
 
 var dummyHash = sync.OnceValue(func() []byte {
@@ -243,12 +262,34 @@ func (s *Service) Session(ctx context.Context, token string) (*store.UserRecord,
 	return u, nil
 }
 
+// SessionAlive re-reads a session resolved earlier by Session, for a
+// long-lived stream that must end once the session is signed out, revoked
+// (a password change, a disabled account) or expired. Unlike Session it
+// does not slide the expiry: an open stream is not activity that keeps a
+// session alive.
+func (s *Service) SessionAlive(ctx context.Context, token string) (*store.UserRecord, error) {
+	if token == "" {
+		return nil, store.ErrNotFound
+	}
+	u, _, err := s.store.SessionUser(ctx, sha(token))
+	if err != nil {
+		return nil, err
+	}
+	if u.Disabled {
+		return nil, ErrDisabled
+	}
+	return u, nil
+}
+
 func (s *Service) Logout(ctx context.Context, token string) {
 	s.store.DeleteSession(ctx, sha(token))
 }
 
 // ChangePassword verifies the current password and ends other sessions.
 func (s *Service) ChangePassword(ctx context.Context, u *store.UserRecord, current, next, keepToken string) error {
+	if u.PasswordHash == "" {
+		return errors.New("this account signs in with single sign-on and has no password; an administrator can set one")
+	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(current)) != nil {
 		return errors.New("current password is incorrect")
 	}
@@ -318,12 +359,20 @@ func (s *Service) TOTPDisable(ctx context.Context, u *store.UserRecord, code str
 // ---- API tokens
 
 func (s *Service) CreateToken(ctx context.Context, userID, name string, expiresDays int) (string, *model.APIToken, error) {
+	return s.CreateRestrictedToken(ctx, userID, name, expiresDays, "", nil)
+}
+
+// CreateRestrictedToken creates a token limited to a maximum role and/or
+// to some sites (nil: every site the owner can access). The caller checks
+// that the restriction is within the owner's access; enforcement always
+// intersects it with the owner's access at the time of each request.
+func (s *Service) CreateRestrictedToken(ctx context.Context, userID, name string, expiresDays int, role model.Role, siteIDs []string) (string, *model.APIToken, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", nil, errors.New("give the token a name")
 	}
 	raw := "nh_" + randomString(32)
-	t := &model.APIToken{ID: uuid.NewString(), UserID: userID, Name: name, Prefix: raw[:10], Hash: sha(raw), CreatedAt: time.Now()}
+	t := &model.APIToken{ID: uuid.NewString(), UserID: userID, Name: name, Prefix: raw[:10], Hash: sha(raw), CreatedAt: time.Now(), Role: role, SiteIDs: siteIDs}
 	if expiresDays > 0 {
 		exp := time.Now().AddDate(0, 0, expiresDays)
 		t.ExpiresAt = &exp
@@ -333,15 +382,49 @@ func (s *Service) CreateToken(ctx context.Context, userID, name string, expiresD
 
 // TokenUser resolves a bearer token.
 func (s *Service) TokenUser(ctx context.Context, raw string) (*store.UserRecord, error) {
+	u, _, err := s.Token(ctx, raw)
+	return u, err
+}
+
+// Token resolves a bearer token to its owner and the token itself, whose
+// restriction applies on top of the owner's access (Access.Restrict).
+func (s *Service) Token(ctx context.Context, raw string) (*store.UserRecord, *model.APIToken, error) {
 	if !strings.HasPrefix(raw, "nh_") {
-		return nil, store.ErrNotFound
+		return nil, nil, store.ErrNotFound
 	}
 	t, err := s.store.TokenByHash(ctx, sha(raw))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return nil, nil, errors.New("token expired")
+	}
+	u, err := s.store.GetUser(ctx, t.UserID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if u.Disabled {
+		return nil, nil, ErrDisabled
+	}
+	go s.store.TouchToken(context.Background(), t.ID)
+	return u, t, nil
+}
+
+// TokenAlive re-reads a token resolved earlier by Token, for a long-lived
+// stream that must end once the token is deleted or expires. A token whose
+// owner or restriction is no longer the one the request was authorized
+// with is treated as gone too. It returns the owner as stored now.
+func (s *Service) TokenAlive(ctx context.Context, t *model.APIToken) (*store.UserRecord, error) {
+	fresh, err := s.store.TokenByHash(ctx, t.Hash)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.ExpiresAt != nil && time.Now().After(*fresh.ExpiresAt) {
 		return nil, errors.New("token expired")
+	}
+	if fresh.ID != t.ID || fresh.UserID != t.UserID || fresh.Role != t.Role ||
+		(fresh.SiteIDs == nil) != (t.SiteIDs == nil) || !slices.Equal(fresh.SiteIDs, t.SiteIDs) {
+		return nil, errors.New("token changed")
 	}
 	u, err := s.store.GetUser(ctx, t.UserID)
 	if err != nil {
@@ -350,12 +433,12 @@ func (s *Service) TokenUser(ctx context.Context, raw string) (*store.UserRecord,
 	if u.Disabled {
 		return nil, ErrDisabled
 	}
-	go s.store.TouchToken(context.Background(), t.ID)
 	return u, nil
 }
 
-// Allowed reports whether a role may perform an action class.
+// Allowed reports whether a server-wide role may perform an action class.
+// The site-scoped role "sites" is allowed nothing: its rights are in the
+// grants (see Access).
 func Allowed(role model.Role, need model.Role) bool {
-	rank := map[model.Role]int{model.RoleViewer: 1, model.RoleOperator: 2, model.RoleAdmin: 3}
-	return rank[role] >= rank[need]
+	return rank(need) > 0 && rank(role) >= rank(need)
 }

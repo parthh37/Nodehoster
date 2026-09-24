@@ -12,6 +12,8 @@ import { KeyValueEditor } from '@/components/KeyValueEditor';
 import { Badge } from '@/components/Badge';
 import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './types';
+import { AffinitySection } from './AffinityEditor';
+import { BanningSection } from './BanningEditor';
 
 const IP_RE = /^([0-9.]+|[0-9a-fA-F:]+)(\/\d{1,3})?$/;
 export const validateIP = (v: string) => (IP_RE.test(v) ? null : 'Enter an IP address or CIDR, e.g. 10.0.0.0/8');
@@ -109,7 +111,12 @@ export function RoutingGeneral(props: SiteEditorProps) {
           )}
         </FormSection>
         <FormSection title="Proxying" description="Applies to responses from the application or upstreams.">
-          <Switch checked={r.compression} onChange={(v) => set({ compression: v })} label="Compression" description="gzip / brotli for text responses." />
+          <Switch
+            checked={r.compression}
+            onChange={(v) => set({ compression: v })}
+            label="Compression"
+            description="Brotli or gzip, as the client prefers, for text responses over 1 KB. Static files with a .br or .gz copy next to them are sent pre-compressed."
+          />
           <Switch checked={r.webSockets} onChange={(v) => set({ webSockets: v })} label="WebSockets" description="Allow connection upgrades (Socket.IO, GraphQL subscriptions…)." />
           <Switch checked={r.accessLog} onChange={(v) => set({ accessLog: v })} label="Access log" description="Record every request in the site's access log." />
           <Grid>
@@ -121,6 +128,7 @@ export function RoutingGeneral(props: SiteEditorProps) {
             </Field>
           </Grid>
         </FormSection>
+        <AffinitySection {...props} />
       </Sections>
     </Card>
   );
@@ -181,7 +189,8 @@ export function HeadersCard(props: SiteEditorProps) {
 export function LocationsCard(props: SiteEditorProps) {
   const { r, set } = useRouting(props);
   const sites = useQuery({ queryKey: qk.sites, queryFn: sitesApi.list, staleTime: 30_000 });
-  const others = (sites.data ?? []).filter((s) => s.id !== props.site.id);
+  // A background worker serves no HTTP, so it cannot answer a location.
+  const others = (sites.data ?? []).filter((s) => s.id !== props.site.id && s.type !== 'worker');
   return (
     <Card
       title={<span className="flex items-center gap-2"><Route className="h-4 w-4 text-zinc-400" />Locations</span>}
@@ -337,6 +346,7 @@ export function AccessCard(props: SiteEditorProps) {
             </Grid>
           )}
         </FormSection>
+        <BanningSection {...props} />
       </Sections>
     </Card>
   );

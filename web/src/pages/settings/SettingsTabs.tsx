@@ -309,11 +309,16 @@ export const EVENT_TYPES = [
   'site.recycled',
   'deploy.succeeded',
   'deploy.failed',
+  'task.failed',
+  'task.timeout',
   'cert.issued',
   'cert.renewed',
   'cert.failed',
   'cert.expiring',
   'server.started',
+  'security.banned',
+  'backup.completed',
+  'backup.failed',
 ];
 
 const FORMATS = [
@@ -567,7 +572,7 @@ export function TlsTab({ s, update }: SettingsTabProps) {
               label="Trusted proxies"
               path="proxy.trustedProxies"
               prefix
-              hint="Load balancers or CDNs in front of this server whose X-Forwarded-For is trusted for the client IP."
+              hint="Load balancers or CDNs in front of this server whose X-Forwarded-For is trusted for the client IP. Other clients' X-Forwarded-Prefix, -Port and -Server headers are removed."
             >
               <ListEditor
                 values={s.proxy.trustedProxies}

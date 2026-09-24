@@ -53,6 +53,8 @@ type manager struct {
 	users    usersPage
 	activity activityPage
 	mail     mailPage
+	bans     bansPage
+	backups  backupsPage
 }
 
 // page is what the middle and right panes show for a node of the tree.
@@ -97,6 +99,8 @@ func runManager(openSite string) {
 		{navUsers, m.users.init(m), m.users.content(m), m.users.actionsPane(m)},
 		{navActivity, m.activity.init(m), m.activity.content(m), m.activity.actionsPane(m)},
 		{navMail, m.mail.init(m), m.mail.content(m), m.mail.actionsPane(m)},
+		{navBans, m.bans.init(m), m.bans.content(m), m.bans.actionsPane(m)},
+		{navBackups, m.backups.init(m), m.backups.content(m), m.backups.actionsPane(m)},
 	}
 	m.pages = map[navKind]*page{}
 	var contents, actions []Widget
@@ -457,6 +461,8 @@ const (
 	navUsers
 	navActivity
 	navMail
+	navBans
+	navBackups
 )
 
 type navItem struct {
@@ -501,7 +507,9 @@ func newNavModel(icon *walk.Icon) *navModel {
 		{kind: navMail, text: "SMTP E-mail", parent: root},
 		{kind: navNode, text: "Node.js versions", parent: root},
 		{kind: navUsers, text: "Web console users", parent: root},
+		{kind: navBans, text: "Banned IP addresses", parent: root},
 		{kind: navActivity, text: "Events and audit log", parent: root},
+		{kind: navBackups, text: "Backups", parent: root},
 	}
 	return m
 }

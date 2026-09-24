@@ -230,3 +230,32 @@ func TestRewriteImportAndMimeDefaults(t *testing.T) {
 	}
 	expect(t, e.do(http.MethodPost, "/api/sites", body, admin...), http.StatusCreated)
 }
+
+func TestMailHealthEndpoint(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	s := e.settings(admin)
+	// A smart host keeps the report to DNS lookups of the domains.
+	s.Mail.Delivery = "smarthost"
+	s.Mail.SmartHost = model.MailSmartHost{Host: "smtp.example.net", Port: 587, Security: "starttls"}
+	s.Mail.PublicIP = "203.0.113.7"
+	expect(t, e.do(http.MethodPut, "/api/settings", s, admin...), http.StatusOK)
+
+	rec := e.do(http.MethodGet, "/api/mail/health?domain=example.invalid", nil, admin...)
+	expect(t, rec, http.StatusOK)
+	h := decodeJSON[model.MailHealth](t, rec)
+	if h.PublicIP != "203.0.113.7" || len(h.Domains) != 1 || h.Domains[0].Domain != "example.invalid" || len(h.Domains[0].Checks) == 0 {
+		t.Fatalf("health: %+v", h)
+	}
+	expect(t, e.do(http.MethodGet, "/api/mail/health?domain=a%20b", nil, admin...), http.StatusUnprocessableEntity)
+	viewer := e.user("viewer", model.RoleViewer, false)
+	expect(t, e.do(http.MethodGet, "/api/mail/health", nil, withBearer(e.token(viewer))), http.StatusForbidden)
+	s = e.settings(admin)
+	s.Mail.PublicIP = "not-an-ip"
+	rec = e.do(http.MethodPut, "/api/settings", s, admin...)
+	expect(t, rec, http.StatusUnprocessableEntity)
+	if f := decodeJSON[map[string]string](t, rec)["field"]; f != "mail.publicIp" {
+		t.Errorf("field = %q", f)
+	}
+}

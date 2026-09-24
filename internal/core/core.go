@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/deploy"
 	"github.com/parthh37/nodehoster/internal/events"
+	"github.com/parthh37/nodehoster/internal/ipban"
+	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/mail"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/nodeversions"
@@ -30,6 +33,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/rewrite"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/store"
+	"github.com/parthh37/nodehoster/internal/tasks"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -49,6 +53,9 @@ type Core struct {
 	Nodes     *nodeversions.Manager
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
+	Bans      *ipban.Manager
+	Tasks     *tasks.Scheduler
+	Ship      *logship.Shipper
 	StartedAt time.Time
 	IsService bool
 
@@ -66,6 +73,9 @@ type Core struct {
 	sites   map[string]*model.Site
 	running map[string]bool // desired state of non-node sites
 
+	backups backupState
+
+	ctx    context.Context // ends at Shutdown
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -97,8 +107,18 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if c.settings.Mime.UnknownTypes == "" {
 		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
+	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
 
+	c.Ship = newShipper(log, c.siteName)
 	c.Bus = events.New(st, log, c.Settings, c.siteName)
+	if err := c.openBans(ctx); err != nil {
+		return nil, fmt.Errorf("load IP bans: %w", err)
+	}
+	c.Bus.OnEmit = func(e model.Event) {
+		if c.Ship.Wants(model.LogSourceEvent) {
+			c.Ship.Ship(eventRecord(e))
+		}
+	}
 	c.Auth = auth.New(st, box)
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
@@ -110,13 +130,22 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
 		IsLocationTarget: c.isLocationTarget,
+		OnLog: func(siteID string, l model.LogLine) {
+			if c.Ship.Wants(model.LogSourceApp) {
+				c.Ship.Ship(appRecord(siteID, l))
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	affKey, err := c.affinityKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session affinity key: %w", err)
+	}
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
-		SitesDir: paths.Sites, LogsDir: paths.SiteLogs,
+		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans, Ship: c.Ship,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
@@ -126,9 +155,12 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if err != nil {
 		return nil, err
 	}
+	c.Tasks = tasks.New(tasks.Options{
+		Store: st, Bus: c.Bus, Log: log, LogsDir: paths.SiteLogs, Runner: taskRunner{c.Procs},
+	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease,
+		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
 	})
 
 	sites, err := st.ListSites(ctx)
@@ -139,14 +171,17 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		s.ApplyDefaults()
 		c.sites[s.ID] = s
 		c.Procs.Apply(s)
+		c.Tasks.Apply(s)
 	}
+	c.applyLogShipping(c.settings.LogShipping)
+	c.attachShipper()
 	return c, nil
 }
 
 // Start opens listeners, starts auto-start sites and background jobs.
 func (c *Core) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
+	c.ctx, c.cancel = ctx, cancel
 	c.cacheMu.RLock()
 	var auto []*model.Site
 	for _, s := range c.sites {
@@ -156,7 +191,7 @@ func (c *Core) Start() {
 	}
 	c.cacheMu.RUnlock()
 	for _, s := range auto {
-		if s.Type == model.SiteNode {
+		if s.RunsNode() {
 			if err := c.Procs.Start(s.ID); err != nil {
 				c.Bus.Error(events.SiteFailed, s.ID, "%s could not start: %v", s.Name, err)
 			}
@@ -166,16 +201,19 @@ func (c *Core) Start() {
 	}
 	c.reload()
 	c.Mail.Start()
+	c.Tasks.Start()
 	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
 
-	c.wg.Add(3)
-	go func() { defer c.wg.Done(); c.Certs.Run(ctx) }()
-	go func() { defer c.wg.Done(); c.metricsLoop(ctx) }()
-	go func() { defer c.wg.Done(); c.housekeeping(ctx) }()
+	c.wg.Go(func() { c.Certs.Run(ctx) })
+	c.wg.Go(func() { c.metricsLoop(ctx) })
+	c.wg.Go(func() { c.housekeeping(ctx) })
+	c.wg.Go(func() { c.invalidateCaches(ctx) })
+	c.wg.Go(func() { c.backupLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
 func (c *Core) Shutdown() {
+	c.backups.close() // before Wait: a manual backup adds itself to c.wg
 	if c.cancel != nil {
 		c.cancel()
 	}
@@ -183,8 +221,13 @@ func (c *Core) Shutdown() {
 	defer cancel()
 	c.Proxy.Shutdown(ctx)
 	c.Mail.Shutdown(ctx)
+	c.Tasks.Shutdown() // before the processes: runs are stopped through the agent
 	c.Procs.Shutdown()
 	c.wg.Wait()
+	if err := c.Bans.Flush(); err != nil {
+		c.Log.Error("save IP bans", "err", err)
+	}
+	c.Ship.Close()
 	c.Store.Close()
 }
 
@@ -253,7 +296,20 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := in.Mime.Validate(); err != nil {
 		return cur, err
 	}
+	in.IPBan.ApplyDefaults()
+	if err := in.IPBan.Validate(); err != nil {
+		return cur, err
+	}
 	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
+		return cur, err
+	}
+	if err := c.prepareSSO(&in.SSO, cur.SSO); err != nil {
+		return cur, err
+	}
+	if err := c.prepareBackup(&in.Backup, cur.Backup); err != nil {
+		return cur, err
+	}
+	if err := c.prepareLogShipping(&in.LogShipping, cur.LogShipping); err != nil {
 		return cur, err
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
@@ -263,8 +319,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.settings = in
 	c.settingsMu.Unlock()
 	c.Procs.SetPortRange(in.PortRangeStart, in.PortRangeEnd)
+	c.applyBans()
 	c.reload()
 	c.Mail.Apply(in.Mail)
+	c.applyLogShipping(in.LogShipping)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
 		go c.Certs.RetryPending(context.Background())
 	}
@@ -317,6 +375,9 @@ func (c *Core) MaskedSettings() model.Settings {
 			m.DKIM[i].PrivateKey = secrets.Mask
 		}
 	}
+	maskSSO(&s.SSO)
+	maskBackup(&s.Backup)
+	maskLogShipping(&s.LogShipping)
 	return s
 }
 
@@ -477,7 +538,7 @@ func (c *Core) setRunning(id string, v bool) {
 
 // IsRunning is the site's desired running state.
 func (c *Core) IsRunning(s *model.Site) bool {
-	if s.Type == model.SiteNode {
+	if s.RunsNode() {
 		return c.Procs.Running(s.ID)
 	}
 	c.cacheMu.RLock()
@@ -489,9 +550,17 @@ func (c *Core) IsRunning(s *model.Site) bool {
 // automatic certificates for running https bindings.
 func (c *Core) reload() {
 	sites := c.Sites()
+	// Workers serve no HTTP: the proxy never sees them (and so they cannot
+	// be the target of a location either).
+	routed := make([]*model.Site, 0, len(sites))
+	for _, s := range sites {
+		if s.Type != model.SiteWorker {
+			routed = append(routed, s)
+		}
+	}
 	// A stopped node site still gets its bindings routed, so visitors see a
 	// "not running" page instead of the default page.
-	c.Proxy.Reload(sites, func(s *model.Site) bool {
+	c.Proxy.Reload(routed, func(s *model.Site) bool {
 		return s.Type == model.SiteNode || c.IsRunning(s)
 	})
 	var hosts []string
@@ -526,6 +595,11 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 			in.Bindings[i].ID = uuid.NewString()
 		}
 	}
+	for i := range in.Tasks {
+		if in.Tasks[i].ID == "" {
+			in.Tasks[i].ID = uuid.NewString()
+		}
+	}
 	in.ApplyDefaults()
 	if err := in.Validate(); err != nil {
 		return err
@@ -546,6 +620,14 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	}
 	if err := model.ValidateBindings(in, others); err != nil {
 		return err
+	}
+	for i, l := range in.Routing.Locations {
+		if l.Kind != "site" {
+			continue
+		}
+		if t, err := c.Site(l.SiteID); err == nil && t.Type == model.SiteWorker {
+			return &model.ValidationError{Field: fmt.Sprintf("routing.locations[%d].siteId", i), Message: fmt.Sprintf("%q is a background worker; it serves no HTTP to mount", t.Name)}
+		}
 	}
 	for _, b := range in.Bindings {
 		if b.Protocol == "https" && b.CertMode == model.CertModeManual {
@@ -591,6 +673,33 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 		}
 		in.Node.RunAs.Password = seal(in.Node.RunAs.Password, oldNode.RunAs.Password)
 	}
+	// Task variables: a masked secret keeps the stored value of the same
+	// variable of the same task (matched by task id).
+	for i := range in.Tasks {
+		t := &in.Tasks[i]
+		var oldEnv []model.EnvVar
+		for _, o := range ex.Tasks {
+			if o.ID == t.ID {
+				oldEnv = o.Env
+			}
+		}
+		for j := range t.Env {
+			e := &t.Env[j]
+			if !e.Secret {
+				if e.Value == secrets.Mask {
+					e.Value = ""
+				}
+				continue
+			}
+			old := ""
+			for _, o := range oldEnv {
+				if o.Name == e.Name && o.Secret {
+					old = o.Value
+				}
+			}
+			e.Value = seal(e.Value, old)
+		}
+	}
 	in.Deploy.Git.Token = seal(in.Deploy.Git.Token, ex.Deploy.Git.Token)
 	in.Deploy.WebhookSecret = seal(in.Deploy.WebhookSecret, ex.Deploy.WebhookSecret)
 
@@ -617,8 +726,13 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	return nil
 }
 
-// CreateSite validates, stores and applies a new site.
+// CreateSite validates, stores and applies a new site, starting it when
+// it is set to start automatically.
 func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, error) {
+	return c.createSite(ctx, in, in.AutoStart)
+}
+
+func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
 	in.ID = uuid.NewString()
@@ -635,7 +749,8 @@ func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, err
 	c.sites[in.ID] = in
 	c.cacheMu.Unlock()
 	c.Procs.Apply(in)
-	if in.AutoStart {
+	c.Tasks.Apply(in)
+	if start {
 		c.startSite(in)
 	}
 	c.reload()
@@ -646,6 +761,11 @@ func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, err
 func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
+	return c.updateSite(ctx, id, in)
+}
+
+// updateSite is UpdateSite with sitesMu held, for a read-modify-write.
+func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	existing, err := c.Site(id)
 	if err != nil {
 		return nil, err
@@ -667,6 +787,7 @@ func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*mode
 	c.sites[id] = in
 	c.cacheMu.Unlock()
 	c.Procs.Apply(in)
+	c.Tasks.Apply(in)
 	c.reload()
 	return in, nil
 }
@@ -689,38 +810,62 @@ func (c *Core) activateRelease(ctx context.Context, id, release string) error {
 	c.sites[id] = s
 	c.cacheMu.Unlock()
 	c.Procs.Apply(s) // a running node site recycles onto the new release
-	if s.Type == model.SiteNode && !c.Procs.Running(id) && s.AutoStart {
+	c.Tasks.Apply(s) // later task runs use the new release
+	if s.RunsNode() && !c.Procs.Running(id) && s.AutoStart {
 		c.Procs.Start(id)
 	}
 	c.reload()
 	return nil
 }
 
-// DeleteSite stops and removes a site, optionally with its files.
+// DeleteSite stops and removes a site, optionally with its files. The
+// site leaves the configuration under the lock; stopping its processes and
+// task runs waits for their shutdown timeouts (a minute or more) and
+// happens after, so that other sites can be edited meanwhile. Nothing can
+// start or change the site in between: it is no longer found. It leaves
+// the database once its runs have ended, so none records anything after.
 func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) error {
 	c.sitesMu.Lock()
-	defer c.sitesMu.Unlock()
-	if _, err := c.Site(id); err != nil {
+	existing, err := c.Site(id)
+	if err != nil {
+		c.sitesMu.Unlock()
 		return err
 	}
 	for _, s := range c.Sites() {
 		for _, l := range s.Routing.Locations {
 			if l.Kind == "site" && l.SiteID == id {
+				c.sitesMu.Unlock()
 				return fmt.Errorf("site %q mounts this site at %s; remove that location first", s.Name, l.Path)
 			}
 		}
 	}
-	c.Procs.Remove(id)
-	c.Procs.ForgetLogs(id)
-	if err := c.Store.DeleteSite(ctx, id); err != nil {
-		return err
-	}
 	c.cacheMu.Lock()
 	delete(c.sites, id)
+	wasRunning := c.running[id]
 	delete(c.running, id)
 	c.cacheMu.Unlock()
+	c.sitesMu.Unlock()
 	c.reload()
 	c.Proxy.ForgetSite(id)
+
+	c.Tasks.Remove(id)
+	c.Procs.Remove(id)
+	c.Procs.ForgetLogs(id)
+	// The site is gone from the running configuration already: a client
+	// that stopped waiting must not leave it in the database.
+	if err := c.Store.DeleteSite(context.WithoutCancel(ctx), id); err != nil {
+		// Still stored: put it back (a Node.js site stays stopped).
+		c.sitesMu.Lock()
+		c.cacheMu.Lock()
+		c.sites[id] = existing
+		c.running[id] = wasRunning
+		c.cacheMu.Unlock()
+		c.Procs.Apply(existing)
+		c.Tasks.Apply(existing)
+		c.sitesMu.Unlock()
+		c.reload()
+		return err
+	}
 	if deleteFiles {
 		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
 		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))
@@ -729,7 +874,7 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 }
 
 func (c *Core) startSite(s *model.Site) error {
-	if s.Type == model.SiteNode {
+	if s.RunsNode() {
 		return c.Procs.Start(s.ID)
 	}
 	c.setRunning(s.ID, true)
@@ -754,7 +899,7 @@ func (c *Core) StopSite(id string) error {
 	if err != nil {
 		return err
 	}
-	if s.Type == model.SiteNode {
+	if s.RunsNode() {
 		if err := c.Procs.Stop(id); err != nil {
 			return err
 		}
@@ -771,11 +916,12 @@ func (c *Core) RestartSite(id string) error {
 	if err != nil {
 		return err
 	}
-	if s.Type == model.SiteNode {
+	if s.RunsNode() {
 		err = c.Procs.Restart(id)
 	} else {
 		c.setRunning(id, true)
 	}
+	c.Proxy.PurgeCache(id, "")
 	c.reload()
 	return err
 }
@@ -785,10 +931,11 @@ func (c *Core) RecycleSite(id string) error {
 	if err != nil {
 		return err
 	}
-	if s.Type != model.SiteNode {
+	if !s.RunsNode() {
 		return c.RestartSite(id)
 	}
 	err = c.Procs.Recycle(id, "requested")
+	c.Proxy.PurgeCache(id, "")
 	c.reload()
 	return err
 }
@@ -796,7 +943,7 @@ func (c *Core) RecycleSite(id string) error {
 // Status is the live state of a site.
 func (c *Core) Status(s *model.Site) model.SiteStatus {
 	var st model.SiteStatus
-	if s.Type == model.SiteNode {
+	if s.RunsNode() {
 		st, _ = c.Procs.Status(s.ID)
 		st.Upstreams = c.Proxy.UpstreamStatus(s.ID) // other servers when load balanced
 	} else {
@@ -822,6 +969,7 @@ func (c *Core) Status(s *model.Site) model.SiteStatus {
 	}
 	st.SiteID = s.ID
 	st.Traffic = c.Proxy.Traffic(s.ID)
+	st.Cache = c.Proxy.CacheStats(s.ID)
 	return st
 }
 
@@ -841,6 +989,13 @@ func Masked(s *model.Site) *model.Site {
 			}
 		}
 		m.Node.RunAs.Password = mask(m.Node.RunAs.Password)
+	}
+	for i := range m.Tasks {
+		for j := range m.Tasks[i].Env {
+			if e := &m.Tasks[i].Env[j]; e.Secret {
+				e.Value = mask(e.Value)
+			}
+		}
 	}
 	m.Deploy.Git.Token = mask(m.Deploy.Git.Token)
 	m.Deploy.WebhookSecret = mask(m.Deploy.WebhookSecret)
@@ -888,7 +1043,7 @@ func (c *Core) CertificateUsage(cert *model.Certificate) []CertUse {
 func (c *Core) NodeVersionInUse(v string) []string {
 	var names []string
 	for _, s := range c.Sites() {
-		if s.Type == model.SiteNode && s.Node.NodeVersion == v {
+		if s.RunsNode() && s.Node.NodeVersion == v {
 			names = append(names, s.Name)
 		}
 	}
@@ -949,4 +1104,15 @@ func (c *Core) housekeeping(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// taskRunner starts scheduled task runs through the process manager.
+type taskRunner struct{ procs *procmgr.Manager }
+
+func (r taskRunner) StartTask(site *model.Site, task model.ScheduledTask, runID string, out io.Writer) (tasks.Process, error) {
+	p, err := r.procs.StartTask(site, task, runID, out)
+	if err != nil {
+		return nil, err // not a typed nil inside the interface
+	}
+	return p, nil
 }

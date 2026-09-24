@@ -501,25 +501,30 @@ func weightOf(ups []model.Upstream, u string) int {
 // ---- add site, as IIS Manager's "Add Website"
 
 func addSiteDialog(m *manager) {
-	types := []model.SiteType{model.SiteNode, model.SiteStatic, model.SiteProxy, model.SiteRedirect}
-	typeNames := []string{"Node.js application", "Static site", "Reverse proxy", "Redirect"}
+	types := []model.SiteType{model.SiteNode, model.SiteWorker, model.SiteStatic, model.SiteProxy, model.SiteRedirect}
+	typeNames := []string{"Node.js application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
 	var name, path, entry, target, ip, host *walk.LineEdit
 	var typ, proto *walk.ComboBox
 	var port *walk.NumberEdit
 	var start *walk.CheckBox
 	var pathBox *walk.Composite
-	var pathLabel, entryLabel, targetLabel *walk.Label
+	var bindingBox *walk.GroupBox
+	var pathLabel, entryLabel, targetLabel, httpsNote *walk.Label
 
 	onType := func() {
 		if target == nil { // still being created
 			return
 		}
 		t := types[max(typ.CurrentIndex(), 0)]
-		hasPath := t == model.SiteNode || t == model.SiteStatic
+		node := t == model.SiteNode || t == model.SiteWorker
+		hasPath := node || t == model.SiteStatic
 		pathLabel.SetVisible(hasPath)
 		pathBox.SetVisible(hasPath)
-		entryLabel.SetVisible(t == model.SiteNode)
-		entry.SetVisible(t == model.SiteNode)
+		entryLabel.SetVisible(node)
+		entry.SetVisible(node)
+		// A worker serves no HTTP, so it has no binding.
+		bindingBox.SetVisible(t != model.SiteWorker)
+		httpsNote.SetVisible(t != model.SiteWorker)
 		targetLabel.SetVisible(!hasPath)
 		target.SetVisible(!hasPath)
 		if t == model.SiteProxy {
@@ -545,7 +550,7 @@ func addSiteDialog(m *manager) {
 			Label{AssignTo: &entryLabel, Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: "server.js"},
 			Label{AssignTo: &targetLabel, Text: "Upstream URL:", Visible: false}, LineEdit{AssignTo: &target, Visible: false},
 		}},
-		GroupBox{Title: "Binding", Layout: Grid{Columns: 4}, Children: []Widget{
+		GroupBox{AssignTo: &bindingBox, Title: "Binding", Layout: Grid{Columns: 4}, Children: []Widget{
 			Label{Text: "Type:"}, ComboBox{AssignTo: &proto, Model: []string{"http", "https"}, CurrentIndex: 0, OnCurrentIndexChanged: func() {
 				if port == nil {
 					return
@@ -560,7 +565,7 @@ func addSiteDialog(m *manager) {
 			Label{Text: "Port:"}, NumberEdit{AssignTo: &port, Value: 80.0, MinValue: 1, MaxValue: 65535},
 			Label{Text: "Host name:"}, LineEdit{AssignTo: &host, CueBanner: "www.example.com"},
 		}},
-		Label{Text: "HTTPS bindings get an automatic certificate for the host name.", TextColor: colorMuted},
+		Label{AssignTo: &httpsNote, Text: "HTTPS bindings get an automatic certificate for the host name.", TextColor: colorMuted},
 		CheckBox{AssignTo: &start, Text: "Start the site now", Checked: true},
 	}, func(dlg *walk.Dialog) bool {
 		t := types[max(typ.CurrentIndex(), 0)]
@@ -573,7 +578,7 @@ func addSiteDialog(m *manager) {
 		if b.IP == "*" {
 			b.IP = ""
 		}
-		if b.Protocol == "https" {
+		if b.Protocol == "https" && t != model.SiteWorker {
 			if b.Host == "" {
 				return invalid(dlg, "An HTTPS binding needs a host name for its certificate.")
 			}
@@ -582,6 +587,9 @@ func addSiteDialog(m *manager) {
 		s.Bindings = []model.Binding{b}
 		switch t {
 		case model.SiteNode:
+			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
+		case model.SiteWorker:
+			s.Bindings = nil
 			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
 		case model.SiteStatic:
 			s.Static = &model.StaticConfig{Root: path.Text()}

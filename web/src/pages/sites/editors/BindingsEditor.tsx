@@ -12,10 +12,13 @@ import { DaysLeft, stateTone } from '@/components/StatusBadges';
 import { defaultBinding, HOST_RE } from '@/lib/siteDefaults';
 import { bindingHref, defaultPort } from '@/lib/bindings';
 import { cn } from '@/lib/cn';
+import { usePermissions } from '@/hooks/useAuth';
 import type { SiteEditorProps } from './types';
 
 export function BindingsEditor({ site, update, readOnly, compact }: SiteEditorProps & { compact?: boolean }) {
-  const certs = useQuery({ queryKey: qk.certs, queryFn: certsApi.list, staleTime: 30_000 });
+  // The certificate store is server-wide: not readable with access to selected sites only.
+  const { siteScoped } = usePermissions();
+  const certs = useQuery({ queryKey: qk.certs, queryFn: certsApi.list, staleTime: 30_000, enabled: !siteScoped });
   const bindings = site.bindings ?? [];
   const hasAuto = bindings.some((b) => b.protocol === 'https' && b.certMode === 'auto');
 

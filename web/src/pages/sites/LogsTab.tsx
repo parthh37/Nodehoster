@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowDownToLine, Download, Eraser, Pause, Play, Search, Trash2 } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
@@ -12,15 +12,37 @@ import { ErrorBox } from '@/components/Field';
 import { Checkbox } from '@/components/Switch';
 import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
-import { usePermissions } from '@/hooks/useAuth';
+import { useSitePermissions } from '@/hooks/useAuth';
 import { formatTime } from '@/lib/format';
+import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
+import { LogSearch } from './LogSearch';
 
 const MAX_LINES = 5000;
 const RENDER_LINES = 2000;
 
+type Mode = 'live' | 'search';
+
+/** A site's logs: the live tail, or a search through the log files. */
 export function LogsTab({ site }: { site: SiteView }) {
-  const hasApp = site.type === 'node';
+  const [mode, setMode] = useState<Mode>('live');
+  const modeSwitch = (
+    <Segmented<Mode>
+      value={mode}
+      onChange={setMode}
+      options={[
+        { value: 'live', label: 'Live' },
+        { value: 'search', label: 'Search' },
+      ]}
+    />
+  );
+  return mode === 'live' ? <LiveLogs site={site} modeSwitch={modeSwitch} /> : <LogSearch site={site} modeSwitch={modeSwitch} />;
+}
+
+function LiveLogs({ site, modeSwitch }: { site: SiteView; modeSwitch: ReactNode }) {
+  const hasApp = runsNode(site.type);
+  // A background worker serves no HTTP, so it has no access log.
+  const hasAccess = site.type !== 'worker';
   const [type, setType] = useState<LogType>(hasApp ? 'app' : 'access');
   const [lines, setLines] = useState<LogLine[]>([]);
   const [paused, setPaused] = useState(false);
@@ -35,7 +57,7 @@ export function LogsTab({ site }: { site: SiteView }) {
   const pausedRef = useRef(false);
   const bufferRef = useRef<LogLine[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
-  const { canOperate } = usePermissions();
+  const { canOperate } = useSitePermissions(site.id);
   const confirm = useConfirm();
   const toast = useToast();
 
@@ -142,10 +164,14 @@ export function LogsTab({ site }: { site: SiteView }) {
   return (
     <div className="nh-card flex h-[calc(100vh-17rem)] min-h-[420px] flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+        {modeSwitch}
         <Segmented<LogType>
           value={type}
           onChange={setType}
-          options={hasApp ? [{ value: 'app', label: 'Application' }, { value: 'access', label: 'Access log' }] : [{ value: 'access', label: 'Access log' }]}
+          options={[
+            ...(hasApp ? [{ value: 'app' as const, label: 'Application' }] : []),
+            ...(hasAccess ? [{ value: 'access' as const, label: 'Access log' }] : []),
+          ]}
         />
         <Input className="w-56" prefix={<Search className="h-3.5 w-3.5" />} placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {type === 'app' && (

@@ -8,17 +8,22 @@ import (
 	"time"
 )
 
-// MailSettings configure the SMTP virtual server: a send-only relay in the
-// style of the IIS 6 SMTP service. Applications on this server (or on the
-// allowed addresses) submit mail over SMTP or drop .eml files in the
-// pickup folder; NodeHoster queues it on disk and delivers it, directly to
-// the recipients' mail servers or through a smart host, retrying until it
-// expires. It never accepts mail for local mailboxes.
+// MailSettings configure NodeHoster's built-in SMTP server, a send-only
+// relay whose settings follow the IIS 6 SMTP virtual server's.
+// Applications on this server (or on the allowed addresses) submit mail
+// over SMTP or drop .eml files in the pickup folder; NodeHoster queues it
+// on disk and delivers it, directly to the recipients' mail servers or
+// through an optional smart host, retrying until it expires. It never
+// accepts mail for local mailboxes.
 type MailSettings struct {
 	Enabled  bool   `json:"enabled"`
 	ListenIP string `json:"listenIp"`           // "" = all addresses
 	Port     int    `json:"port"`               // 25
 	Hostname string `json:"hostname,omitempty"` // fully-qualified name for EHLO and Received; "" = computer name
+	// PublicIP is the address receivers see mail coming from, for the
+	// deliverability checks (SPF, reverse DNS, blacklists). "" = detect;
+	// set it when the server is behind NAT.
+	PublicIP string `json:"publicIp,omitempty"`
 
 	// Connection and relay restrictions: only these clients may connect.
 	AllowIPs []string `json:"allowIps"`
@@ -124,6 +129,41 @@ type MailStatus struct {
 	Since     time.Time `json:"since"`
 }
 
+// Deliverability check results.
+const (
+	CheckPass = "pass"
+	CheckWarn = "warn" // works, but hurts deliverability
+	CheckFail = "fail" // mail is likely rejected or marked as spam
+	CheckInfo = "info" // not checked, or nothing to judge
+)
+
+// MailCheck is one test of the deliverability report.
+type MailCheck struct {
+	Name   string `json:"name"`             // "SPF", "Reverse DNS", ...
+	Status string `json:"status"`           // pass | warn | fail | info
+	Detail string `json:"detail"`           // what was found, in a sentence
+	Record string `json:"record,omitempty"` // the DNS record found
+	Fix    string `json:"fix,omitempty"`    // what to change or publish
+	FixDNS string `json:"fixDns,omitempty"` // DNS name the Fix record belongs at
+}
+
+// MailHealth is the deliverability report: this server's reputation
+// (address, reverse DNS, host name, port 25, blacklists) and, for each
+// sending domain, its SPF, DKIM and DMARC records.
+type MailHealth struct {
+	PublicIP  string             `json:"publicIp,omitempty"`
+	Hostname  string             `json:"hostname"`
+	Delivery  string             `json:"delivery"`
+	Server    []MailCheck        `json:"server"`
+	Domains   []MailDomainHealth `json:"domains"`
+	CheckedAt time.Time          `json:"checkedAt"`
+}
+
+type MailDomainHealth struct {
+	Domain string      `json:"domain"`
+	Checks []MailCheck `json:"checks"`
+}
+
 // MailTest is the body of POST /mail/test.
 type MailTest struct {
 	From string `json:"from,omitempty"`
@@ -170,6 +210,7 @@ func (m *MailSettings) ApplyDefaults() {
 		m.ListenIP = ""
 	}
 	m.Hostname = strings.ToLower(strings.TrimSpace(m.Hostname))
+	m.PublicIP = strings.TrimSpace(m.PublicIP)
 	for i := range m.DKIM {
 		d := &m.DKIM[i]
 		d.Domain = strings.ToLower(strings.TrimSpace(d.Domain))
@@ -191,6 +232,9 @@ func (m *MailSettings) Validate() error {
 	}
 	if m.Hostname != "" && !hostRe.MatchString(m.Hostname) {
 		return verr("mail.hostname", "not a host name")
+	}
+	if m.PublicIP != "" && net.ParseIP(m.PublicIP) == nil {
+		return verr("mail.publicIp", "not an IP address")
 	}
 	for i, c := range m.AllowIPs {
 		if _, err := ParseCIDROrIP(c); err != nil {

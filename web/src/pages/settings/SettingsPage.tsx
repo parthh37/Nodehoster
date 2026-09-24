@@ -14,10 +14,14 @@ import { useToast } from '@/components/Toast';
 import { clone, jsonEqual } from '@/lib/obj';
 import { normalizeSettings } from '@/lib/settingsDefaults';
 import { AcmeTab, DnsTab, NotificationsTab, ProcessTab, TlsTab } from './SettingsTabs';
-import { AdminConsoleTab, BackupTab } from './AdminTabs';
+import { AdminConsoleTab } from './AdminTabs';
+import { BackupsTab } from './BackupsTab';
+import { LogShippingTab } from './LogShippingTab';
 import { MimeTab } from './MimeTab';
+import { SecurityTab } from './SecurityTab';
+import { SsoTab } from './SsoTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'process' | 'admin' | 'backup';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
@@ -25,12 +29,15 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'notifications', label: 'Notifications' },
   { key: 'tls', label: 'TLS & proxy' },
   { key: 'mime', label: 'MIME types' },
+  { key: 'security', label: 'Security' },
   { key: 'process', label: 'Process & logs' },
+  { key: 'logshipping', label: 'Log shipping' },
   { key: 'admin', label: 'Admin console' },
-  { key: 'backup', label: 'Backup & restore' },
+  { key: 'sso', label: 'Single sign-on' },
+  { key: 'backup', label: 'Backups' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'process'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -39,6 +46,10 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('webhooks')) return 'notifications';
   if (field.startsWith('tls') || field.startsWith('proxy')) return 'tls';
   if (field.startsWith('mime')) return 'mime';
+  if (field.startsWith('sso')) return 'sso';
+  if (field.startsWith('ipBan')) return 'security';
+  if (field.startsWith('backup')) return 'backup';
+  if (field.startsWith('logShipping')) return 'logshipping';
   return 'process';
 }
 
@@ -118,10 +129,13 @@ export function SettingsPage() {
         {props && tab === 'notifications' && <NotificationsTab {...props} />}
         {props && tab === 'tls' && <TlsTab {...props} />}
         {props && tab === 'mime' && <MimeTab {...props} />}
+        {props && tab === 'security' && <SecurityTab {...props} />}
         {props && tab === 'process' && <ProcessTab {...props} />}
+        {props && tab === 'sso' && <SsoTab {...props} />}
+        {props && tab === 'logshipping' && <LogShippingTab {...props} />}
+        {props && tab === 'backup' && <BackupsTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
-      {tab === 'backup' && <BackupTab />}
       {dirty && (
         <SaveBar
           label="You have unsaved settings"

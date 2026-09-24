@@ -5,13 +5,16 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // staticHandler serves files like an IIS static site: default documents,
 // optional directory browsing, optional SPA fallback, MIME types from
-// NodeHoster's own table, and dotfiles (.env, .git) never served, the way
-// IIS hides web.config.
+// NodeHoster's own table, and dotfiles (.env, .git) and web.config never
+// served, the way IIS's request filtering hides web.config.
 type staticHandler struct {
 	root     string
 	index    []string
@@ -20,6 +23,10 @@ type staticHandler struct {
 	cache    string
 	errPages map[string]string
 	types    *mimeTypes
+	// precompressed serves file.br / file.gz next to a file to clients
+	// that accept them, like IIS static compression's cache (when the
+	// site compresses responses).
+	precompressed bool
 }
 
 func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +80,11 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // resolve maps a URL path to a file under the root. It refuses anything
 // that could step outside the root or reveal hidden files: a decoded "%5C"
 // is a path separator on Windows and ":" can name another drive or an NTFS
-// alternate data stream, so neither may appear in a request path.
+// alternate data stream, so neither may appear in a request path. A folder
+// moved from IIS keeps its web.config (connection strings, machineKey):
+// it is refused in any case and with the trailing dots or spaces Windows
+// ignores in file names. So is anything shaped like an NTFS 8.3 short
+// name (see shortNameAlias).
 func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	if strings.ContainsAny(urlPath, "\\:\x00") {
 		return "", "", false
@@ -81,6 +92,12 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 	clean = path.Clean("/" + urlPath)
 	for _, seg := range strings.Split(clean, "/") {
 		if strings.HasPrefix(seg, ".") && seg != ".well-known" {
+			return "", "", false
+		}
+		if strings.EqualFold(strings.TrimRight(seg, ". "), "web.config") {
+			return "", "", false
+		}
+		if shortNameAlias(seg) {
 			return "", "", false
 		}
 	}
@@ -93,6 +110,22 @@ func (h *staticHandler) resolve(urlPath string) (full, clean string, ok bool) {
 		return "", "", false
 	}
 	return full, clean, true
+}
+
+// shortName is the shape of an 8.3 short name Windows generates: a base
+// ending in "~" and digits, and an extension of at most three characters.
+var shortName = regexp.MustCompile(`^[^.]*~[0-9]+(\.[^.]{0,3})?$`)
+
+// shortNameAlias reports whether a path segment may be the 8.3 short name
+// of another file. On an NTFS volume that still generates them, WEB~1.CON
+// opens web.config and ENV~1 opens .env, past the checks on the names
+// above, the way IIS's tilde short-name disclosure works. Refused on every
+// system, as the site's files may be served from Windows whatever the
+// build; a name longer than 8.3 (photo~2023.jpeg) is never a short name.
+func shortNameAlias(seg string) bool {
+	seg = strings.TrimRight(seg, ". ") // ignored by Windows, as above
+	base, _, _ := strings.Cut(seg, ".")
+	return utf8.RuneCountInString(base) <= 8 && shortName.MatchString(seg)
 }
 
 // setCache applies the site's Cache-Control unless the response already
@@ -129,7 +162,49 @@ func (h *staticHandler) serveFile(w http.ResponseWriter, r *http.Request, f stri
 		errorPage(w, h.errPages, http.StatusInternalServerError, "The file could not be read.")
 		return
 	}
+	if h.precompressed {
+		if pf, pst := h.compressedVariant(w, r, f, st); pf != nil {
+			defer pf.Close()
+			// ServeContent leaves Content-Length out when Content-Encoding
+			// is set, expecting on-the-fly compression; these bytes are final.
+			w.Header().Set("Content-Length", strconv.FormatInt(pst.Size(), 10))
+			http.ServeContent(w, r, st.Name(), st.ModTime(), pf)
+			return
+		}
+	}
 	http.ServeContent(w, r, st.Name(), st.ModTime(), file)
+}
+
+// compressedVariant opens file.br or file.gz when the client accepts that
+// encoding and the variant is not older than the file (a stale variant
+// would serve an old version). Whenever a variant exists the response
+// varies by Accept-Encoding, whichever representation this client gets.
+func (h *staticHandler) compressedVariant(w http.ResponseWriter, r *http.Request, f string, orig os.FileInfo) (*os.File, os.FileInfo) {
+	exts := map[string]string{"br": ".br", "gzip": ".gz"}
+	found := false
+	for _, ext := range exts {
+		if st, err := os.Stat(f + ext); err == nil && !st.IsDir() {
+			found = true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	addVary(w.Header(), "Accept-Encoding")
+	for _, enc := range acceptedEncodings(r.Header.Get("Accept-Encoding")) {
+		pf, err := os.Open(f + exts[enc])
+		if err != nil {
+			continue
+		}
+		st, err := pf.Stat()
+		if err != nil || st.IsDir() || st.ModTime().Before(orig.ModTime()) {
+			pf.Close()
+			continue
+		}
+		w.Header().Set("Content-Encoding", enc)
+		return pf, st
+	}
+	return nil, nil
 }
 
 func queryOf(r *http.Request) string {

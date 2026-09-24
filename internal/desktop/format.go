@@ -66,7 +66,7 @@ func StateText(s model.SiteState) string {
 
 // InstancesText is "ready/configured" for Node.js sites, "–" otherwise.
 func InstancesText(site *model.Site, st model.SiteStatus) string {
-	if site.Type != model.SiteNode || site.Node == nil {
+	if !site.RunsNode() || site.Node == nil {
 		return "–"
 	}
 	ready := 0
@@ -154,4 +154,46 @@ func SiteLevel(s model.SiteState) Level {
 		return LevelDown
 	}
 	return LevelNotInstalled
+}
+
+// TaskRunText summarizes a scheduled task's run for a list column:
+// "Succeeded 14:03 (12s)", "Failed 2026-05-01 03:00 (exit code 2)",
+// "Running since 14:03".
+func TaskRunText(r *model.TaskRun, now time.Time) string {
+	if r == nil {
+		return "Never run"
+	}
+	when := r.StartedAt.Local()
+	stamp := when.Format("2006-01-02 15:04")
+	if y, m, d := when.Date(); y == now.Local().Year() && m == now.Local().Month() && d == now.Local().Day() {
+		stamp = when.Format("15:04")
+	}
+	if r.Status == model.RunRunning {
+		return "Running since " + stamp
+	}
+	status := strings.ToUpper(r.Status[:1]) + r.Status[1:]
+	detail := ""
+	switch {
+	case r.Status == model.RunFailed && r.ExitCode != nil:
+		detail = fmt.Sprintf("exit code %d", *r.ExitCode)
+	case r.Status == model.RunFailed || r.Status == model.RunSkipped:
+		detail = r.Error
+	case r.FinishedAt != nil:
+		detail = r.FinishedAt.Sub(r.StartedAt).Round(time.Second).String()
+	}
+	if detail != "" {
+		return fmt.Sprintf("%s %s (%s)", status, stamp, detail)
+	}
+	return status + " " + stamp
+}
+
+// ScheduleText is a task's schedule for a list column.
+func ScheduleText(t model.ScheduledTask) string {
+	switch {
+	case t.Schedule == "":
+		return "On demand"
+	case !t.Enabled:
+		return t.Schedule + " (disabled)"
+	}
+	return t.Schedule
 }

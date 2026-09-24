@@ -7,6 +7,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { SitesPage } from '@/pages/sites/SitesPage';
 import { NewSitePage } from '@/pages/sites/NewSitePage';
+import { ImportSitesPage } from '@/pages/sites/ImportSitesPage';
 import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
@@ -20,24 +21,46 @@ import { EmptyState } from '@/components/Layout';
 import { Button } from '@/components/Button';
 import { usePermissions } from '@/hooks/useAuth';
 
+function NoAccess({ title, description }: { title: string; description: string }) {
+  const { siteScoped } = usePermissions();
+  return (
+    <EmptyState
+      icon={<ShieldOff />}
+      title={title}
+      description={description}
+      action={
+        <Link to="/">
+          <Button>{siteScoped ? 'Back to sites' : 'Back to dashboard'}</Button>
+        </Link>
+      }
+    />
+  );
+}
+
 function AdminOnly({ children }: { children: ReactNode }) {
   const { isAdmin, role } = usePermissions();
   if (!role) return null;
   if (!isAdmin) {
-    return (
-      <EmptyState
-        icon={<ShieldOff />}
-        title="Administrators only"
-        description="Your account does not have permission to view this page. Ask an administrator if you need access."
-        action={
-          <Link to="/">
-            <Button>Back to dashboard</Button>
-          </Link>
-        }
-      />
-    );
+    return <NoAccess title="Administrators only" description="Your account does not have permission to view this page. Ask an administrator if you need access." />;
   }
   return <>{children}</>;
+}
+
+/** Server-wide pages, which users allowed on selected sites only cannot use. */
+function ServerOnly({ children }: { children: ReactNode }) {
+  const { siteScoped, role } = usePermissions();
+  if (!role) return null;
+  if (siteScoped) {
+    return <NoAccess title="Not available" description="Your account has access to selected sites only. Server-wide pages need a server role; ask an administrator if you need access." />;
+  }
+  return <>{children}</>;
+}
+
+/** The dashboard is server-wide; site-scoped users start on their sites. */
+function Home() {
+  const { siteScoped, role } = usePermissions();
+  if (!role) return null;
+  return siteScoped ? <Navigate to="/sites" replace /> : <DashboardPage />;
 }
 
 function RouteError() {
@@ -84,13 +107,35 @@ const router = createBrowserRouter([
     ),
     errorElement: <RouteError />,
     children: [
-      { index: true, element: <DashboardPage /> },
+      { index: true, element: <Home /> },
       { path: 'sites', element: <SitesPage /> },
       { path: 'sites/new', element: <NewSitePage /> },
+      { path: 'sites/import', element: <ImportSitesPage /> },
       { path: 'sites/:id/:tab?', element: <SiteDetailPage /> },
-      { path: 'certificates', element: <CertificatesPage /> },
-      { path: 'node', element: <NodePage /> },
-      { path: 'mail/:tab?', element: <MailPage /> },
+      {
+        path: 'certificates',
+        element: (
+          <ServerOnly>
+            <CertificatesPage />
+          </ServerOnly>
+        ),
+      },
+      {
+        path: 'node',
+        element: (
+          <ServerOnly>
+            <NodePage />
+          </ServerOnly>
+        ),
+      },
+      {
+        path: 'mail/:tab?',
+        element: (
+          <ServerOnly>
+            <MailPage />
+          </ServerOnly>
+        ),
+      },
       { path: 'events', element: <EventsPage /> },
       {
         path: 'settings/:tab?',

@@ -1,7 +1,9 @@
 // Client-side mirror of the server's settings defaults (model.MailSettings.ApplyDefaults
 // and friends) so forms bind safely to settings saved by older versions.
 
-import type { MailSettings, MimeSettings, Settings } from '@/api/types';
+import type { IPBanSettings, MailSettings, MimeSettings, Settings, SSOSettings } from '@/api/types';
+import { normalizeBackup } from './backup';
+import { normalizeLogShipping } from './logShipping';
 
 export function defaultMail(): MailSettings {
   return {
@@ -52,6 +54,25 @@ export function normalizeMime(m: Partial<MimeSettings> | null | undefined): Mime
   return { types: m?.types ?? [], unknownTypes: m?.unknownTypes || 'serve' };
 }
 
+/** Single sign-on settings as the server fills them (model.SSOSettings.Normalize). */
+export function normalizeSSO(s: Partial<SSOSettings> | null | undefined): SSOSettings {
+  const v = s ?? {};
+  return {
+    enabled: !!v.enabled,
+    label: v.label ?? '',
+    issuer: v.issuer ?? '',
+    clientId: v.clientId ?? '',
+    clientSecret: v.clientSecret ?? '',
+    scopes: v.scopes ?? [],
+    usernameClaim: v.usernameClaim || 'preferred_username',
+    disablePassword: !!v.disablePassword,
+    autoCreate: !!v.autoCreate,
+    defaultRole: v.defaultRole ?? '',
+    roleClaim: v.roleClaim ?? '',
+    roleMap: (v.roleMap ?? []).map((r) => ({ ...r })),
+  };
+}
+
 /** Null slices and missing sections become empty values so the settings forms can bind. */
 export function normalizeSettings(s: Settings): Settings {
   return {
@@ -61,6 +82,39 @@ export function normalizeSettings(s: Settings): Settings {
     proxy: { ...s.proxy, trustedProxies: s.proxy?.trustedProxies ?? [] },
     mime: normalizeMime(s.mime),
     mail: normalizeMail(s.mail),
+    sso: normalizeSSO(s.sso),
+    ipBan: normalizeIPBan(s.ipBan),
+    backup: normalizeBackup(s.backup),
+    logShipping: normalizeLogShipping(s.logShipping),
+  };
+}
+
+/** Mirror of model.DefaultIPBan. */
+export function defaultIPBan(): IPBanSettings {
+  return {
+    enabled: false,
+    authFailures: { threshold: 10, windowSec: 300 },
+    notFound: { threshold: 50, windowSec: 60 },
+    rateLimited: { threshold: 30, windowSec: 60 },
+    trapPaths: ['/wp-login.php', '/xmlrpc.php', '/wp-admin', '/.env', '/.git/', '/phpmyadmin', '/pma', '/cgi-bin/', '/vendor/phpunit'],
+    banMinutes: 15,
+    maxBanMinutes: 1440,
+    allowList: [],
+    ipv6Prefix: 64,
+  };
+}
+
+export function normalizeIPBan(b: Partial<IPBanSettings> | null | undefined): IPBanSettings {
+  const d = defaultIPBan();
+  if (!b) return d;
+  return {
+    ...d,
+    ...b,
+    authFailures: { ...d.authFailures, ...b.authFailures },
+    notFound: { ...d.notFound, ...b.notFound },
+    rateLimited: { ...d.rateLimited, ...b.rateLimited },
+    trapPaths: b.trapPaths ?? [],
+    allowList: b.allowList ?? [],
   };
 }
 

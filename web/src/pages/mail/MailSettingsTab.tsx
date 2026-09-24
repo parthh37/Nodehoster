@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Code2, FileSignature, KeyRound, Lock, Send, Server, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Code2, FileSignature, Info, KeyRound, Lock, MailCheck, Send, Server, ShieldCheck } from 'lucide-react';
 import { certsApi, serverApi, settingsApi } from '@/api/endpoints';
 import { ApiError, errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -14,16 +14,15 @@ import { Checkbox, Radio, Switch } from '@/components/Switch';
 import { ListEditor, RowsEditor } from '@/components/ListEditor';
 import { SecretInput } from '@/components/SecretInput';
 import { CopyButton, CopyField } from '@/components/CopyButton';
+import { Button } from '@/components/Button';
 import { SaveBar } from '@/components/SaveBar';
 import { useToast } from '@/components/Toast';
 import { clone, jsonEqual } from '@/lib/obj';
+import { validateDomain, validatePublicIP } from '@/lib/mailHealth';
 import { nodemailerSnippet, normalizeMail, pickupPath } from '@/lib/settingsDefaults';
 import { validateIP } from '../sites/editors/RoutingEditor';
 
 type MailUpdater = (fn: (m: MailSettings) => void) => void;
-
-const DOMAIN_RE = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const validateDomain = (v: string) => (DOMAIN_RE.test(v.toLowerCase()) ? null : 'Enter a domain name, e.g. example.com');
 
 const SECURITY_PORTS: Record<string, number> = { starttls: 587, tls: 465, none: 25 };
 
@@ -68,6 +67,8 @@ export function MailSettingsTab() {
       setDraft(clone(fresh));
       setError(null);
       void qc.invalidateQueries({ queryKey: qk.mail });
+      // A deliverability report run with the old settings reruns on the next visit.
+      void qc.invalidateQueries({ queryKey: qk.mailHealthAll });
       toast.success('Mail settings saved');
     },
     onError: (e) => {
@@ -172,6 +173,14 @@ function ServerCard({ m, update }: CardProps) {
             }
           >
             <Input mono className="sm:w-80" value={m.hostname ?? ''} placeholder="mail.example.com" onChange={(e) => set({ hostname: e.target.value.trim().toLowerCase() })} />
+          </Field>
+          <Field
+            label="Public address"
+            path="mail.publicIp"
+            error={validatePublicIP(m.publicIp ?? '')}
+            hint="The address receivers see mail coming from. Leave blank to detect it; set it when this server is behind NAT."
+          >
+            <Input mono className="sm:w-80" value={m.publicIp ?? ''} placeholder="Detect automatically" onChange={(e) => set({ publicIp: e.target.value.trim() })} />
           </Field>
         </FormSection>
         <FormSection title="Pickup directory" description="Like the IIS SMTP Pickup folder: for applications that write messages to disk instead of speaking SMTP.">
@@ -310,24 +319,40 @@ function DeliveryCard({ m, update }: CardProps) {
       d.smartHost = { ...d.smartHost, ...p };
     });
   return (
-    <Card title={<span className="flex items-center gap-2"><Send className="h-4 w-4 text-zinc-400" />Delivery</span>}>
+    <Card
+      title={<span className="flex items-center gap-2"><Send className="h-4 w-4 text-zinc-400" />Delivery</span>}
+      actions={
+        <Link to="/mail/health">
+          <Button size="sm" icon={<MailCheck className="h-3.5 w-3.5" />}>
+            Check deliverability
+          </Button>
+        </Link>
+      }
+    >
       <Sections>
-        <FormSection title="Route" description="Deliver straight to each recipient's mail server, or hand everything to a relay service.">
+        <FormSection
+          title="Route"
+          description="Direct delivery is the default: the built-in SMTP server sends each message to the recipients' mail servers itself. A smart host is optional, for when you would rather relay through a mail service."
+        >
           <Field path="mail.delivery">
             <Radio
               value={m.delivery as 'direct' | 'smarthost'}
               onChange={(v) => set({ delivery: v })}
               className="flex-col"
               options={[
-                { value: 'direct', label: 'Direct', description: "Look up each recipient domain's MX records and connect to it." },
-                { value: 'smarthost', label: 'Smart host', description: 'Relay through SendGrid, Amazon SES, Microsoft 365, your ISP…' },
+                { value: 'direct', label: 'Direct (default)', description: "Look up each recipient domain's MX records and deliver to its mail server. No other service is needed." },
+                { value: 'smarthost', label: 'Smart host (optional)', description: 'Relay everything through SendGrid, Amazon SES, Microsoft 365, your ISP…' },
               ]}
             />
           </Field>
           {m.delivery === 'direct' ? (
-            <Callout tone="warning" icon={<AlertTriangle />} title="Direct delivery needs outbound port 25">
-              Many cloud and residential providers block it. For mail to reach inboxes rather than spam, the server's IP needs a reverse DNS name
-              matching the host name, and your domains need SPF and DKIM records. A smart host is usually the easier choice.
+            <Callout tone="info" icon={<Info />} title="Direct delivery needs outbound port 25">
+              Some cloud and residential providers block it. For mail to reach inboxes rather than spam, the server's public address needs a reverse DNS
+              name matching the host name, and your domains need SPF, DKIM and DMARC records.{' '}
+              <Link to="/mail/health" className="nh-link">
+                Check deliverability
+              </Link>{' '}
+              tests all of this and shows the records to publish. If port 25 is blocked, use a smart host.
             </Callout>
           ) : (
             <div className="space-y-4">

@@ -55,6 +55,7 @@ type SiteStatus struct {
 	Instances []InstanceStatus `json:"instances"`
 	Traffic   TrafficStats     `json:"traffic"`
 	Upstreams []UpstreamStatus `json:"upstreams,omitempty"`
+	Cache     *CacheStats      `json:"cache,omitempty"` // when the response cache is enabled
 }
 
 type UpstreamStatus struct {

@@ -203,8 +203,13 @@ func (a *App) resize(n int) {
 func (a *App) publish() {
 	a.mu.Lock()
 	slots := a.slots
+	worker := a.site.Type == model.SiteWorker
 	a.mu.Unlock()
 	var list []*Backend
+	if worker { // nothing is routed to a worker
+		a.backends.Store(&list)
+		return
+	}
 	for _, s := range slots {
 		s.mu.Lock()
 		for _, inst := range []*Instance{s.cur, s.next} {
@@ -439,6 +444,14 @@ func (s *slot) portLost(inst *Instance, uptime time.Duration) bool {
 // replace brings up a new instance, moves traffic to it, then retires the
 // old one. With a fixed port both cannot run at once, so the old one is
 // stopped first and the site is briefly unavailable.
+//
+// A worker is replaced the same way: the new process runs (past its settle
+// period) before the old one is asked to shut down, so a queue consumer
+// never stops consuming, and a new build that fails to start leaves the
+// old one working. The price is a few seconds with both running, which
+// consumers of a job queue (BullMQ, RabbitMQ, SQS) are built for. A
+// singleton that cannot tolerate that should be restarted instead, which
+// stops before it starts.
 func (s *slot) replace(old *Instance) (*Instance, error) {
 	a := s.app
 	site := a.config()
@@ -643,14 +656,81 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
+// nodeCommand builds the command line and environment that run a script
+// (or an npm script) of a site with the site's Node.js version and
+// variables, optionally with the agent preloaded. The caller adds its own
+// variables to the returned env and sets cmd.Env from it.
+func (m *Manager) nodeCommand(site *model.Site, rt NodeRuntime, dir, script, npmScript string, args []string, token string) (*exec.Cmd, *env, error) {
+	n := site.Node
+	var argv []string
+	argv = append(argv, n.NodeArgs...)
+	nodeOptions := ""
+	if npmScript != "" {
+		if rt.NpmCli == "" {
+			return nil, nil, fmt.Errorf("npm was not found next to %s", rt.Exe)
+		}
+		if n.AgentEnabled {
+			nodeOptions = fmt.Sprintf(`--require "%s"`, m.agentScript)
+		}
+		argv = append(argv, rt.NpmCli, "run", npmScript)
+		if len(args) > 0 {
+			argv = append(append(argv, "--"), args...)
+		}
+	} else {
+		if n.AgentEnabled {
+			argv = append(argv, "--require", m.agentScript)
+		}
+		argv = append(argv, script)
+		argv = append(argv, args...)
+	}
+
+	cmd := exec.Command(rt.Exe, argv...)
+	cmd.Dir = dir
+	e := newEnv(os.Environ())
+	e.prependPath(filepath.Dir(rt.Exe))
+	e.set("NODE_ENV", "production")
+	e.set("npm_config_update_notifier", "false")
+	e.set("npm_config_cache", filepath.Join(m.opts.SitesDir, site.ID, ".npm-cache"))
+	for _, v := range n.Env {
+		val := v.Value
+		if v.Secret {
+			val = m.opts.Unseal(val)
+		}
+		e.set(v.Name, val)
+	}
+	e.set("NODEHOSTER_SITE", site.Name)
+	e.set("NODEHOSTER_SITE_ID", site.ID)
+	if n.AgentEnabled {
+		e.set("NODEHOSTER_AGENT_PIPE", m.agent.path)
+		e.set("NODEHOSTER_AGENT_TOKEN", token)
+		if nodeOptions != "" {
+			if cur := e.get("NODE_OPTIONS"); cur != "" {
+				nodeOptions = cur + " " + nodeOptions
+			}
+			e.set("NODE_OPTIONS", nodeOptions)
+		}
+	}
+	return cmd, e, nil
+}
+
+// resolveNode finds the site's Node.js runtime.
+func (m *Manager) resolveNode(site *model.Site) (NodeRuntime, error) {
+	version := site.Node.NodeVersion
+	if version == "" {
+		version = m.opts.Settings().DefaultNodeVersion
+	}
+	return m.opts.ResolveNode(version)
+}
+
 // portRetries is how many times spawn moves an instance to another port when
 // its port was taken before the application could listen on it.
 const portRetries = 2
 
-// spawn starts one process and waits until it accepts connections. A start
-// that failed only because the port was lost is retried on a fresh port, so
-// the race between the allocator's check and the application's listen does
-// not reach restart backoff or rapid-fail protection.
+// spawn starts one process and waits until it accepts connections (a
+// worker: until it has stayed up for the settle period). A start that
+// failed only because the port was lost is retried on a fresh port, so the
+// race between the allocator's check and the application's listen does not
+// reach restart backoff or rapid-fail protection.
 func (a *App) spawn(index int) (*Instance, error) {
 	for attempt := 0; ; attempt++ {
 		inst, err := a.spawnOnce(index)
@@ -665,111 +745,90 @@ func (a *App) spawn(index int) (*Instance, error) {
 func (a *App) spawnOnce(index int) (*Instance, error) {
 	site := a.config()
 	n := site.Node
+	worker := site.Type == model.SiteWorker
 	dir := a.workDir(site)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("application folder %q does not exist", dir)
 	}
-	version := n.NodeVersion
-	if version == "" {
-		version = a.m.opts.Settings().DefaultNodeVersion
-	}
-	rt, err := a.m.opts.ResolveNode(version)
+	rt, err := a.m.resolveNode(site)
 	if err != nil {
 		return nil, err
 	}
 
+	// A worker gets no port: nothing is routed to it, and an app that
+	// happens to read PORT should not find one.
 	port := n.FixedPort
-	if n.PortMode != "fixed" {
+	if worker {
+		port = 0
+	} else if n.PortMode != "fixed" {
 		if port, err = a.m.ports.allocate(); err != nil {
 			return nil, err
 		}
 	}
+	releasePort := func() {
+		if port != 0 {
+			a.m.ports.release(port)
+		}
+	}
 
 	token := newToken()
-	var args []string
-	args = append(args, n.NodeArgs...)
-	nodeOptions := ""
+	var script, npmScript string
 	if n.NpmScript != "" {
-		if rt.NpmCli == "" {
-			a.m.ports.release(port)
-			return nil, fmt.Errorf("npm was not found next to %s", rt.Exe)
-		}
-		if n.AgentEnabled {
-			nodeOptions = fmt.Sprintf(`--require "%s"`, a.m.agentScript)
-		}
-		args = append(args, rt.NpmCli, "run", n.NpmScript)
-		if len(n.Args) > 0 {
-			args = append(append(args, "--"), n.Args...)
-		}
+		npmScript = n.NpmScript
 	} else {
-		if n.AgentEnabled {
-			args = append(args, "--require", a.m.agentScript)
-		}
-		args = append(args, n.Script)
-		args = append(args, n.Args...)
+		script = n.Script
 	}
-
-	cmd := exec.Command(rt.Exe, args...)
-	cmd.Dir = dir
-	env := newEnv(os.Environ())
-	env.prependPath(filepath.Dir(rt.Exe))
-	env.set("NODE_ENV", "production")
-	env.set("npm_config_update_notifier", "false")
-	env.set("npm_config_cache", filepath.Join(a.m.opts.SitesDir, a.id, ".npm-cache"))
-	for _, e := range n.Env {
-		v := e.Value
-		if e.Secret {
-			v = a.m.opts.Unseal(v)
-		}
-		env.set(e.Name, v)
+	cmd, env, err := a.m.nodeCommand(site, rt, dir, script, npmScript, n.Args, token)
+	if err != nil {
+		releasePort()
+		return nil, err
 	}
-	env.set("PORT", strconv.Itoa(port))
-	env.set("NODEHOSTER_SITE", site.Name)
-	env.set("NODEHOSTER_SITE_ID", site.ID)
+	if !worker {
+		env.set("PORT", strconv.Itoa(port))
+	}
 	env.set("NODEHOSTER_INSTANCE", strconv.Itoa(index))
 	env.set("NODE_APP_INSTANCE", strconv.Itoa(index)) // pm2 convention
-	if n.AgentEnabled {
-		env.set("NODEHOSTER_AGENT_PIPE", a.m.agent.path)
-		env.set("NODEHOSTER_AGENT_TOKEN", token)
-		if nodeOptions != "" {
-			if cur := env.get("NODE_OPTIONS"); cur != "" {
-				nodeOptions = cur + " " + nodeOptions
-			}
-			env.set("NODE_OPTIONS", nodeOptions)
-		}
-	}
 	cmd.Env = env.list()
 
+	// A worker has no port to lose: its output is not watched for
+	// "address in use", which would be about some other port of its own.
 	portStr, addrInUse := strconv.Itoa(port), new(atomic.Bool)
-	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr, addrInUse: addrInUse}
-	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr, addrInUse: addrInUse}
+	watch := addrInUse
+	if worker {
+		watch = nil
+	}
+	outW := &lineWriter{sink: a.logs, stream: "stdout", instance: index, port: portStr, addrInUse: watch}
+	errW := &lineWriter{sink: a.logs, stream: "stderr", instance: index, port: portStr, addrInUse: watch}
 	cmd.Stdout, cmd.Stderr = outW, errW
 	cmd.WaitDelay = 5 * time.Second // do not hang on grandchildren holding the pipes
 
 	cleanup, err := prepare(cmd, n.RunAs, a.m.opts.Unseal(n.RunAs.Password), filepath.Join(a.m.opts.SitesDir, a.id))
 	defer cleanup()
 	if err != nil {
-		a.m.ports.release(port)
+		releasePort()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		a.m.ports.release(port)
+		releasePort()
 		return nil, fmt.Errorf("start %s: %w", rt.Exe, err)
 	}
 	osp, err := afterStart(cmd.Process.Pid, n.Limits)
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
-		a.m.ports.release(port)
+		releasePort()
 		return nil, err
 	}
 
 	inst := &Instance{
 		app: a, index: index, port: port, token: token, addrInUse: addrInUse,
 		cmd: cmd, os: osp, pid: cmd.Process.Pid, startedAt: time.Now(),
-		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))},
+		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), Slot: index},
 		exited:  make(chan struct{}),
 		state:   "starting", healthy: true,
+	}
+	if worker {
+		inst.backend.Addr = ""
 	}
 	a.m.agent.register(token, inst)
 	go func() {
@@ -788,13 +847,18 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		inst.mu.Unlock()
 		close(inst.exited)
 	}()
-	a.logs.System("instance %d started: pid %d, port %d, node %s", index, inst.pid, port, rt.Version)
+	if worker {
+		a.logs.System("instance %d started: pid %d, node %s", index, inst.pid, rt.Version)
+	} else {
+		a.logs.System("instance %d started: pid %d, port %d, node %s", index, inst.pid, port, rt.Version)
+	}
 
 	if err := a.waitReady(inst, site); err != nil {
 		// Decide before retire releases the port: once it is back in the
 		// pool another instance may bind it and look like the culprit. A
-		// worker never binds its port, so only its own output counts.
-		lost := n.PortMode != "fixed" && inst.isExited() &&
+		// node site without bindings never binds its port, so only its own
+		// output counts; a worker site has no port at all.
+		lost := !worker && n.PortMode != "fixed" && inst.isExited() &&
 			(addrInUse.Load() || (!a.isWorker(site) && !portFree(port)))
 		a.retire(inst)
 		if lost {
@@ -803,17 +867,31 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		return nil, err
 	}
 	inst.setState("ready")
-	a.logs.System("instance %d ready on port %d", index, port)
+	if worker {
+		a.logs.System("instance %d running", index)
+	} else {
+		a.logs.System("instance %d ready on port %d", index, port)
+	}
 	return inst, nil
 }
 
-// waitReady waits until the instance accepts TCP connections on its port. A
-// site without bindings (a background worker) is ready once it has stayed up
-// for two seconds.
+// settlePeriod is how long a process that does not listen (a worker, or a
+// node site without bindings) must stay up to count as started. A script
+// that crashes on a bad configuration or a missing module is gone well
+// within it, so its start fails and rapid-fail protection counts it; one
+// that dies later is an ordinary crash, counted the same way.
+const settlePeriod = 2 * time.Second
+
+// waitReady waits until the instance accepts TCP connections on its port.
+// A worker site, or a node site without bindings that no other site mounts,
+// is ready once it has stayed up for the settle period.
 func (a *App) waitReady(inst *Instance, site *model.Site) error {
 	timeout := time.Duration(site.Node.StartupTimeoutSec) * time.Second
-	deadline := time.Now().Add(timeout)
 	worker := a.isWorker(site)
+	if worker && timeout < 2*settlePeriod {
+		timeout = 2 * settlePeriod
+	}
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-inst.exited:
@@ -821,7 +899,7 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 		case <-time.After(150 * time.Millisecond):
 		}
 		if worker {
-			if time.Since(inst.startedAt) > 2*time.Second {
+			if time.Since(inst.startedAt) > settlePeriod {
 				return nil
 			}
 			continue
@@ -836,9 +914,10 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 }
 
 // isWorker reports whether a site runs in the background without serving
-// HTTP, so its instances need not listen on their port.
+// HTTP, so its instances need not listen on their port: a worker site, or a
+// node site without bindings that no other site mounts.
 func (a *App) isWorker(site *model.Site) bool {
-	return len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID)
+	return site.Type == model.SiteWorker || (len(site.Bindings) == 0 && !a.m.opts.IsLocationTarget(site.ID))
 }
 
 // ---- environment

@@ -35,13 +35,21 @@ const (
 	UpstreamDown    = "upstream.down"
 	UpstreamUp      = "upstream.up"
 	ServerStarted   = "server.started"
-	MailFailed      = "mail.failed" // a message could not be delivered
-	MailError       = "mail.error"  // the SMTP server cannot listen
+	MailFailed      = "mail.failed"  // a message could not be delivered
+	MailError       = "mail.error"   // the SMTP server cannot listen
+	TaskFailed      = "task.failed"  // a scheduled task exited with an error or could not start
+	TaskTimeout     = "task.timeout" // a scheduled task ran past its timeout and was killed
+	BackupCompleted = "backup.completed"
+	BackupFailed    = "backup.failed" // no destination, or some, received the archive
 )
+
+// SecurityBanned: automatic IP banning banned an address (or an
+// administrator did).
+const SecurityBanned = "security.banned"
 
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
-	MailFailed, MailError}
+	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed}
 
 type Bus struct {
 	store    *store.Store
@@ -52,6 +60,10 @@ type Bus struct {
 
 	mu   sync.Mutex
 	subs map[chan model.Event]struct{}
+
+	// OnEmit, set once before use, sees every event (log shipping). It
+	// must not block.
+	OnEmit func(model.Event)
 }
 
 func New(st *store.Store, log *slog.Logger, settings func() model.Settings, siteName func(string) string) *Bus {
@@ -95,6 +107,9 @@ func (b *Bus) Emit(level, typ, siteID, msg string) {
 	}
 	b.mu.Unlock()
 
+	if b.OnEmit != nil {
+		b.OnEmit(e)
+	}
 	go b.deliver(e)
 }
 

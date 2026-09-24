@@ -10,7 +10,7 @@ IIS Manager, with a status icon in the notification area.
 ## Features
 
 **Sites & bindings**
-- Site types: **Node.js application**, **reverse proxy**, **static site**, **redirect**
+- Site types: **Node.js application**, **background worker** (a Node.js process without HTTP), **reverse proxy**, **static site**, **redirect**
 - IIS bindings: protocol, IP address (or all unassigned), port, host name; wildcard host names
 - IIS precedence: specific IP › all addresses, exact host › `*.wildcard` › empty host
 - SNI: any number of HTTPS sites on one IP:port, each with its own certificate
@@ -30,27 +30,34 @@ IIS Manager, with a status icon in the notification area.
 - **Run as user** (application pool identity) via `LogonUser`
 - Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish
 - Per-instance CPU, memory, heap, event-loop lag, requests; stdout/stderr captured to rotating logs with live tail
+- **Background workers**: queue consumers (BullMQ…), bots and long-running scripts supervised like web apps (no port; running once up for 2 s; rapid-fail protection, recycling, Job Objects, secrets, logs and metrics included)
+- **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 
 **Reverse proxy & request pipeline**
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
 - Upstream load balancing: round-robin (weighted), least connections, IP hash, random; active and passive health checks
-- HTTPS redirect, HSTS, gzip compression, request body limit, upstream timeout
+- **Session affinity** like ARR's client affinity: a signed, opaque cookie keeps each client on its instance, server or upstream (works behind CDNs/NAT, survives zero-downtime recycles, WebSockets included); moved and re-issued when the backend goes down
+- HTTPS redirect, HSTS, **Brotli and gzip compression** (negotiated by q-value, pre-compressed `.br`/`.gz` static files), request body limit, upstream timeout
+- **Response cache** like IIS output caching: in memory per site, following Cache-Control/Expires/Vary, query string and header variants, request coalescing, LRU by memory, `X-Cache` header, purge from the console
 - **URL Rewrite** like the IIS module: ordered rules with conditions (headers, query string, server variables, file/directory exists), match all/any, negation, `{R:1}` / `{C:1}` back-references, rewrite maps and `{ToLower:…}`-style functions; rewrite, redirect, block, custom response
 - Rewrite to an absolute URL proxies the request there (like URL Rewrite with ARR); **outbound rules** rewrite response headers (`Location`), URLs in HTML tags or any text in a body
 - **Import** rules from an IIS `web.config` or an Apache `.htaccess` (mod_rewrite, `Redirect`, `RedirectMatch`); what cannot be converted is listed
 - **MIME types** like IIS: a built-in table (the Windows registry is never consulted, so `.js` is never served as `text/plain`), server-wide and per-site mappings, and unknown extensions either served as `application/octet-stream` or refused with 404
 - Request/response header rules, **IP & domain restrictions** (CIDR allow/deny)
 - Basic authentication, per-client **rate limiting**
+- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
 
-**SMTP server (send-only, like the IIS 6 SMTP virtual server)**
+**SMTP server (built in, send-only)**
+- NodeHoster's own SMTP server, part of `nodehoster.exe`: no Windows or IIS SMTP service is needed
 - Applications send through `127.0.0.1:25` (nodemailer, `System.Net.Mail`…) or drop `.eml` files in a **pickup folder**
 - Connection and relay restrictions by IP/CIDR, optional SMTP authentication (PLAIN/LOGIN, bcrypt-hashed users), STARTTLS with a certificate from the store, allowed sender domains, size and recipient limits
-- Delivery **directly** to the recipients' mail servers (MX lookup, opportunistic TLS) or through a **smart host** (SendGrid, Amazon SES, Microsoft 365…) with STARTTLS/TLS and a password
+- Delivers **directly** to the recipients' mail servers (MX lookup, opportunistic TLS) by default; a **smart host** (SendGrid, Amazon SES, Microsoft 365…) is optional
 - **DKIM signing** per domain: keys generated for you, with the DNS record to publish
+- **Deliverability check**: SPF (fully evaluated against this server's address), DKIM (published key matches), DMARC, MX, reverse DNS, HELO host name, outbound port 25 and IP/domain blacklists, with the exact DNS record to publish for each problem
 - On-disk queue that survives restarts, retries with back-off until the message expires, undeliverable mail kept for inspection; queue view with retry, delete and download; notifications for failed mail
 - Never accepts mail for local mailboxes: it is a relay for your applications, not a mail server
 
@@ -65,15 +72,22 @@ IIS Manager, with a status icon in the notification area.
 - Install/build commands, shared paths (`.env`, `uploads`) persisted across releases
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
+- **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
 
 **Administration**
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
 - **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
 - Web console (React) with live status over Server-Sent Events
+- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
+- **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
+- **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
+- **Log shipping** to syslog (RFC 5424 over UDP, TCP or TLS), Seq (CLEF) or any HTTP collector (JSON or NDJSON batches): server log, sites' output and access logs, events and audit log, per-site filters; bounded queues that drop the oldest records rather than ever slowing a site, retries with back-off, delivery counters
+- **Log search** across current and rotated (also gzipped) log files: text or regular expressions, stream and time range, newest first
 - Backup & restore of the whole configuration
+- **Scheduled backups** to a folder or network share, S3-compatible storage (AWS, R2, B2, MinIO, Wasabi), Azure Blob Storage or SFTP (host key verified): configuration, certificates and keys, optionally the sites' shared folders; retention per destination; optional passphrase encryption (AES-256-GCM) that makes an archive restorable on a replacement server; restore from a file or straight from a destination
 
 ## Install
 
@@ -128,7 +142,8 @@ and audit logs; the right pane has the actions for what is selected:
 start/stop/restart/recycle a site, edit its bindings, environment and basic
 settings, browse it, follow its log live, roll back a release, reset a web
 console user's password or two-factor authentication, change where the web
-console listens, back up the configuration, and start or stop the service.
+console listens, back up to a file, run a scheduled backup now and see its
+history, restore from a backup, and start or stop the service.
 
 It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
 opens to elevated Administrators: there is no NodeHoster login, and nothing
@@ -148,9 +163,59 @@ about crashes, rapid-fail protection, failed deployments and certificates.
 ```
 nodehoster run                     run in the foreground
 nodehoster service install|uninstall|start|stop|status
-nodehoster reset-password [user]   recover access
+nodehoster reset-password [user]   recover access (also turns password sign-in back on
+                                   if single sign-on turned it off)
 nodehoster version
 nodehoster --data D:\NodeHoster run   use another data directory
+```
+
+Like `appcmd.exe` for IIS, `nodehoster` also manages the running service,
+over the same local admin pipe as NodeHoster Manager (so from an elevated
+prompt, with no password). `<site>` is a site's name or ID:
+
+```
+nodehoster site list | show <site> | start|stop|restart|recycle <site>
+nodehoster deploy <site> --zip app.zip       upload a release, showing the log until it finishes
+nodehoster deploy <site> --git [--branch x]  deploy from the site's repository
+nodehoster releases <site>                   deployments; * marks the active release
+nodehoster rollback <site> [<release-id>]    default: the previous successful release
+nodehoster logs <site> [-n 100] [-f] [--access]
+nodehoster events [-n 50] [--site x]
+nodehoster task list <site>                  scheduled tasks, next run, last result
+nodehoster task run <site> <task> [--no-wait]  run now, showing its output until it ends
+nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
+nodehoster cert list | cert renew <id|name|domain>
+nodehoster backup <file>                     .zip: the full archive (encrypted with the backup
+                                             passphrase, if set); any other name: the configuration (JSON)
+nodehoster backup run | backup history [-n 10]  back up to the destinations now; recent backups
+nodehoster restore <file> [--yes] [--passphrase-file <file>]
+```
+
+`backup run` and `backup history` are commands: to save a backup in a file
+named `run` or `history`, give a path (`nodehoster backup .\run`). An
+encrypted archive's passphrase is read from `--passphrase-file` (its first
+line) or the `NODEHOSTER_BACKUP_PASSPHRASE` environment variable, never
+from the command line, which other users can see in the process list.
+
+`--json` prints the API's JSON instead of tables (while following, one JSON
+object per line; a deployment's or task run's log goes to stderr). Exit
+codes: 0 done, 1 failed (the service refused, a deployment, task run or
+backup failed, it is not running or access was denied), 2 wrong usage.
+`nodehoster <command> --help` lists a command's flags.
+
+**PowerShell**: setup installs the `NodeHoster` module for Windows
+PowerShell 5.1 and PowerShell 7, which wraps these commands and returns
+objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
+[-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
+`Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
+`Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
+`Start-NHBackup`. They take site names from the pipeline:
+
+```powershell
+Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
+Publish-NHSite shop -ZipPath .\build\shop.zip
+Get-NHLog shop -Tail 50 | Where-Object Stream -eq 'stderr'
+Get-Help Publish-NHSite -Examples
 ```
 
 ## Hosting a Node.js app
@@ -166,6 +231,27 @@ nodehoster --data D:\NodeHoster run   use another data directory
 Environment set for every instance: `PORT`, `NODE_ENV=production` (unless
 overridden), `NODEHOSTER_SITE`, `NODEHOSTER_INSTANCE`, `NODE_APP_INSTANCE`.
 
+A process that does not serve HTTP (a BullMQ consumer, a Discord bot) is a
+**Background worker** site instead: no bindings and no `PORT`; it counts as
+running once it has stayed up for 2 seconds. Recurring jobs (a nightly
+report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
+site: each run starts the script in the site's current release with its
+Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
+deployment during a run does not delete the release it runs in.
+
+### Migrating from IIS/iisnode or PM2
+
+**Sites → Import sites** in the web console (or **Import from IIS…** on
+the Sites page of NodeHoster Manager, which reads this server's IIS) proposes
+a site per IIS site, iisnode application or PM2 app, with notes on what was
+converted, approximated or left out. Nothing is created until you confirm;
+imported sites are created stopped. IIS is not changed: stop its sites
+before starting the NodeHoster ones, as both cannot listen on the same port.
+HTTPS bindings get Let's Encrypt certificates (IIS certificates stay in the
+Windows store; import the PFX to reuse one), and application pool passwords
+are never imported. PM2 ecosystem files are read, never run: if yours
+computes values, import `pm2 jlist > apps.json` instead.
+
 ## Data directory
 
 `C:\ProgramData\NodeHoster`
@@ -178,7 +264,15 @@ overridden), `NODEHOSTER_SITE`, `NODEHOSTER_INSTANCE`, `NODE_APP_INSTANCE`.
 | `certs\` | certificates and keys |
 | `node\` | installed Node.js versions |
 | `sites\<id>\releases\` | deployed releases; `shared\` persisted files |
-| `logs\` | server log; `logs\sites\<id>\` app and access logs |
+| `logs\` | server log; `logs\sites\<id>\` app and access logs, `tasks\` scheduled task runs |
+| `tmp\` | work files, including archives while a backup or restore runs |
+
+`master.key` cannot be copied to another machine, so a copy of this folder
+does not carry the secrets to a new server. Use **Settings → Backups** with a
+passphrase instead: the archive holds the configuration, certificates and
+(optionally) shared folders, and restores on any NodeHoster server. Releases
+and Node.js versions are not backed up: redeploy after restoring. A backup
+without a passphrase restores on this machine only.
 
 Only SYSTEM and Administrators can open the data directory. At every start
 the server gives it a protected DACL, so it does not inherit the read access
@@ -213,7 +307,8 @@ go test ./...
 go run ./cmd/nodehoster --data ./.devdata run
 ```
 
-The UI dev server (`cd web && npm run dev`) proxies API calls to
+The Go code builds without the web build too (the console is then a page
+saying how to build it). The UI dev server (`cd web && npm run dev`) proxies API calls to
 `https://localhost:8484`. NodeHoster Manager is Windows-only
 (`GOOS=windows go build ./cmd/nodehoster-manager` cross-compiles it); its
 manifest and icon are committed `.syso` files, regenerated with

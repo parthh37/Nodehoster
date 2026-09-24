@@ -1,7 +1,7 @@
 // Server-Sent Events helpers. EventSource reconnects automatically; the
 // helpers only add typed parsing and a single close function.
 
-import type { Deployment, LogLine, LogType, NHEvent, SiteStatus } from './types';
+import type { Deployment, LogLine, LogType, NHEvent, SiteStatus, TaskRun } from './types';
 
 export interface StreamHandle {
   close(): void;
@@ -120,6 +120,34 @@ export function openDeploymentLogStream(
       done: (d) => {
         handle?.close();
         h.onDone(parse<Deployment>(d));
+      },
+    },
+    h,
+  );
+  return handle;
+}
+
+/**
+ * Task run log stream: `log` (a chunk of raw output; the first one is
+ * everything written so far, so a reconnect starts over) and `done`
+ * (TaskRun, sent at once for a finished run).
+ */
+export function openRunLogStream(
+  siteId: string,
+  runId: string,
+  h: { onChunk: (text: string) => void; onDone: (r: TaskRun | undefined) => void } & StreamOptions,
+): StreamHandle {
+  let handle: StreamHandle | null = null;
+  handle = open(
+    `/api/sites/${encodeURIComponent(siteId)}/runs/${encodeURIComponent(runId)}/log/stream`,
+    {
+      log: (d) => {
+        const v = d.startsWith('"') ? parse<string>(d) : undefined;
+        h.onChunk(v ?? d);
+      },
+      done: (d) => {
+        handle?.close();
+        h.onDone(parse<TaskRun>(d));
       },
     },
     h,

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Boxes, Plus, Search } from 'lucide-react';
+import { Boxes, Import, Plus, Search } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -15,7 +15,7 @@ import { Table, TableMessage, TBody, Td, Th, THead, Tr } from '@/components/Tabl
 import { SiteTypeBadge, StateBadge } from '@/components/StatusBadges';
 import { ErrorBox } from '@/components/Field';
 import { formatNumber } from '@/lib/format';
-import { SITE_TYPES } from '@/lib/siteDefaults';
+import { runsNode, SITE_TYPES } from '@/lib/siteDefaults';
 import { BindingList, SiteRowActions } from './shared';
 
 export function SitesPage() {
@@ -53,11 +53,16 @@ export function SitesPage() {
         description="Each site is a set of bindings plus what answers the requests arriving on them."
         actions={
           isAdmin && (
-            <Link to="/sites/new">
-              <Button variant="primary" icon={<Plus className="h-4 w-4" />}>
-                New site
-              </Button>
-            </Link>
+            <>
+              <Link to="/sites/import">
+                <Button icon={<Import className="h-4 w-4" />}>Import sites</Button>
+              </Link>
+              <Link to="/sites/new">
+                <Button variant="primary" icon={<Plus className="h-4 w-4" />}>
+                  New site
+                </Button>
+              </Link>
+            </>
           )
         }
       />
@@ -73,7 +78,7 @@ export function SitesPage() {
             title="No sites yet"
             description={
               isAdmin
-                ? 'Create a site to run a Node.js app, proxy to another server, serve static files or redirect a domain. You will pick bindings (host name and port) in the wizard.'
+                ? 'Create a site to run a Node.js app or background worker, proxy to another server, serve static files or redirect a domain. You will pick bindings (host name and port) in the wizard.'
                 : 'No sites have been configured. An administrator can create one.'
             }
             action={
@@ -151,12 +156,18 @@ export function SitesPage() {
                     </div>
                   </Td>
                   <Td>
-                    <BindingList bindings={site.bindings} />
+                    {site.type === 'worker' ? (
+                      <span className="text-xs text-zinc-400" title="Background workers are not reachable over HTTP">
+                        —
+                      </span>
+                    ) : (
+                      <BindingList bindings={site.bindings} />
+                    )}
                   </Td>
                   <Td className="text-right tabular">
                     <Instances site={site} status={status} />
                   </Td>
-                  <Td className="text-right tabular">{status && status.state !== 'stopped' ? formatNumber(status.traffic?.rps ?? 0, 1) : <span className="text-zinc-400">—</span>}</Td>
+                  <Td className="text-right tabular">{site.type !== 'worker' && status && status.state !== 'stopped' ? formatNumber(status.traffic?.rps ?? 0, 1) : <span className="text-zinc-400">—</span>}</Td>
                   <Td>
                     <SiteRowActions site={site} state={status?.state} />
                   </Td>
@@ -171,7 +182,7 @@ export function SitesPage() {
 }
 
 function Instances({ site, status }: { site: SiteView; status: SiteView['status'] | undefined }) {
-  if (site.type !== 'node') return <span className="text-zinc-400">—</span>;
+  if (!runsNode(site.type)) return <span className="text-zinc-400">—</span>;
   const inst = status?.instances ?? [];
   const ready = inst.filter((i) => i.state === 'ready').length;
   const total = Math.max(inst.length, site.node?.instances ?? 1);

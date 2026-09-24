@@ -57,7 +57,7 @@ func (s *Site) ApplyDefaults() {
 		}
 	}
 	switch s.Type {
-	case SiteNode:
+	case SiteNode, SiteWorker:
 		if s.Node == nil {
 			s.Node = &NodeConfig{}
 		}
@@ -131,14 +131,30 @@ func (s *Site) ApplyDefaults() {
 	if s.Routing.BasicAuth.Realm == "" {
 		s.Routing.BasicAuth.Realm = "Restricted"
 	}
+	if strings.TrimSpace(s.Routing.Affinity.CookieName) == "" {
+		s.Routing.Affinity.CookieName = DefaultAffinityCookie
+	}
+	cache := &s.Routing.Cache
+	if cache.MaxMemoryMB <= 0 {
+		cache.MaxMemoryMB = 64
+	}
+	if cache.MaxObjectKB <= 0 {
+		cache.MaxObjectKB = 1024
+	}
+	if cache.VaryByQuery == "" {
+		cache.VaryByQuery = "all"
+	}
 	if s.Routing.RateLimit.Enabled && s.Routing.RateLimit.Burst <= 0 {
 		s.Routing.RateLimit.Burst = int(s.Routing.RateLimit.RequestsPerSecond*2) + 1
 	}
 	if s.Deploy.KeepReleases <= 0 {
 		s.Deploy.KeepReleases = 5
 	}
-	if s.Deploy.InstallCommand == "" && s.Type == SiteNode {
+	if s.Deploy.InstallCommand == "" && s.RunsNode() {
 		s.Deploy.InstallCommand = "npm ci --omit=dev"
+	}
+	for i := range s.Tasks {
+		s.Tasks[i].applyDefaults()
 	}
 }
 
@@ -164,9 +180,14 @@ func (s *Site) Validate() error {
 		return verr("name", "must be 1-64 characters: letters, digits, space, '.', '_' or '-'")
 	}
 	switch s.Type {
-	case SiteNode, SiteProxy, SiteStatic, SiteRedirect:
+	case SiteNode, SiteProxy, SiteStatic, SiteRedirect, SiteWorker:
 	default:
 		return verr("type", "unknown site type %q", s.Type)
+	}
+	if s.Type == SiteWorker {
+		if err := s.validateWorker(); err != nil {
+			return err
+		}
 	}
 	seen := map[string]bool{}
 	for i, b := range s.Bindings {
@@ -204,7 +225,7 @@ func (s *Site) Validate() error {
 		seen[k] = true
 	}
 	switch s.Type {
-	case SiteNode:
+	case SiteNode, SiteWorker:
 		n := s.Node
 		if strings.TrimSpace(n.AppRoot) == "" && s.ActiveRelease == "" {
 			return verr("node.appRoot", "application path is required")
@@ -296,6 +317,12 @@ func (s *Site) Validate() error {
 			return verr("redirect.statusCode", "must be 301, 302, 303, 307 or 308")
 		}
 	}
+	if len(s.Tasks) > 0 && !s.RunsNode() {
+		return verr("tasks", "scheduled tasks need a Node.js application or background worker site")
+	}
+	if err := validateTasks(s.Tasks); err != nil {
+		return err
+	}
 	r := s.Routing
 	if err := r.ValidateRewrites(); err != nil {
 		return err
@@ -346,8 +373,109 @@ func (s *Site) Validate() error {
 	if r.BasicAuth.Enabled && len(r.BasicAuth.Users) == 0 {
 		return verr("routing.basicAuth.users", "add at least one user")
 	}
+	if err := r.Cache.validate(); err != nil {
+		return err
+	}
+	if !cookieNameRe.MatchString(r.Affinity.CookieName) {
+		return verr("routing.affinity.cookieName", "use 1-64 letters, digits or !#$%%&'*+-.^_`|~")
+	}
+	if r.Affinity.LifetimeSec < 0 || r.Affinity.LifetimeSec > maxCookieLifetime {
+		return verr("routing.affinity.lifetimeSec", "must be between 0 (browser session) and %d seconds (400 days)", maxCookieLifetime)
+	}
 	return nil
 }
+
+func (c CacheConfig) validate() error {
+	if c.MaxMemoryMB < 1 || c.MaxMemoryMB > 16384 {
+		return verr("routing.cache.maxMemoryMB", "must be between 1 and 16384 MB")
+	}
+	if c.MaxObjectKB < 1 || c.MaxObjectKB > c.MaxMemoryMB*1024 {
+		return verr("routing.cache.maxObjectKB", "must be between 1 KB and the cache size")
+	}
+	if c.DefaultTTLSec < 0 || c.DefaultTTLSec > 31536000 {
+		return verr("routing.cache.defaultTtlSec", "must be between 0 and 31536000 seconds (a year)")
+	}
+	switch c.VaryByQuery {
+	case "all", "none":
+	case "listed":
+		if len(c.QueryParams) == 0 {
+			return verr("routing.cache.queryParams", "list the query string parameters that select a different response")
+		}
+	default:
+		return verr("routing.cache.varyByQuery", "must be all, none or listed")
+	}
+	for i, p := range c.QueryParams {
+		if strings.TrimSpace(p) == "" {
+			return verr(fmt.Sprintf("routing.cache.queryParams[%d]", i), "enter a parameter name")
+		}
+	}
+	for i, h := range c.VaryHeaders {
+		if !cookieNameRe.MatchString(h) {
+			return verr(fmt.Sprintf("routing.cache.varyHeaders[%d]", i), "%q is not a header name", h)
+		}
+	}
+	for i, p := range c.BypassPaths {
+		if !strings.HasPrefix(p, "/") {
+			return verr(fmt.Sprintf("routing.cache.bypassPaths[%d]", i), "must start with /")
+		}
+	}
+	return nil
+}
+
+// validateWorker refuses what only makes sense for a site that serves
+// HTTP: a worker has no bindings, no port and nothing to route, so these
+// settings would silently do nothing.
+func (s *Site) validateWorker() error {
+	if len(s.Bindings) > 0 {
+		return verr("bindings", "a background worker does not serve HTTP and has no bindings; use a Node.js application site for that")
+	}
+	if n := s.Node; n != nil {
+		switch {
+		case n.PortMode == "fixed":
+			return verr("node.portMode", "a background worker gets no port")
+		case n.HealthCheck.Enabled:
+			return verr("node.healthCheck.enabled", "health checks send HTTP requests; a background worker has none")
+		case n.LoadBalancer.Enabled:
+			return verr("node.loadBalancer.enabled", "a background worker receives no requests to balance")
+		case n.Recycle.MaxRequests > 0:
+			return verr("node.recycle.maxRequests", "a background worker receives no requests")
+		}
+	}
+	r := s.Routing
+	for _, c := range []struct {
+		set   bool
+		field string
+	}{
+		{r.HTTPSRedirect, "routing.httpsRedirect"},
+		{r.HSTS.Enabled, "routing.hsts"},
+		{len(r.Locations) > 0, "routing.locations"},
+		{len(r.Rewrites) > 0, "routing.rewrites"},
+		{len(r.OutboundRules) > 0, "routing.outboundRules"},
+		{len(r.RewriteMaps) > 0, "routing.rewriteMaps"},
+		{len(r.RequestHeaders) > 0, "routing.requestHeaders"},
+		{len(r.ResponseHeaders) > 0, "routing.responseHeaders"},
+		{len(r.MimeTypes) > 0, "routing.mimeTypes"},
+		{len(r.IP.Allow)+len(r.IP.Deny) > 0, "routing.ip"},
+		{r.BasicAuth.Enabled, "routing.basicAuth"},
+		{r.RateLimit.Enabled, "routing.rateLimit"},
+		{r.Maintenance.Enabled, "routing.maintenance"},
+		{len(r.ErrorPages) > 0, "routing.errorPages"},
+		{r.Affinity.Enabled, "routing.affinity"},
+		{r.Cache.Enabled, "routing.cache"},
+	} {
+		if c.set {
+			return verr(c.field, "a background worker does not serve HTTP; remove this routing setting")
+		}
+	}
+	return nil
+}
+
+// cookieNameRe is an RFC 6265 cookie name (an RFC 7230 token), which is
+// also what a header name is.
+var cookieNameRe = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+
+// Browsers cap cookie lifetimes at 400 days.
+const maxCookieLifetime = 400 * 24 * 3600
 
 func validStrategy(s string) bool {
 	switch s {
@@ -463,6 +591,9 @@ func DefaultSettings() Settings {
 		CertExpiryWarnDays: 14,
 		Mime:               MimeSettings{Types: []MimeMap{}, UnknownTypes: UnknownMimeServe},
 		Mail:               defaultMail(),
+		IPBan:              DefaultIPBan(),
+		Backup:             DefaultBackup(),
+		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 	}
 }
 

@@ -40,7 +40,7 @@ export function StateBadge({ state, title }: { state: SiteState | string | undef
   );
 }
 
-const typeTone: Record<string, Tone> = { node: 'green', proxy: 'blue', static: 'violet', redirect: 'gray' };
+const typeTone: Record<string, Tone> = { node: 'green', worker: 'accent', proxy: 'blue', static: 'violet', redirect: 'gray' };
 
 export function SiteTypeBadge({ type }: { type: string }) {
   return <Badge tone={typeTone[type] ?? 'gray'}>{siteTypeLabel(type)}</Badge>;
@@ -57,9 +57,10 @@ export function LevelBadge({ level }: { level: string }) {
 
 export function RoleBadge({ role }: { role: string }) {
   const tone: Tone = role === 'admin' ? 'accent' : role === 'operator' ? 'blue' : 'gray';
+  // "sites": allowed on selected sites only, with a role per site.
   return (
-    <Badge tone={tone} className="capitalize">
-      {role}
+    <Badge tone={tone} className={role === 'sites' ? undefined : 'capitalize'}>
+      {role === 'sites' ? 'Selected sites' : role}
     </Badge>
   );
 }

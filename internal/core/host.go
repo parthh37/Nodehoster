@@ -80,37 +80,66 @@ func (c *Core) Backup(ctx context.Context) ([]byte, error) {
 // Restore replaces settings and sites from a backup. Existing sites with
 // the same id are overwritten; others are kept.
 func (c *Core) Restore(ctx context.Context, data []byte) error {
+	_, err := c.restoreConfig(ctx, data, nil)
+	return err
+}
+
+// restoreConfig is Restore. Certificates in withFiles had their files
+// restored and keep their record as backed up; other certificates the
+// server does not have become pending (ACME ones are re-issued, others
+// must be imported again).
+func (c *Core) restoreConfig(ctx context.Context, data []byte, withFiles map[string]bool) (*Backup, error) {
 	var b Backup
 	if err := json.Unmarshal(data, &b); err != nil {
-		return fmt.Errorf("not a NodeHoster backup: %w", err)
+		return nil, fmt.Errorf("not a NodeHoster backup: %w", err)
 	}
 	if b.Sites == nil && b.Settings.PortRangeStart == 0 {
-		return fmt.Errorf("not a NodeHoster backup")
+		return nil, fmt.Errorf("not a NodeHoster backup")
 	}
 	b.Settings.Mail.ApplyDefaults() // a backup from before the SMTP server existed
 	if b.Settings.Mime.UnknownTypes == "" {
 		b.Settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
+	b.Settings.IPBan.ApplyDefaults()
+	// A backup from before scheduled backups existed keeps this server's
+	// backup schedule and destinations, rather than switching them off.
+	var probe struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if json.Unmarshal(data, &probe) == nil {
+		if _, ok := probe.Settings["backup"]; !ok {
+			b.Settings.Backup = c.Settings().Backup
+		}
+		if _, ok := probe.Settings["logShipping"]; !ok {
+			b.Settings.LogShipping = c.Settings().LogShipping
+		}
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, b.Settings); err != nil {
-		return err
+		return nil, err
 	}
 	c.settingsMu.Lock()
 	c.settings = b.Settings
 	c.settingsMu.Unlock()
+	c.applyBans()
 	c.sitesMu.Lock()
 	for _, s := range b.Sites {
 		s.ApplyDefaults()
 		if err := c.Store.PutSite(ctx, s); err != nil {
 			c.sitesMu.Unlock()
-			return fmt.Errorf("restore site %s: %w", s.Name, err)
+			return nil, fmt.Errorf("restore site %s: %w", s.Name, err)
 		}
 		c.cacheMu.Lock()
 		c.sites[s.ID] = s
 		c.cacheMu.Unlock()
 		c.Procs.Apply(s)
+		c.Tasks.Apply(s)
 	}
 	c.sitesMu.Unlock()
 	for _, cert := range b.Certificates {
+		if withFiles[cert.ID] {
+			c.Store.PutCertificate(ctx, cert)
+			continue
+		}
 		if _, err := c.Store.GetCertificate(ctx, cert.ID); err != nil {
 			// Metadata only; ACME certificates are re-issued, others must be re-imported.
 			cert.Status = "pending"
@@ -119,5 +148,6 @@ func (c *Core) Restore(ctx context.Context, data []byte) error {
 	}
 	c.reload()
 	c.Mail.Apply(c.Settings().Mail)
-	return nil
+	c.applyLogShipping(c.Settings().LogShipping)
+	return &b, nil
 }

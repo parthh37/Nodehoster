@@ -1,5 +1,6 @@
-// Package mail is NodeHoster's SMTP virtual server: a send-only relay in
-// the style of the IIS 6 SMTP service. Applications submit mail over SMTP
+// Package mail is NodeHoster's own SMTP server, a send-only relay built
+// into the service (no Windows SMTP service is involved); its settings
+// follow the IIS 6 SMTP virtual server's. Applications submit mail over SMTP
 // (usually to 127.0.0.1:25, no password needed) or drop .eml files in the
 // pickup folder. Messages are spooled on disk, optionally DKIM-signed, and
 // delivered directly to the recipients' mail servers or through a smart
@@ -39,12 +40,17 @@ type Options struct {
 	Cert     func(id string) *tls.Certificate                         // STARTTLS certificate from the store
 	Resolver Resolver                                                 // nil = the system resolver
 	Dial     func(ctx context.Context, addr string) (net.Conn, error) // nil = TCP; tests override it
+	LocalIP  func() net.IP                                            // nil = the interface that reaches the internet; tests override it
 }
 
-// Resolver finds mail servers; *net.Resolver is one.
+// Resolver answers the DNS questions of delivery and the deliverability
+// checks; *net.Resolver is one.
 type Resolver interface {
 	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
 	LookupHost(ctx context.Context, host string) ([]string, error)
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+	LookupAddr(ctx context.Context, addr string) ([]string, error)
 }
 
 const workers = 4

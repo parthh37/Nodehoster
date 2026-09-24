@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { ClipboardPaste, EyeOff, Lock, Plus, Search, Trash2, Unlock } from 'lucide-react';
 import type { EnvVar } from '@/api/types';
 import { SECRET } from '@/api/types';
@@ -16,14 +16,48 @@ import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './types';
 
 export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
-  const env = site.node?.env ?? [];
+  return (
+    <EnvVarsEditor
+      env={site.node?.env ?? []}
+      onChange={(next) =>
+        update((d) => {
+          d.node!.env = next;
+        })
+      }
+      path="node.env"
+      readOnly={readOnly}
+      portAssigned={site.type === 'node'}
+    />
+  );
+}
+
+/**
+ * Edits a list of environment variables with secrets and .env import: a
+ * site's variables, or the extra ones of a scheduled task.
+ */
+export function EnvVarsEditor({
+  env,
+  onChange: setEnv,
+  path,
+  readOnly,
+  portAssigned,
+  emptyDescription,
+  importable = true,
+}: {
+  env: EnvVar[];
+  onChange: (next: EnvVar[]) => void;
+  /** Server field path of the list, e.g. "node.env". */
+  path: string;
+  readOnly?: boolean;
+  /** NodeHoster sets PORT for these processes (node sites, not workers or tasks). */
+  portAssigned?: boolean;
+  emptyDescription?: ReactNode;
+  /** Offer "Paste .env" (off inside another dialog: Escape would close both). */
+  importable?: boolean;
+}) {
   const [filter, setFilter] = useState('');
   const [importing, setImporting] = useState(false);
 
-  const setEnv = (next: EnvVar[]) =>
-    update((d) => {
-      d.node!.env = next;
-    });
   const setVar = (i: number, patch: Partial<EnvVar>) => setEnv(env.map((e, j) => (j === i ? { ...e, ...patch } : e)));
 
   const dupes = useMemo(() => {
@@ -50,9 +84,11 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
         </span>
         {!readOnly && (
           <div className="ml-auto flex gap-2">
-            <Button size="sm" icon={<ClipboardPaste className="h-3.5 w-3.5" />} onClick={() => setImporting(true)}>
-              Paste .env
-            </Button>
+            {importable && (
+              <Button size="sm" icon={<ClipboardPaste className="h-3.5 w-3.5" />} onClick={() => setImporting(true)}>
+                Paste .env
+              </Button>
+            )}
             <Button size="sm" variant="primary" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setEnv([...env, { name: '', value: '', secret: false }])}>
               Add variable
             </Button>
@@ -67,17 +103,21 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
             icon={<Lock />}
             title="No environment variables"
             description={
-              <>
-                Variables are passed to every instance. <span className="font-mono">PORT</span> is set automatically. Mark API keys and
-                passwords as secret so they are encrypted at rest and never shown again.
-              </>
+              emptyDescription ?? (
+                <>
+                  Variables are passed to every instance.{portAssigned && <> <span className="font-mono">PORT</span> is set automatically.</>} Mark API
+                  keys and passwords as secret so they are encrypted at rest and never shown again.
+                </>
+              )
             }
             action={
               !readOnly && (
                 <>
-                  <Button icon={<ClipboardPaste className="h-4 w-4" />} onClick={() => setImporting(true)}>
-                    Paste a .env file
-                  </Button>
+                  {importable && (
+                    <Button icon={<ClipboardPaste className="h-4 w-4" />} onClick={() => setImporting(true)}>
+                      Paste a .env file
+                    </Button>
+                  )}
                   <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setEnv([{ name: '', value: '', secret: false }])}>
                     Add variable
                   </Button>
@@ -98,7 +138,8 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
             {visible.map(({ e, i }) => (
               <EnvRow
                 key={i}
-                index={i}
+                path={`${path}[${i}]`}
+                portAssigned={portAssigned}
                 v={e}
                 dupe={dupes.has(e.name) && !!e.name}
                 readOnly={readOnly}
@@ -110,7 +151,7 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
           </div>
         </div>
       )}
-      <PathError path="node.env" />
+      <PathError path={path} />
       <ImportDialog
         open={importing}
         onClose={() => setImporting(false)}
@@ -125,27 +166,30 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
 }
 
 function EnvRow({
-  index,
+  path,
+  portAssigned,
   v,
   dupe,
   readOnly,
   onChange,
   onRemove,
 }: {
-  index: number;
+  /** Server field path of the variable, e.g. "node.env[2]". */
+  path: string;
+  portAssigned?: boolean;
   v: EnvVar;
   dupe: boolean;
   readOnly?: boolean;
   onChange: (p: Partial<EnvVar>) => void;
   onRemove: () => void;
 }) {
-  const nameErr = useFieldError(`node.env[${index}].name`);
-  const rowErr = useFieldError(`node.env[${index}]`, false);
-  const valueErr = useFieldError(`node.env[${index}].value`);
+  const nameErr = useFieldError(`${path}.name`);
+  const rowErr = useFieldError(path, false);
+  const valueErr = useFieldError(`${path}.value`);
   const clientNameErr =
     v.name && !ENV_NAME_RE.test(v.name) ? 'Letters, digits and _; cannot start with a digit' : dupe ? 'Duplicate name' : null;
   const err = nameErr || clientNameErr || rowErr || valueErr;
-  const reserved = v.name.toUpperCase() === 'PORT';
+  const reserved = !!portAssigned && v.name.toUpperCase() === 'PORT';
   const isStoredSecret = v.value === SECRET;
 
   return (

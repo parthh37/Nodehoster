@@ -8,6 +8,9 @@ export const qk = {
   site: (id: string) => ['sites', id] as const,
   siteMetrics: (id: string, minutes: number) => ['sites', id, 'metrics', minutes] as const,
   deployments: (id: string) => ['sites', id, 'deployments'] as const,
+  siteTasks: (id: string) => ['sites', id, 'tasks'] as const,
+  siteRuns: (id: string) => ['sites', id, 'runs'] as const,
+  taskRuns: (id: string, task: string, limit: number) => ['sites', id, 'runs', task, limit] as const,
   certs: ['certificates'] as const,
   nodeVersions: ['node', 'versions'] as const,
   nodeAvailable: ['node', 'available'] as const,
@@ -19,5 +22,16 @@ export const qk = {
   mail: ['mail'] as const,
   mailStatus: ['mail', 'status'] as const,
   mailQueue: (state: string) => ['mail', 'queue', state] as const,
+  // Not under ['mail']: queue actions invalidate that prefix, and the checks
+  // take up to half a minute, so they only rerun when asked for.
+  mailHealthAll: ['mail-health'] as const,
+  mailHealth: (domains: string[]) => ['mail-health', ...domains] as const,
   mimeDefaults: ['mime', 'defaults'] as const,
+  authMethods: ['auth', 'methods'] as const,
+  ssoCallbackUrl: ['settings', 'sso', 'callback-url'] as const,
+  bans: ['bans'] as const,
+  backups: ['backups'] as const,
+  backupFiles: (destId: string) => ['backups', 'files', destId] as const,
+  backupSharedSizes: ['backups', 'shared-sizes'] as const,
+  logShippingStatus: ['logshipping', 'status'] as const,
 };

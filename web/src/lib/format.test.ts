@@ -11,6 +11,7 @@ import {
   formatMs,
   formatNumber,
   formatPercent,
+  formatSpan,
   formatTime,
   formatUptime,
   parseDate,
@@ -289,5 +290,25 @@ describe('durationBetween', () => {
   it('measures up to now when the end is missing or zero', () => {
     expect(durationBetween(iso(-75), null, NOW)).toBe('1m 15s');
     expect(durationBetween(iso(-75), '0001-01-01T00:00:00Z', NOW)).toBe('1m 15s');
+  });
+});
+
+describe('formatSpan', () => {
+  it.each(MISSING)('renders %s as a dash', (v) => expect(formatSpan(v)).toBe('—'));
+
+  it('spells out every non-zero unit', () => {
+    expect(formatSpan(0)).toBe('0 seconds');
+    expect(formatSpan(1)).toBe('1 second');
+    expect(formatSpan(45)).toBe('45 seconds');
+    expect(formatSpan(60)).toBe('1 minute');
+    expect(formatSpan(5400)).toBe('1 hour 30 minutes');
+    expect(formatSpan(3600)).toBe('1 hour');
+    expect(formatSpan(604800)).toBe('7 days');
+    expect(formatSpan(90061)).toBe('1 day 1 hour 1 minute 1 second');
+  });
+
+  it('floors fractions and clamps negatives', () => {
+    expect(formatSpan(59.9)).toBe('59 seconds');
+    expect(formatSpan(-5)).toBe('0 seconds');
   });
 });

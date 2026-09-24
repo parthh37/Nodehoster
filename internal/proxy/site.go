@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/gzhttp"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/rewrite"
@@ -64,6 +63,8 @@ type siteRuntime struct {
 	pool      *upstreamPool
 	rr        atomic.Uint64
 	access    *lumberjack.Logger
+	affinity  *affinityRuntime // nil = no session affinity
+	cache     *responseCache   // nil = no response cache
 }
 
 func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
@@ -107,6 +108,9 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			break
 		}
 	}
+	if a := r.Affinity; a.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
+		rt.affinity = newAffinity(s.affinityKey(), site.ID, a.CookieName, a.LifetimeSec)
+	}
 
 	timeout := time.Duration(r.TimeoutSec) * time.Second
 	insecure := (site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify) ||
@@ -124,7 +128,7 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 				loc.handler = rt.urlProxy(u)
 			}
 		case "static":
-			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages, types: rt.types}
+			loc.handler = &staticHandler{root: l.Root, index: []string{"index.html", "index.htm", "default.htm"}, errPages: r.ErrorPages, types: rt.types, precompressed: r.Compression}
 		}
 		rt.locations = append(rt.locations, loc)
 	}
@@ -143,21 +147,23 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			cfg := poolConfig{
 				upstreams: lb.Servers, strategy: lb.Strategy, hc: lb.HealthCheck, insecure: lb.InsecureSkipVerify,
 				localWeight: lb.LocalWeight,
-				localReady:  func() bool { return len(s.deps.Procs.Backends(id)) > 0 },
-				localCount:  func() int { return len(s.deps.Procs.Backends(id)) },
+				localReady:  func() bool { return len(s.backends(id)) > 0 },
+				localCount:  func() int { return len(s.backends(id)) },
 			}
 			rt.pool = newUpstreamPool(site, cfg, s.deps.Bus, prevPool)
+			rt.pool.setAffinity(rt.affinity)
 			rt.core = rt.upstreamHandler(rt.core)
 		}
 	case model.SiteProxy:
 		rt.pool = newUpstreamPool(site, proxyPoolConfig(site), s.deps.Bus, prevPool)
+		rt.pool.setAffinity(rt.affinity)
 		rt.core = rt.upstreamHandler(nil)
 	case model.SiteStatic:
 		root := site.ResolveRoot(s.deps.SitesDir, site.Static.Root)
 		rt.core = &staticHandler{
 			root: root, index: site.Static.IndexFiles, spa: site.Static.SPAFallback,
 			browse: site.Static.DirectoryBrowsing, cache: site.Static.CacheControl, errPages: r.ErrorPages,
-			types: rt.types,
+			types: rt.types, precompressed: r.Compression,
 		}
 	case model.SiteRedirect:
 		rt.core = rt.redirectHandler()
@@ -173,19 +179,26 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 			finish()
 		})
 	}
-	if r.Compression {
-		gz, err := gzhttp.NewWrapper(gzhttp.ExceptContentTypes([]string{"text/event-stream"}))
-		if err == nil {
-			inner := rt.dispatch
-			wrapped := gz(inner)
-			rt.dispatch = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if req.Header.Get("Upgrade") != "" {
-					inner.ServeHTTP(w, req) // never wrap WebSocket upgrades
-					return
-				}
-				wrapped.ServeHTTP(w, req)
-			})
+	// The cache stores what the site produced, uncompressed, and hits are
+	// compressed on the way out like misses: one entry serves every client
+	// whatever it accepts, at the cost of compressing again per hit (cheap
+	// at the dynamic Brotli level).
+	// Static sites are not cached: their files are already served from the
+	// disk cache, with pre-compressed variants the cache would bypass.
+	if r.Cache.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
+		if prev != nil && prev.site == site && prev.cache != nil {
+			rt.cache = prev.cache // same configuration: keep what is cached
+		} else {
+			affName := ""
+			if rt.affinity != nil {
+				affName = rt.affinity.name
+			}
+			rt.cache = newResponseCache(r.Cache, r.Compression, affName)
 		}
+		rt.dispatch = rt.cache.handler(rt.dispatch)
+	}
+	if r.Compression {
+		rt.dispatch = compressHandler(rt.dispatch)
 	}
 	if r.AccessLog {
 		if prev != nil && prev.access != nil {
@@ -233,12 +246,26 @@ func newTransport(insecure bool, responseTimeout time.Duration) *http.Transport 
 
 // ---- request pipeline
 
+// untrustedForwarded are removed from requests that did not come through a
+// trusted proxy.
+var untrustedForwarded = []string{"X-Forwarded-Prefix", "X-Forwarded-Port", "X-Forwarded-Server",
+	"X-Forwarded-Ssl", "X-Forwarded-Scheme"}
+
 func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	site := rt.site
 	ro := site.Routing
 	clientIP := rt.srv.clientIP(r)
 	ctx := context.WithValue(r.Context(), ctxClientIP, clientIP)
 	r = r.WithContext(ctx)
+	if !rt.srv.trustsForwarded(r) {
+		// The forwarding headers the proxy does not set itself (it replaces
+		// X-Forwarded-For/-Host/-Proto) are believed only from trusted
+		// proxies: applications build links from them, and a response built
+		// for a client's made-up prefix would be cached for everyone.
+		for _, h := range untrustedForwarded {
+			r.Header.Del(h)
+		}
+	}
 
 	// HTTPS redirect.
 	if ro.HTTPSRedirect && r.TLS == nil && rt.httpsPort != 0 {
@@ -443,7 +470,7 @@ func (rt *siteRuntime) forwardHeaders(pr *httputil.ProxyRequest) {
 	clientIP, _ := in.Context().Value(ctxClientIP).(string)
 	prior := ""
 	if rt.srv.trustsForwarded(in) {
-		prior = in.Header.Get("X-Forwarded-For")
+		prior = forwardedFor(in)
 	}
 	if prior != "" {
 		pr.Out.Header.Set("X-Forwarded-For", prior+", "+remoteIP(in))
@@ -487,14 +514,16 @@ func (rt *siteRuntime) nodeHandler() http.Handler {
 			pr.Out.Host = pr.In.Host // applications see the public host name
 			rt.forwardHeaders(pr)
 		},
-		Transport:     rt.transport,
-		FlushInterval: -1, // stream responses (SSE, long polling) immediately
-		ErrorHandler:  rt.errorHandler,
-		ErrorLog:      rt.srv.stdLog,
+		Transport:      rt.transport,
+		FlushInterval:  -1, // stream responses (SSE, long polling) immediately
+		ErrorHandler:   rt.errorHandler,
+		ErrorLog:       rt.srv.stdLog,
+		ModifyResponse: modifyAffinity,
 	}
 	id := rt.site.ID
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b := pickBackend(rt.srv.deps.Procs.Backends(id), &rt.rr)
+		aff, r := rt.affinityState(r)
+		b := pickBackendIn(rt.srv.backends(id), &rt.rr, aff.pinnedSlot())
 		if b == nil {
 			msg := "The application is not running."
 			if st, ok := rt.srv.deps.Procs.Status(id); ok && (st.State == model.StateStarting || st.State == model.StateDegraded) {
@@ -503,6 +532,10 @@ func (rt *siteRuntime) nodeHandler() http.Handler {
 			}
 			errorPage(w, rt.site.Routing.ErrorPages, http.StatusServiceUnavailable, msg)
 			return
+		}
+		if aff != nil {
+			aff.chosen, aff.member, aff.slot = true, aff.a.localID, b.Slot
+			aff.multi = aff.multi || rt.site.Node.Instances > 1
 		}
 		b.Active.Add(1)
 		b.Requests.Add(1)
@@ -548,18 +581,30 @@ func (rt *siteRuntime) upstreamHandler(local http.Handler) http.Handler {
 			}
 			rt.errorHandler(w, r, err)
 		},
-		ErrorLog: rt.srv.stdLog,
+		ErrorLog:       rt.srv.stdLog,
+		ModifyResponse: modifyAffinity,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if local != nil && r.Header.Get(hopHeader) != "" {
 			local.ServeHTTP(w, r)
 			return
 		}
-		clientIP, _ := r.Context().Value(ctxClientIP).(string)
-		u := pool.pick(clientIP)
+		aff, r := rt.affinityState(r)
+		var u *upstream
+		if id, ok := aff.pinned(); ok {
+			u = pool.pinned(id)
+		}
+		if u == nil {
+			clientIP, _ := r.Context().Value(ctxClientIP).(string)
+			u = pool.pick(clientIP)
+		}
 		if u == nil {
 			errorPage(w, rt.site.Routing.ErrorPages, http.StatusBadGateway, "No upstream server is configured.")
 			return
+		}
+		if aff != nil {
+			aff.chosen, aff.member, aff.slot = true, u.affID, noSlot
+			aff.multi = len(pool.list) > 1
 		}
 		u.active.Add(1)
 		defer u.active.Add(-1)
