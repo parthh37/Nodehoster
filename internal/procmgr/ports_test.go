@@ -158,6 +158,11 @@ func TestMentionsAddrInUse(t *testing.T) {
 		{"Error: listen EADDRINUSE: address already in use :::9090", false},
 		{"Error: listen EADDRINUSE: address already in use :::4100 and :::41000", true},
 		{"server listening on :41000", false},
+		{"ERROR:    [Errno 98] error while attempting to bind on address ('127.0.0.1', 41000): address already in use", true},
+		{"ERROR:    [WinError 10048] error while attempting to bind on address ('127.0.0.1', 41000): only one usage of each socket address (protocol/network address/port) is normally permitted", true},
+		{"System.IO.IOException: Failed to bind to address http://127.0.0.1:41000: address already in use.", true},
+		{"System.IO.IOException: Failed to bind to address http://127.0.0.1:5000: address already in use.", false},
+		{"OSError: [Errno 98] Address already in use (pid 141000)", false},
 	} {
 		if got := mentionsAddrInUse(tc.line, "41000"); got != tc.want {
 			t.Errorf("mentionsAddrInUse(%q) = %v, want %v", tc.line, got, tc.want)

@@ -750,13 +750,10 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("application folder %q does not exist", dir)
 	}
-	rt, err := a.m.resolveNode(site)
-	if err != nil {
-		return nil, err
-	}
 
 	// A worker gets no port: nothing is routed to it, and an app that
 	// happens to read PORT should not find one.
+	var err error
 	port := n.FixedPort
 	if worker {
 		port = 0
@@ -772,16 +769,13 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 
 	token := newToken()
-	var script, npmScript string
-	if n.NpmScript != "" {
-		npmScript = n.NpmScript
-	} else {
-		script = n.Script
-	}
-	cmd, env, err := a.m.nodeCommand(site, rt, dir, script, npmScript, n.Args, token)
+	cmd, env, rt, err := a.m.processCommand(site, dir, instanceEntry(n), token, port)
 	if err != nil {
 		releasePort()
 		return nil, err
+	}
+	if rt.note != "" {
+		a.logs.System("instance %d: %s", index, rt.note)
 	}
 	if !worker {
 		env.set("PORT", strconv.Itoa(port))
@@ -810,7 +804,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 	if err := cmd.Start(); err != nil {
 		releasePort()
-		return nil, fmt.Errorf("start %s: %w", rt.Exe, err)
+		return nil, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	osp, err := afterStart(cmd.Process.Pid, n.Limits)
 	if err != nil {
@@ -826,6 +820,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), Slot: index},
 		exited:  make(chan struct{}),
 		state:   "starting", healthy: true,
+		runtime: rt.runtime, runtimeVersion: rt.version, console: rt.console,
 	}
 	if worker {
 		inst.backend.Addr = ""
@@ -848,9 +843,9 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		close(inst.exited)
 	}()
 	if worker {
-		a.logs.System("instance %d started: pid %d, node %s", index, inst.pid, rt.Version)
+		a.logs.System("instance %d started: pid %d, %s", index, inst.pid, rt.label())
 	} else {
-		a.logs.System("instance %d started: pid %d, port %d, node %s", index, inst.pid, port, rt.Version)
+		a.logs.System("instance %d started: pid %d, port %d, %s", index, inst.pid, port, rt.label())
 	}
 
 	if err := a.waitReady(inst, site); err != nil {
@@ -910,7 +905,7 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("did not start listening on port %d within %s; the application must listen on process.env.PORT", inst.port, timeout)
+	return fmt.Errorf("did not start listening on port %d within %s; %s", inst.port, timeout, listenHint(site.Node))
 }
 
 // isWorker reports whether a site runs in the background without serving

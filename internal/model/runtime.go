@@ -34,6 +34,12 @@ type InstanceStatus struct {
 	HeapTotalBytes uint64  `json:"heapTotalBytes,omitempty"`
 	EventLoopLagMs float64 `json:"eventLoopLagMs,omitempty"`
 	NodeVersion    string  `json:"nodeVersion,omitempty"`
+
+	// The runtime that started the process and its version, for every
+	// runtime (the interpreter or host resolved when it started).
+	Runtime        string `json:"runtime,omitempty"`
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	Agent          bool   `json:"agent,omitempty"` // an agent reports heap and event-loop lag (Node.js, Bun)
 }
 
 type TrafficStats struct {

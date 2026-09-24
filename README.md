@@ -10,7 +10,7 @@ IIS Manager, with a status icon in the notification area.
 ## Features
 
 **Sites & bindings**
-- Site types: **Node.js application**, **background worker** (a Node.js process without HTTP), **reverse proxy**, **static site**, **redirect**
+- Site types: **application** (Node.js, Bun, Deno, Python, .NET or a custom command), **background worker** (the same without HTTP), **reverse proxy**, **static site**, **redirect**
 - IIS bindings: protocol, IP address (or all unassigned), port, host name; wildcard host names
 - IIS precedence: specific IP › all addresses, exact host › `*.wildcard` › empty host
 - SNI: any number of HTTPS sites on one IP:port, each with its own certificate
@@ -28,11 +28,13 @@ IIS Manager, with a status icon in the notification area.
 - The service itself restarts on failure (Windows service recovery), and auto-start sites come back with it
 - **Windows Job Objects**: every process tree is killed with its site — no orphaned `node.exe`, even if NodeHoster crashes; optional hard CPU % and memory caps
 - **Run as user** (application pool identity) via `LogonUser`
-- Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish
-- Per-instance CPU, memory, heap, event-loop lag, requests; stdout/stderr captured to rotating logs with live tail
+- Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish; other runtimes get a console Ctrl+Break, which ASP.NET Core, uvicorn and Hypercorn shut down gracefully on
+- Per-instance CPU, memory and requests for every runtime, heap and event-loop lag where the agent runs (Node.js, Bun); stdout/stderr captured to rotating logs with live tail
 - **Background workers**: queue consumers (BullMQ…), bots and long-running scripts supervised like web apps (no port; running once up for 2 s; rapid-fail protection, recycling, Job Objects, secrets, logs and metrics included)
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
+- **Other runtimes** under the same process manager, like IIS hosting more than ASP.NET: **Bun**, **Deno**, **Python** (a script, `python -m` a module, or an ASGI/WSGI app on uvicorn, Hypercorn or Waitress), **.NET** (ASP.NET Core on Kestrel: `dotnet app.dll` or a self-contained `.exe`, like the ASP.NET Core Module's out-of-process hosting) and any **custom command** that listens on `PORT`. Instances, restarts, rapid-fail protection, recycling, Job Objects, run-as identity, secrets, logs, CPU/memory, deployments and scheduled tasks work the same for all of them — see [Runtimes](#runtimes)
+- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 verified), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, PATH, standard folders) and picked per site
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 
 **Reverse proxy & request pipeline**
@@ -247,8 +249,12 @@ nodehoster restore <file> [--yes] [--passphrase-file <file>]
 nodehoster update                            installed and newest version, automatic update settings
 nodehoster update check | update install [--yes]
 nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
-nodehoster deps                              Node.js and Git: installed or missing (exit code 1 if missing)
-nodehoster deps install [node] [git]         install what is missing (setup runs this)
+nodehoster deps                              Node.js, Git and the runtimes sites use: installed or missing
+                                             (exit code 1 if missing)
+nodehoster deps install [node] [git] [bun] [deno]  install what is missing (setup runs this for node and git)
+nodehoster runtime list                      Bun and Deno versions, Python interpreters, .NET runtimes
+nodehoster runtime install bun|deno [version] [--default]  default: the newest release
+nodehoster runtime remove bun|deno <version>
 ```
 
 `backup run` and `backup history` are commands: to save a backup in a file
@@ -269,7 +275,8 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
 `Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Start-NHBackup`, `Get-NHRuntime`, `Install-NHRuntime bun|deno [-Version]
+[-Default]`. They take site names from the pipeline:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -281,7 +288,7 @@ Get-Help Publish-NHSite -Examples
 ## Hosting a Node.js app
 
 1. **Node.js** page → install an LTS version (or use the `node` on PATH).
-2. **Sites → New site → Node.js application**: app folder, entry script
+2. **Sites → New site → Application**, runtime Node.js: app folder, entry script
    (`server.js`) or an npm script (`start`), instances.
 3. Add bindings, e.g. `http *:80 app.example.com` and `https *:443 app.example.com`
    with certificate **Auto (Let's Encrypt)**. DNS must point at the server and
@@ -298,6 +305,62 @@ report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
 site: each run starts the script in the site's current release with its
 Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
 deployment during a run does not delete the release it runs in.
+
+## Runtimes
+
+An application or background worker site runs with one runtime, chosen in
+the new-site wizard or the site's settings (`node.runtime` in the API; the
+configuration object keeps the name `node` whatever the runtime, and a site
+saved before runtimes existed is Node.js). Everything about supervising the
+processes is the same for all of them; what differs is how they start:
+
+| Runtime | Starts | Version |
+|---|---|---|
+| **Node.js** | `node <script>` or `npm run <script>` | installed on the Node.js page, pinned per site |
+| **Bun** | `bun <script>` or `bun run <script>` | installed on the Runtimes page (or `bun` on PATH), pinned per site |
+| **Deno** | `deno run <flags> <script>` or `deno task <name>` | installed on the Runtimes page (or `deno` on PATH), pinned per site |
+| **Python** | `python <script>`, `python -m <module>`, or `python -m uvicorn\|hypercorn\|waitress <module:app>` | an interpreter found on the server: a version (`3.12`) or a `python.exe` |
+| **.NET** | `dotnet <app.dll>` or `<app.exe>` (self-contained) | the `dotnet.exe` found on the server; the app's runtimeconfig picks the framework |
+| **Custom command** | any program with its arguments | — |
+
+- **Deno** grants a program nothing it is not told to: the consoles start a
+  Deno site with `--allow-net --allow-env --allow-read` (edit them under
+  Arguments); a task in `deno.json` sets its own.
+- **Port**: every instance gets `PORT`. .NET sites also get
+  `ASPNETCORE_URLS=http://127.0.0.1:<port>` (a site variable cannot move
+  it; `ASPNETCORE_ENVIRONMENT` passes through as the site sets it), and the
+  Python servers are started with `127.0.0.1` and the port. An instance is
+  ready once it listens on its port, as for Node.js.
+- **Stopping**: Node.js and Bun (entry scripts) stop through the agent.
+  The others get a console **Ctrl+Break** (Windows has no SIGTERM; `SIGTERM`
+  elsewhere): ASP.NET Core's generic host, uvicorn and Hypercorn shut down
+  gracefully on it, Deno and Bun run their `SIGBREAK` listeners, and
+  anything still running after the shutdown timeout is killed with its Job
+  Object.
+- **Metrics**: CPU and memory of the whole process tree for every runtime;
+  heap and event-loop lag only where the agent reports them (Node.js, and
+  Bun's heap), so the consoles show those columns only then.
+- **Deployments** run the runtime's install command in each new release:
+  `npm ci --omit=dev`, `bun install --production`, `deno install` (into the
+  site's own `DENO_DIR`, which its processes use too), or for Python
+  `python -m pip install -r requirements.txt` inside a **virtual
+  environment created in the release** (`.venv` by default; one that came
+  with the upload is replaced). A virtual environment per release means a
+  rollback gets the packages it was deployed with and a running release is
+  never changed under it; pip's download cache is shared by the site's
+  releases, like npm's. .NET has no install step; set the build command to
+  `dotnet publish -c Release -o publish` and the application to
+  `publish\MyApp.dll`, or deploy a ready-built app. A step is skipped when
+  the release has nothing for it (`package.json`, `deno.json`,
+  `requirements.txt`/`pyproject.toml`).
+- **Scheduled tasks** and **background workers** run with the site's
+  runtime: a Python site's task is `python <script>` in its virtual
+  environment; package scripts are for Node.js, Bun and Deno.
+- **Python and .NET are not installed by NodeHoster**: install Python for
+  all users from python.org (the service cannot see per-user installs) and
+  the ASP.NET Core Hosting Bundle from dotnet.microsoft.com; the Runtimes
+  page shows what was found and links there when nothing was.
+  `nodehoster deps` lists every runtime a site uses as required.
 
 ### Migrating from IIS/iisnode or PM2
 
@@ -403,6 +466,7 @@ internal/proxy        listeners, binding match, request pipeline, load balancing
 internal/certs        ACME (lego), import/export, renewal
 internal/deploy       zip/git deployments and releases
 internal/nodeversions Node.js runtime installer
+internal/runtimes     Bun/Deno installer, Python and .NET detection
 internal/deps         Git lookup and MinGit installer (nodehoster deps)
 internal/api          REST API (docs/API.md) and embedded web UI
 internal/localapi     local pipes for the desktop programs (client; server in localserver)

@@ -33,6 +33,7 @@ type agentMsg struct {
 	Token     string  `json:"token,omitempty"`
 	PID       int     `json:"pid,omitempty"`
 	Node      string  `json:"node,omitempty"`
+	Bun       string  `json:"bun,omitempty"` // Bun's version when the agent runs under Bun
 	Port      int     `json:"port,omitempty"`
 	HeapUsed  uint64  `json:"heapUsed,omitempty"`
 	HeapTotal uint64  `json:"heapTotal,omitempty"`

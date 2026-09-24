@@ -81,20 +81,28 @@ func (e *portLostError) Error() string {
 
 func (e *portLostError) Unwrap() error { return e.err }
 
-// mentionsAddrInUse reports whether an output line is Node's report that
-// listening on port failed, such as
-// "Error: listen EADDRINUSE: address already in use :::41000".
+// mentionsAddrInUse reports whether an output line is an application's
+// report that listening on port failed: Node's and Bun's EADDRINUSE
+// ("Error: listen EADDRINUSE: address already in use :::41000"), Python's
+// and Kestrel's "address already in use" ("... on address ('127.0.0.1',
+// 41000): address already in use", "Failed to bind to address
+// http://127.0.0.1:41000: address already in use") and Windows' WSAEADDRINUSE
+// text ("only one usage of each socket address"). The port must appear as a
+// number of its own.
 func mentionsAddrInUse(line, port string) bool {
-	if !strings.Contains(line, "EADDRINUSE") {
+	lower := strings.ToLower(line)
+	if !strings.Contains(line, "EADDRINUSE") && !strings.Contains(lower, "address already in use") &&
+		!strings.Contains(lower, "only one usage of each socket address") {
 		return false
 	}
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
 	for rest := line; ; {
-		i := strings.Index(rest, ":"+port)
+		i := strings.Index(rest, port)
 		if i < 0 {
 			return false
 		}
-		end := i + 1 + len(port)
-		if end == len(rest) || rest[end] < '0' || rest[end] > '9' {
+		end := i + len(port)
+		if (i == 0 || !digit(rest[i-1])) && (end == len(rest) || !digit(rest[end])) {
 			return true
 		}
 		rest = rest[end:]

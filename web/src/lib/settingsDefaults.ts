@@ -88,6 +88,7 @@ export function normalizeSettings(s: Settings): Settings {
     backup: normalizeBackup(s.backup),
     logShipping: normalizeLogShipping(s.logShipping),
     updates: normalizeUpdates(s.updates),
+    runtimes: { ...s.runtimes },
   };
 }
 

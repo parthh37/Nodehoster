@@ -101,6 +101,7 @@ type Settings struct {
 	Backup             BackupSettings      `json:"backup"`
 	LogShipping        LogShippingSettings `json:"logShipping"`
 	Updates            UpdateSettings      `json:"updates"`
+	Runtimes           RuntimeDefaults     `json:"runtimes"` // Bun, Deno, Python and .NET defaults
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

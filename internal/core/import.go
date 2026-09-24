@@ -219,6 +219,11 @@ func (c *Core) addTask(ctx context.Context, siteID string, t model.ScheduledTask
 	if !existing.RunsNode() {
 		return nil, &model.ValidationError{Field: "taskSite", Message: fmt.Sprintf("%q is not a Node.js or background worker site", existing.Name)}
 	}
+	// Imported tasks are Node.js scripts (PM2 apps): a site runs its tasks
+	// with its own runtime, which must be able to run them.
+	if rt := existing.Node.RuntimeName(); rt != model.RuntimeNode && rt != model.RuntimeBun {
+		return nil, &model.ValidationError{Field: "taskSite", Message: fmt.Sprintf("%q runs %s, and this task is a Node.js script", existing.Name, model.RuntimeLabel(rt))}
+	}
 	s := Masked(existing) // masked secrets keep their stored values
 	t.ID = ""
 	s.Tasks = append(s.Tasks, t)

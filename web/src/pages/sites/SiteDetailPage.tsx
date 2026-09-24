@@ -279,7 +279,7 @@ function SettingsTab(props: SiteEditorProps & { view: SiteView }) {
       </Card>
 
       {runsNode(site.type) && site.node && (
-        <Card title={site.type === 'worker' ? 'Background worker' : 'Node.js application'}>
+        <Card title={site.type === 'worker' ? 'Background worker' : 'Application'}>
           <Sections>
             <FormSection title="Application" description="Where the app lives and how it starts.">
               <NodeEssentials {...props} withInstances={false} />

@@ -37,7 +37,7 @@ describe('SITE_TYPES / siteTypeLabel', () => {
   });
 
   it('returns the label for known types and the raw value otherwise', () => {
-    expect(siteTypeLabel('node')).toBe('Node.js app');
+    expect(siteTypeLabel('node')).toBe('Application');
     expect(siteTypeLabel('redirect')).toBe('Redirect');
     expect(siteTypeLabel('worker')).toBe('Background worker');
     expect(siteTypeLabel('ftp')).toBe('ftp');

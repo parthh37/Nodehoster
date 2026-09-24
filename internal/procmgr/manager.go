@@ -39,6 +39,11 @@ type Options struct {
 	// ResolveNode maps a version ("" = system) to an installed runtime.
 	ResolveNode func(version string) (NodeRuntime, error)
 	Unseal      func(string) string
+	// ResolveRuntime maps a runtime other than Node.js (bun, deno, python,
+	// dotnet) and a site's version ("" = the server default) to the
+	// executable that runs it. Optional: without it those sites cannot
+	// start (custom commands need none).
+	ResolveRuntime func(runtime, version string) (RuntimeExe, error)
 	// IsLocationTarget reports whether another site mounts this one as a
 	// location, which means it serves HTTP even without bindings.
 	IsLocationTarget func(siteID string) bool

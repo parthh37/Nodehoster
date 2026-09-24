@@ -30,6 +30,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/localapi/localserver"
 	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -71,6 +72,13 @@ func main() {
 	flag.Usage = func() { fmt.Fprintf(os.Stderr, usage, config.Version, cli.Usage(), config.DefaultDataDir()) }
 	flag.Parse()
 	args := flag.Args()
+
+	// Sends a console Ctrl+Break to a hosted process that has no agent
+	// (not listed; the process manager starts it to stop Python, .NET,
+	// Deno... gracefully on Windows).
+	if len(args) > 0 && args[0] == procmgr.CtrlBreakCommand {
+		os.Exit(procmgr.RunCtrlBreak(args[1:]))
+	}
 
 	if service.IsService() {
 		err := service.Run(func(stop <-chan struct{}) error { return run(*dataDir, stop, true) })

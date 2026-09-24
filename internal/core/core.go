@@ -32,6 +32,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/proxy"
 	"github.com/parthh37/nodehoster/internal/rewrite"
+	"github.com/parthh37/nodehoster/internal/runtimes"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/tasks"
@@ -53,6 +54,7 @@ type Core struct {
 	Proxy     *proxy.Server
 	Certs     *certs.Manager
 	Nodes     *nodeversions.Manager
+	Runtimes  *runtimes.Manager // Bun, Deno, Python and .NET
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
 	Bans      *ipban.Manager
@@ -128,6 +130,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	}
 	c.Auth = auth.New(st, box)
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
+	c.openRuntimes()
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
 	if err := c.Certs.Load(ctx); err != nil {
 		return nil, fmt.Errorf("load certificates: %w", err)
@@ -136,6 +139,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		Log: log, Bus: c.Bus,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
+		ResolveRuntime:   c.resolveRuntime,
 		IsLocationTarget: c.isLocationTarget,
 		OnLog: func(siteID string, l model.LogLine) {
 			if c.Ship.Wants(model.LogSourceApp) {
@@ -167,7 +171,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
+		ResolveNode: c.Nodes.Resolve, ResolveRuntime: c.resolveRuntime, Activate: c.activateRelease, InUse: c.Tasks.Releases,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
 	})
 
@@ -324,6 +328,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	}
 	in.Updates.ApplyDefaults()
 	if err := in.Updates.Validate(); err != nil {
+		return cur, err
+	}
+	in.Runtimes.ApplyDefaults()
+	if err := in.Runtimes.Validate(); err != nil {
 		return cur, err
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {

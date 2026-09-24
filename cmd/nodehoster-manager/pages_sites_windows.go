@@ -356,7 +356,7 @@ func (s *sitesPage) redraw(m *manager) {
 		s.states[i] = st.Status.State
 		s.attention[i] = desktop.SiteNeedsAttention(desktop.SummaryOf(st))
 		rows[i] = []string{
-			st.Name, desktop.StateText(st.Status.State), desktop.SiteTypeText(st.Type), desktop.BindingsText(st.Bindings),
+			st.Name, desktop.StateText(st.Status.State), desktop.SiteKindText(st.Site), desktop.BindingsText(st.Bindings),
 			desktop.InstancesText(st.Site, st.Status), usage[0], usage[1], fmt.Sprintf("%.1f", st.Status.Traffic.RPS),
 		}
 	}
@@ -856,24 +856,16 @@ func (s *sitePage) redraw(m *manager) {
 		props = append(props, p(desktop.IconInfo, "Message", msg))
 	}
 	props = append(props,
-		p(desktop.SiteTypeIcon(string(st.Type)), "Type", desktop.SiteTypeText(st.Type)),
+		p(desktop.SiteTypeIcon(string(st.Type)), "Type", desktop.SiteKindText(st.Site)),
 		p(desktop.IconStart, "Start automatically", yesNo(st.AutoStart)),
 		p(desktop.IconLink, "Bindings", desktop.BindingsText(st.Bindings)),
 	)
 	switch {
 	case st.Node != nil:
-		entry := st.Node.Script
-		if st.Node.NpmScript != "" {
-			entry = "npm run " + st.Node.NpmScript
-		}
-		version := st.Node.NodeVersion
-		if version == "" {
-			version = "server default"
-		}
 		props = append(props,
 			p(desktop.IconFolder, "Application folder", st.Node.AppRoot),
-			p(desktop.IconTerminal, "Entry point", entry),
-			p(desktop.IconNode, "Node.js version", version),
+			p(desktop.IconTerminal, "Entry point", st.Node.StartText()),
+			p(desktop.IconNode, "Runtime", desktop.RuntimeText(st.Site)),
 			p(desktop.IconCPU, "Instances", strconv.Itoa(st.Node.Instances)),
 			p(desktop.IconRestart, "Restart policy", st.Node.RestartPolicy),
 		)

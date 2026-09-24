@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ScheduledTask } from '@/api/types';
+import type { RuntimeName, ScheduledTask } from '@/api/types';
+import { runtimeInfo } from '@/lib/runtimes';
 import { Button } from '@/components/Button';
 import { Dialog } from '@/components/Dialog';
 import { Field } from '@/components/Field';
@@ -50,6 +51,7 @@ export function TaskDialog({
   value,
   index,
   others,
+  runtime = 'node',
   readOnly,
   onClose,
   onApply,
@@ -60,6 +62,8 @@ export function TaskDialog({
   index: number;
   /** The site's other tasks, for the unique-name check. */
   others: ScheduledTask[];
+  /** The site's runtime, which runs the task. */
+  runtime?: RuntimeName;
   readOnly?: boolean;
   onClose: () => void;
   onApply: (t: ScheduledTask) => void;
@@ -81,6 +85,9 @@ export function TaskDialog({
   const p = `tasks[${index}]`;
   const preview = useMemo(() => (t.schedule.trim() ? nextRuns(t.schedule, new Date(), 5) : []), [t.schedule]);
   const isNew = !value?.id && !value?.name;
+  const info = runtimeInfo(runtime);
+  const pkg = info.packageScript;
+  const scriptPlaceholder = { node: 'scripts/cleanup.js', bun: 'scripts/cleanup.ts', deno: 'scripts/cleanup.ts', python: 'scripts/cleanup.py', dotnet: 'Tools.dll', custom: 'C:\\tools\\cleanup.exe' }[runtime];
 
   return (
     <Dialog
@@ -93,7 +100,7 @@ export function TaskDialog({
         if (readOnly) return onClose();
         setTouched(true);
         if (errs.name || errs.schedule || errs.script || errs.timeout) return;
-        onApply({ ...t, name: t.name.trim(), schedule: t.schedule.trim(), script: t.script?.trim(), npmScript: t.npmScript?.trim() });
+        onApply({ ...t, name: t.name.trim(), schedule: t.schedule.trim(), script: t.script?.trim(), npmScript: pkg ? t.npmScript?.trim() : '' });
       }}
       footer={
         readOnly ? (
@@ -171,26 +178,33 @@ export function TaskDialog({
           </div>
         )}
 
-        <Field label="Run">
-          <Radio
-            value={mode}
-            onChange={(m) => {
-              setMode(m);
-              set(m === 'npm' ? { npmScript: t.npmScript || 'start', script: '' } : { script: t.script || '', npmScript: '' });
-            }}
-            options={[
-              { value: 'script', label: 'Script', description: 'node <file>' },
-              { value: 'npm', label: 'npm script', description: 'npm run <script>' },
-            ]}
-          />
-        </Field>
+        {pkg && (
+          <Field label="Run">
+            <Radio
+              value={mode}
+              onChange={(m) => {
+                setMode(m);
+                set(m === 'npm' ? { npmScript: t.npmScript || 'start', script: '' } : { script: t.script || '', npmScript: '' });
+              }}
+              options={[
+                { value: 'script', label: 'Script', description: `${runtime === 'deno' ? 'deno run' : runtime} <file>` },
+                { value: 'npm', label: pkg.label, description: pkg.description },
+              ]}
+            />
+          </Field>
+        )}
         <Grid>
-          {mode === 'script' ? (
-            <Field label="Script" path={`${p}.script`} error={touched ? errs.script : null} hint="Relative to the application folder of the active release.">
-              <Input mono value={t.script ?? ''} placeholder="scripts/cleanup.js" onChange={(e) => set({ script: e.target.value })} />
+          {mode === 'script' || !pkg ? (
+            <Field
+              label={runtime === 'dotnet' || runtime === 'custom' ? info.entryLabel : 'Script'}
+              path={`${p}.script`}
+              error={touched ? errs.script : null}
+              hint={`Relative to the application folder of the active release. Runs with the site's ${info.label}${runtime === 'python' ? ' (in its virtual environment)' : ''}.`}
+            >
+              <Input mono value={t.script ?? ''} placeholder={scriptPlaceholder} onChange={(e) => set({ script: e.target.value })} />
             </Field>
           ) : (
-            <Field label="npm script" path={`${p}.npmScript`} error={touched ? errs.script : null} hint="A script from package.json.">
+            <Field label={pkg.label} path={`${p}.npmScript`} error={touched ? errs.script : null} hint={runtime === 'deno' ? 'A task from deno.json.' : 'A script from package.json.'}>
               <Input mono value={t.npmScript ?? ''} placeholder="cleanup" onChange={(e) => set({ npmScript: e.target.value })} />
             </Field>
           )}

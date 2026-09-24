@@ -16,8 +16,12 @@ import type {
 } from '@/api/types';
 
 export const SITE_TYPES: { value: SiteType; label: string; description: string }[] = [
-  { value: 'node', label: 'Node.js app', description: 'Run and supervise Node.js processes behind the reverse proxy.' },
-  { value: 'worker', label: 'Background worker', description: 'Run a Node.js process that does not serve HTTP: queue consumers, bots, long-running scripts.' },
+  {
+    value: 'node',
+    label: 'Application',
+    description: 'Run and supervise app processes behind the reverse proxy: Node.js, Bun, Deno, Python, .NET or any command.',
+  },
+  { value: 'worker', label: 'Background worker', description: 'Run a process that does not serve HTTP: queue consumers, bots, long-running scripts.' },
   { value: 'proxy', label: 'Reverse proxy', description: 'Forward requests to one or more upstream URLs with load balancing.' },
   { value: 'static', label: 'Static site', description: 'Serve files from a folder, with optional SPA fallback.' },
   { value: 'redirect', label: 'Redirect', description: 'Send every request to another URL with a 30x status.' },
@@ -27,7 +31,7 @@ export function siteTypeLabel(t: SiteType | string): string {
   return SITE_TYPES.find((x) => x.value === t)?.label ?? t;
 }
 
-/** Node and worker sites: supervised Node.js processes configured by `node`. */
+/** Node and worker sites: supervised processes (any runtime) configured by `node`. */
 export function runsNode(t: SiteType | string | undefined): boolean {
   return t === 'node' || t === 'worker';
 }
@@ -64,6 +68,9 @@ export function defaultNode(): NodeConfig {
     args: [],
     nodeArgs: [],
     nodeVersion: '',
+    runtime: 'node',
+    runtimeVersion: '',
+    python: null,
     env: [],
     instances: 1,
     portMode: 'auto',
@@ -258,6 +265,10 @@ export function normalizeSite(input: Site): Site {
         healthCheck: { ...d.loadBalancer.healthCheck, ...n.loadBalancer?.healthCheck },
       },
       env: n.env ?? [],
+      // Sites saved before runtimes existed are Node.js.
+      runtime: n.runtime || 'node',
+      runtimeVersion: n.runtimeVersion ?? '',
+      python: n.runtime === 'python' ? { module: '', server: '', app: '', venv: '.venv', ...n.python } : null,
     };
     s.tasks = (s.tasks ?? []).map(normalizeTask);
   }

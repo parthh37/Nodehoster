@@ -18,21 +18,25 @@ import (
 func init() {
 	register(
 		&Command{Name: "deps", MaxArgs: 0,
-			Summary: "Check what sites need besides NodeHoster: Node.js and Git (exit code 1 if one is missing)",
+			Summary: "Check what sites need besides NodeHoster: Node.js, Git and the runtimes sites use (exit code 1 if one is missing)",
 			Setup:   func(*flag.FlagSet) Runner { return depsStatus }},
-		&Command{Name: "deps install", Args: "[node] [git]", MaxArgs: 2,
-			Summary: "Install what is missing (default: both); setup runs this",
+		&Command{Name: "deps install", Args: "[node] [git] [bun] [deno]", MaxArgs: 4,
+			Summary: "Install what is missing (default: node and git); setup runs this",
 			Setup:   func(*flag.FlagSet) Runner { return depsInstall }},
 	)
 }
 
 // Dependency is one line of `nodehoster deps`.
 type Dependency struct {
-	Name      string `json:"name"` // node | git
+	Name      string `json:"name"` // node | git | bun | deno | python | dotnet
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
 	Path      string `json:"path,omitempty"`
 	Note      string `json:"note,omitempty"`
+
+	// Optional: a runtime no site uses (Bun, Deno, Python, .NET); it does
+	// not count as missing.
+	Optional bool `json:"optional,omitempty"`
 }
 
 // nodeState is what the service knows about Node.js runtimes.
@@ -108,12 +112,14 @@ func (e *Env) printDependencies(list []Dependency) error {
 	if e.JSON {
 		return e.printJSON(list)
 	}
-	names := map[string]string{"node": "Node.js", "git": "Git"}
+	names := map[string]string{"node": "Node.js", "git": "Git", "bun": "Bun", "deno": "Deno", "python": "Python", "dotnet": ".NET"}
 	var rows [][]string
 	for _, d := range list {
 		status, version := "missing", "—"
 		if d.Installed {
 			status = "installed"
+		} else if d.Optional {
+			status = "not installed"
 		}
 		if d.Version != "" {
 			version = d.Version
@@ -131,7 +137,7 @@ func (e *Env) printDependencies(list []Dependency) error {
 func missing(list []Dependency) error {
 	var names []string
 	for _, d := range list {
-		if !d.Installed {
+		if !d.Installed && !d.Optional {
 			names = append(names, d.Name)
 		}
 	}
@@ -147,6 +153,11 @@ func depsStatus(e *Env, _ []string) error {
 		return err
 	}
 	list := []Dependency{st.dependency(), e.gitDependency()}
+	rts, err := e.runtimeDependencies()
+	if err != nil {
+		return err
+	}
+	list = append(list, rts...)
 	if err := e.printDependencies(list); err != nil {
 		return err
 	}
@@ -159,8 +170,8 @@ func depsInstall(e *Env, args []string) error {
 		want = []string{"node", "git"}
 	}
 	for _, w := range want {
-		if w != "node" && w != "git" {
-			return usagef("%q is not a dependency: use node or git", w)
+		if w != "node" && w != "git" && w != "bun" && w != "deno" {
+			return usagef("%q is not a dependency NodeHoster installs: use node, git, bun or deno (Python and .NET come with their own installers)", w)
 		}
 	}
 	logf := func(format string, a ...any) { e.printf(format+"\n", a...) }
@@ -184,6 +195,24 @@ func depsInstall(e *Env, args []string) error {
 			}
 			d = e.gitDependency()
 		}
+		list = append(list, d)
+	}
+	// Bun and Deno only when asked for: most servers need neither.
+	for _, rt := range []string{"bun", "deno"} {
+		if !slices.Contains(want, rt) {
+			continue
+		}
+		rep, _, err := e.runtimeReport()
+		if err != nil {
+			list, errs = append(list, Dependency{Name: rt, Note: "the service did not answer"}), append(errs, fmt.Errorf("%s: %w", rt, err))
+			continue
+		}
+		d := runtimeDependency(rep, rt, nil)
+		if !d.Installed {
+			d, err = e.ensureRuntime(rt, "", false, logf)
+			errs = append(errs, err)
+		}
+		d.Optional = false
 		list = append(list, d)
 	}
 	if err := e.printDependencies(list); err != nil {
