@@ -6,16 +6,26 @@ import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { useSiteActions } from '@/hooks/useSiteActions';
 import { useSitePermissions } from '@/hooks/useAuth';
+import { SlotBadge } from './slots/SlotBits';
 
-export function BindingLink({ b, className }: { b: Binding; className?: string }) {
+/** `hideSlot`: leave out the deployment slot label of a slot's binding. */
+export function BindingLink({ b, className, hideSlot }: { b: Binding; className?: string; hideSlot?: boolean }) {
   const href = bindingHref(b);
   const label = bindingLabel(b);
   const cls = cn('font-mono text-[12.5px]', className);
-  if (!href) return <span className={cls}>{label}</span>;
-  return (
+  const link = !href ? (
+    <span className={cls}>{label}</span>
+  ) : (
     <a href={href} target="_blank" rel="noreferrer" className={cn(cls, 'nh-link')} onClick={(e) => e.stopPropagation()}>
       {label}
     </a>
+  );
+  if (!b.slot || hideSlot) return link;
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      {link}
+      <SlotBadge name={b.slot} title={`Routes to the ${b.slot} deployment slot`} />
+    </span>
   );
 }
 

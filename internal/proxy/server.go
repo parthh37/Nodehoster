@@ -147,6 +147,9 @@ func (s *Server) statsFor(id string) *siteStats {
 }
 
 func (s *Server) accessLogPath(id string) string {
+	if siteID, slot := model.SplitSlotKey(id); slot != "" { // a deployment slot's, next to its site's
+		return filepath.Join(s.deps.LogsDir, siteID, slot+"-access.log")
+	}
 	return filepath.Join(s.deps.LogsDir, id, "access.log")
 }
 

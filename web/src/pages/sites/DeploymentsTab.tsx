@@ -9,7 +9,7 @@ import type { Deployment, Site } from '@/api/types';
 import { Button } from '@/components/Button';
 import { Card, Callout, EmptyState, FormSection, Grid, Loading, Mono, Sections } from '@/components/Layout';
 import { Field, ErrorBox } from '@/components/Field';
-import { Input, NumberInput } from '@/components/Input';
+import { Input, NumberInput, Select } from '@/components/Input';
 import { SecretInput } from '@/components/SecretInput';
 import { ListEditor } from '@/components/ListEditor';
 import { CopyField } from '@/components/CopyButton';
@@ -25,9 +25,12 @@ import { useNow } from '@/hooks/useNow';
 import { durationBetween, formatDateTime, relativeTime } from '@/lib/format';
 import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
+import { hasSlots, releaseSlots, siteSlots, slotLabel } from '@/lib/slots';
 import type { SiteEditorProps } from './editors/types';
 import { SecretRefInput, useSecretStores } from './editors/SecretRefInput';
 import { Checkbox } from '@/components/Switch';
+import { ReleaseSlotBadges, SlotBadge, SlotTargetField } from './slots/SlotBits';
+import { ActivateReleaseDialog } from './slots/ActivateReleaseDialog';
 
 export function DeployConfigCard({ site, update, readOnly }: SiteEditorProps) {
   const d = site.deploy;
@@ -126,6 +129,10 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
   const [gitOpen, setGitOpen] = useState(false);
   const [zipOpen, setZipOpen] = useState(false);
   const [logFor, setLogFor] = useState<Deployment | null>(null);
+  // Deployment slots: which slot's history to show ('*' = all) and the release to activate in a slot.
+  const [slotFilter, setSlotFilter] = useState('*');
+  const [activateFor, setActivateFor] = useState<Deployment | null>(null);
+  const slotted = hasSlots(savedSite);
 
   const q = useQuery({
     queryKey: qk.deployments(site.id),
@@ -134,18 +141,20 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
   });
 
   const activate = useMutation({
-    mutationFn: (dep: Deployment) => sitesApi.activate(site.id, dep.id),
-    onSuccess: () => {
-      toast.success('Release activated');
+    mutationFn: ({ dep, slot }: { dep: Deployment; slot?: string }) => sitesApi.activate(site.id, dep.id, slot || undefined),
+    onSuccess: (_d, { slot }) => {
+      toast.success(slot ? `Release activated in ${slot}` : 'Release activated');
+      setActivateFor(null);
       void qc.invalidateQueries({ queryKey: qk.deployments(site.id) });
       void qc.invalidateQueries({ queryKey: qk.site(site.id) });
     },
     onError: (e) => toast.error('Rollback failed', e),
   });
 
-  const deps = q.data ?? [];
+  const allDeps = q.data ?? [];
+  const deps = slotted && slotFilter !== '*' ? allDeps.filter((d) => (d.slot ?? '') === slotFilter) : allDeps;
   const hasGit = !!savedSite.deploy.git.repo;
-  const running = deps.some((d) => d.status === 'running');
+  const running = allDeps.some((d) => d.status === 'running');
 
   const onStarted = (dep: Deployment) => {
     void qc.invalidateQueries({ queryKey: qk.deployments(site.id) });
@@ -155,7 +164,24 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
   return (
     <Card
       title="Deployments"
-      description={site.activeRelease ? <>Active release <Mono>{site.activeRelease}</Mono></> : 'Running from the configured application path.'}
+      description={
+        slotted ? (
+          <span className="flex flex-wrap gap-x-3">
+            <span>
+              production: {site.activeRelease ? <Mono>{site.activeRelease}</Mono> : 'the configured application path'}
+            </span>
+            {siteSlots(savedSite).map((sl) => (
+              <span key={sl.name}>
+                {sl.name}: {sl.activeRelease ? <Mono>{sl.activeRelease}</Mono> : 'nothing deployed'}
+              </span>
+            ))}
+          </span>
+        ) : site.activeRelease ? (
+          <>Active release <Mono>{site.activeRelease}</Mono></>
+        ) : (
+          'Running from the configured application path.'
+        )
+      }
       actions={
         canOperate && (
           <>
@@ -180,12 +206,26 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
           <Callout tone="warning">Save your configuration changes before deploying.</Callout>
         </div>
       )}
+      {slotted && allDeps.length > 0 && (
+        <div className="flex items-center gap-2 px-4 pt-3 text-xs text-zinc-500">
+          <span>Show deployments to</span>
+          <Select
+            className="w-40"
+            aria-label="Show deployments to"
+            value={slotFilter}
+            onChange={setSlotFilter}
+            options={[{ value: '*', label: 'All slots' }, { value: '', label: 'production' }, ...siteSlots(savedSite).map((sl) => ({ value: sl.name, label: sl.name }))]}
+          />
+        </div>
+      )}
       {q.isPending ? (
         <Loading />
       ) : q.isError ? (
         <div className="p-4">
           <ErrorBox>{errorMessage(q.error)}</ErrorBox>
         </div>
+      ) : deps.length === 0 && allDeps.length > 0 ? (
+        <EmptyState icon={<History />} title={`No deployments to ${slotLabel(slotFilter)}`} description="Deployments made to other slots are hidden by the filter." />
       ) : deps.length === 0 ? (
         <EmptyState
           icon={<History />}
@@ -201,6 +241,7 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
           <THead>
             <tr>
               <Th>Status</Th>
+              {slotted && <Th>Slot</Th>}
               <Th>Source</Th>
               <Th>Commit / message</Th>
               <Th>Started</Th>
@@ -211,7 +252,8 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
           </THead>
           <TBody>
             {deps.map((d) => {
-              const active = !!site.activeRelease && (site.activeRelease === d.id || (!!d.releaseDir && d.releaseDir.endsWith(site.activeRelease)));
+              const runningIn = releaseSlots(savedSite, d);
+              const active = runningIn.includes('production');
               return (
                 <Tr key={d.id} className={cn(active && 'bg-accent-50/60 dark:bg-accent-500/[0.06]')}>
                   <Td>
@@ -225,9 +267,15 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
                       >
                         {d.status === 'running' ? 'In progress' : d.status}
                       </span>
-                      {active && <Badge tone="accent">active</Badge>}
+                      {active && !slotted && <Badge tone="accent">active</Badge>}
+                      {slotted && <ReleaseSlotBadges slots={runningIn} />}
                     </div>
                   </Td>
+                  {slotted && (
+                    <Td>
+                      <SlotBadge name={d.slot} title="Deployed to" />
+                    </Td>
+                  )}
                   <Td className="text-zinc-600 dark:text-zinc-300">{sourceLabel[d.source] ?? d.source}</Td>
                   <Td className="max-w-xs">
                     {d.commit && <Mono className="mr-2 text-zinc-500">{d.commit.slice(0, 8)}</Mono>}
@@ -245,13 +293,14 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
                       <Button size="sm" variant="ghost" icon={<ScrollText className="h-3.5 w-3.5" />} onClick={() => setLogFor(d)}>
                         Log
                       </Button>
-                      {canOperate && d.status === 'succeeded' && !active && (
+                      {canOperate && d.status === 'succeeded' && (slotted ? runningIn.length <= siteSlots(savedSite).length : !active) && (
                         <Button
                           size="sm"
                           variant="ghost"
                           icon={<RotateCcw className="h-3.5 w-3.5" />}
-                          loading={activate.isPending && activate.variables?.id === d.id}
+                          loading={activate.isPending && activate.variables?.dep.id === d.id}
                           onClick={async () => {
+                            if (slotted) return setActivateFor(d);
                             const r = await confirm({
                               title: 'Activate this release?',
                               message: (
@@ -269,7 +318,7 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
                               confirmLabel: 'Activate',
                               danger: true,
                             });
-                            if (r.ok) activate.mutate(d);
+                            if (r.ok) activate.mutate({ dep: d });
                           }}
                         >
                           Activate
@@ -286,17 +335,29 @@ export function DeploymentsPanel({ site, savedSite, dirty }: { site: Site; saved
       <GitDeployDialog open={gitOpen} onClose={() => setGitOpen(false)} site={savedSite} onStarted={onStarted} />
       <ZipDeployDialog open={zipOpen} onClose={() => setZipOpen(false)} site={savedSite} onStarted={onStarted} />
       <DeploymentLogDialog siteId={site.id} dep={logFor} onClose={() => setLogFor(null)} />
+      <ActivateReleaseDialog
+        site={savedSite}
+        dep={activateFor}
+        pending={activate.isPending}
+        onClose={() => setActivateFor(null)}
+        onConfirm={(dep, slot) => activate.mutate({ dep, slot })}
+      />
     </Card>
   );
 }
 
 function GitDeployDialog({ open, onClose, site, onStarted }: { open: boolean; onClose: () => void; site: Site; onStarted: (d: Deployment) => void }) {
   const [branch, setBranch] = useState('');
+  const [slot, setSlot] = useState('');
   useEffect(() => {
     if (open) setBranch(site.deploy.git.branch || '');
   }, [open, site.deploy.git.branch]);
+  useEffect(() => {
+    if (open) setSlot('');
+  }, [open]);
   const m = useMutation({
-    mutationFn: () => sitesApi.deployGit(site.id, branch.trim() && branch.trim() !== site.deploy.git.branch ? branch.trim() : undefined),
+    mutationFn: () =>
+      sitesApi.deployGit(site.id, branch.trim() && branch.trim() !== site.deploy.git.branch ? branch.trim() : undefined, slot || undefined),
     onSuccess: (d) => {
       onClose();
       onStarted(d);
@@ -324,6 +385,7 @@ function GitDeployDialog({ open, onClose, site, onStarted }: { open: boolean; on
         <Field label="Branch" hint="Defaults to the configured branch.">
           <Input mono value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
         </Field>
+        {hasSlots(site) && <DeployTarget site={site} slot={slot} onChange={setSlot} />}
       </div>
     </Dialog>
   );
@@ -331,11 +393,15 @@ function GitDeployDialog({ open, onClose, site, onStarted }: { open: boolean; on
 
 function ZipDeployDialog({ open, onClose, site, onStarted }: { open: boolean; onClose: () => void; site: Site; onStarted: (d: Deployment) => void }) {
   const [file, setFile] = useState<File | null>(null);
+  const [slot, setSlot] = useState('');
   useEffect(() => {
-    if (open) setFile(null);
+    if (open) {
+      setFile(null);
+      setSlot('');
+    }
   }, [open]);
   const m = useMutation({
-    mutationFn: () => sitesApi.deployZip(site.id, file!),
+    mutationFn: () => sitesApi.deployZip(site.id, file!, slot || undefined),
     onSuccess: (d) => {
       onClose();
       onStarted(d);
@@ -361,9 +427,29 @@ function ZipDeployDialog({ open, onClose, site, onStarted }: { open: boolean; on
       <div className="space-y-3">
         {m.isError && <ErrorBox>{errorMessage(m.error)}</ErrorBox>}
         {badType && <ErrorBox>{badType}</ErrorBox>}
+        {hasSlots(site) && <DeployTarget site={site} slot={slot} onChange={setSlot} />}
         <FileDrop file={file} onFile={setFile} accept=".zip,application/zip" icon={<FileArchive />} label="Drop a .zip here, or click to browse" hint={site.deploy.installCommand ? `Then runs: ${site.deploy.installCommand}${site.deploy.buildCommand ? ` && ${site.deploy.buildCommand}` : ''}` : undefined} />
       </div>
     </Dialog>
+  );
+}
+
+/** Where a deployment goes on a site with deployment slots. */
+function DeployTarget({ site, slot, onChange }: { site: Site; slot: string; onChange: (slot: string) => void }) {
+  const auto = siteSlots(site).find((s) => s.name === slot)?.autoSwap;
+  return (
+    <SlotTargetField
+      site={site}
+      value={slot}
+      onChange={onChange}
+      hint={
+        !slot
+          ? 'Replaces the release production runs.'
+          : auto
+            ? `Deploys to ${slot}, then swaps it into production automatically (auto-swap).`
+            : `Deploys to ${slot} only. Swap it into production from the Slots tab when it is ready.`
+      }
+    />
   );
 }
 

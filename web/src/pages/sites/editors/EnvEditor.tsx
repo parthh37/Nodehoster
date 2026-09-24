@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { ClipboardPaste, EyeOff, Lock, Plus, Search, Trash2, Unlock, Vault } from 'lucide-react';
+import { ClipboardPaste, EyeOff, Layers, Lock, Plus, Search, Trash2, Unlock, Vault } from 'lucide-react';
 import type { EnvVar, SecretStoreStatus } from '@/api/types';
 import { SECRET } from '@/api/types';
 import { Button, IconButton } from '@/components/Button';
@@ -29,7 +29,37 @@ export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
       path="node.env"
       readOnly={readOnly}
       portAssigned={site.type === 'node'}
+      slotSettings={(site.slots ?? []).length > 0}
     />
+  );
+}
+
+// With slot settings the rows get another column.
+const ROW_COLS = 'grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_4rem]';
+const ROW_COLS_SLOTS = 'grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_6.5rem_4rem]';
+
+function SlotSettingToggle({ on, disabled, onChange }: { on: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="Slot setting"
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      title={
+        on
+          ? 'Slot setting: stays in production and is not given to deployment slots. Click to share it with every slot.'
+          : 'Shared: every deployment slot inherits it unless the slot sets its own. Click to keep it in production only.'
+      }
+      className={cn(
+        'inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed',
+        on ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-300' : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800',
+      )}
+    >
+      <Layers className="h-3.5 w-3.5" />
+      {on ? 'Production' : 'All slots'}
+    </button>
   );
 }
 
@@ -45,6 +75,7 @@ export function EnvVarsEditor({
   portAssigned,
   emptyDescription,
   importable = true,
+  slotSettings,
 }: {
   env: EnvVar[];
   onChange: (next: EnvVar[]) => void;
@@ -56,6 +87,8 @@ export function EnvVarsEditor({
   emptyDescription?: ReactNode;
   /** Offer "Paste .env" (off inside another dialog: Escape would close both). */
   importable?: boolean;
+  /** Production's variables of a site with deployment slots: offer the per-variable "slot setting" toggle. */
+  slotSettings?: boolean;
 }) {
   const [filter, setFilter] = useState('');
   const [importing, setImporting] = useState(false);
@@ -132,10 +165,21 @@ export function EnvVarsEditor({
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_4rem] gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-2xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+          {slotSettings && (
+            <p className="border-b border-zinc-200 bg-violet-50/60 px-3 py-1.5 text-xs text-violet-900 dark:border-zinc-800 dark:bg-violet-500/10 dark:text-violet-200">
+              This site has deployment slots: they inherit these variables unless marked <b>Production</b> (a slot setting, which stays in
+              production). A slot's own variables are set on the Slots tab.
+            </p>
+          )}
+          <div className={cn('grid gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-2xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60', slotSettings ? ROW_COLS_SLOTS : ROW_COLS)}>
             <span>Name</span>
             <span>Value</span>
             <span className="text-center">Secret</span>
+            {slotSettings && (
+              <span className="text-center" title="Which deployment slots get the variable">
+                Slots
+              </span>
+            )}
             <span />
           </div>
           <div className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
@@ -147,6 +191,7 @@ export function EnvVarsEditor({
                 v={e}
                 dupe={dupes.has(e.name) && !!e.name}
                 readOnly={readOnly}
+                slotSettings={slotSettings}
                 onChange={(p) => setVar(i, p)}
                 onRemove={() => setEnv(env.filter((_, j) => j !== i))}
                 stores={stores}
@@ -176,6 +221,7 @@ function EnvRow({
   v,
   dupe,
   readOnly,
+  slotSettings,
   onChange,
   onRemove,
   stores,
@@ -186,6 +232,7 @@ function EnvRow({
   v: EnvVar;
   dupe: boolean;
   readOnly?: boolean;
+  slotSettings?: boolean;
   onChange: (p: Partial<EnvVar>) => void;
   onRemove: () => void;
   stores: SecretStoreStatus[];
@@ -201,7 +248,7 @@ function EnvRow({
 
   return (
     <div className="px-3 py-2">
-      <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_4rem] items-center gap-2">
+      <div className={cn('grid items-center gap-2', slotSettings ? ROW_COLS_SLOTS : ROW_COLS)}>
         <Input
           mono
           value={v.name}
@@ -258,6 +305,11 @@ function EnvRow({
             </button>
           )}
         </div>
+        {slotSettings && (
+          <div className="flex justify-center">
+            <SlotSettingToggle on={!!v.slotSetting} disabled={readOnly} onChange={(on) => onChange({ slotSetting: on || undefined })} />
+          </div>
+        )}
         {!readOnly ? (
           <div className="flex justify-end gap-0.5">
             {!v.from && (

@@ -49,6 +49,9 @@ type Site struct {
 
 	// Alerts: overrides of the server-wide alert rules, and this site's own.
 	Alerts SiteAlerts `json:"alerts"`
+	// Deployment slots (node and worker sites): staging copies with their
+	// own release, instances and bindings, swapped into production.
+	Slots []DeploymentSlot `json:"slots,omitempty"`
 
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
@@ -58,6 +61,9 @@ type Site struct {
 	// previews (see PreviewConfig). Preview says what it shows.
 	PreviewOf string       `json:"previewOf,omitempty"`
 	Preview   *PreviewInfo `json:"preview,omitempty"`
+	// Slot is set only on the configuration derived for a deployment slot
+	// (SlotSite): deployments made with it go to that slot. Never stored.
+	Slot string `json:"-"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -78,6 +84,11 @@ type Binding struct {
 	// ClientCert (HTTPS only) asks clients for a certificate: mutual TLS.
 	// nil = ignore, as before.
 	ClientCert *ClientCertPolicy `json:"clientCert,omitempty"`
+
+	// Slot is the deployment slot the binding routes to ("" = production).
+	// Bindings always stay with their slot on a swap, like Azure's custom
+	// domains: only the releases change places.
+	Slot string `json:"slot,omitempty"`
 }
 
 const (
@@ -92,6 +103,10 @@ type EnvVar struct {
 	// From takes the value from a secret store when a process starts
 	// (Value is then empty and Secret false).
 	From *SecretRef `json:"from,omitempty"`
+	// SlotSetting (production's variables): the variable stays with
+	// production and is not given to deployment slots, like an Azure
+	// deployment slot setting.
+	SlotSetting bool `json:"slotSetting,omitempty"`
 }
 
 type NodeConfig struct {
@@ -444,6 +459,10 @@ type Deployment struct {
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 	User       string     `json:"user,omitempty"`
+
+	// Slot is the deployment slot the deployment was made to ("" =
+	// production). A swap moves the release, not this record.
+	Slot string `json:"slot,omitempty"`
 }
 
 // ReleaseDir is where a deployment's files live.

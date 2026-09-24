@@ -186,6 +186,7 @@ type siteCommands struct {
 	open, start, stop, restart, recycle, browse, explore *command
 	deploy, purge, basic, bindings, env, rewrite, mime   *command
 	console, remove                                      *command
+	swap                                                 *command // deployment slots (pages_slots_windows.go)
 }
 
 func newSiteCommands(m *manager, target func() string) *siteCommands {
@@ -213,6 +214,7 @@ func newSiteCommands(m *manager, target func() string) *siteCommands {
 	c.mime = newCommand("MIME types…", desktop.IconFileCode, on(func(id string) { siteMimeDialog(m, id) }))
 	c.console = newCommand("Open in web console", desktop.IconConsole, on(func(id string) { m.openConsolePath("/sites/" + url.PathEscape(id)) }))
 	c.remove = newCommand("Remove…", desktop.IconRemove, on(m.removeSite))
+	c.swap = newCommand("Swap slots…", desktop.IconToggle, on(m.swapSlot))
 	return c
 }
 
@@ -227,6 +229,7 @@ func (c *siteCommands) enable(m *manager) {
 	setEnabled(ok && len(st.Bindings) > 0, c.browse)
 	setEnabled(ok && sitePath(st.Site) != "", c.explore, c.deploy)
 	setEnabled(ok && st.Node != nil, c.env)
+	setEnabled(ok && len(st.Slots) > 0, c.swap)
 	setEnabled(ok && m.info != nil && m.info.AdminURL != "" && m.info.AdminError == "", c.console)
 }
 
@@ -320,7 +323,7 @@ func (s *sitesPage) content(m *manager) []Widget {
 			sortable:   true,
 			onActivate: func() { m.showSite(s.list.selected()) },
 			onDelete:   c.remove.trigger,
-			menu: menu(c.open, nil, c.start, c.stop, c.restart, c.recycle, nil, c.browse, c.explore, c.deploy, c.purge, nil,
+			menu: menu(c.open, nil, c.start, c.stop, c.restart, c.recycle, nil, c.browse, c.explore, c.deploy, c.swap, c.purge, nil,
 				c.basic, c.bindings, c.env, c.rewrite, c.mime, nil, c.remove),
 		},
 			col("Name", 180), col("Status", 90), col("Type", 140), col("Bindings", 280),
@@ -333,7 +336,7 @@ func (s *sitesPage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Sites", m.cmdAddSite, m.cmdImport,
 		"Selected site", c.open, c.start, c.stop, c.restart, c.recycle, c.browse, c.explore,
-		"Deploy", c.deploy, c.purge,
+		"Deploy", c.deploy, c.swap, c.purge,
 		"Edit", c.basic, c.bindings, c.env, c.rewrite, c.mime,
 		"Remove", c.remove,
 	)
@@ -775,7 +778,7 @@ func (s *sitePage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Manage site", c.start, c.stop, c.restart, c.recycle,
 		"Browse site", s.browse[:],
-		"Deploy", c.deploy, s.viewDeploys, c.purge,
+		"Deploy", c.deploy, s.viewDeploys, c.swap, c.purge,
 		"Edit site", c.basic, c.bindings, c.env, c.rewrite, c.mime,
 		"Tools", c.explore, s.viewLogs, c.console,
 		"Site", c.remove,

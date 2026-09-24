@@ -290,7 +290,7 @@ func bindingsDialog(m *manager, siteID string) {
 		rows := make([][]string, len(s.Bindings))
 		for i, b := range s.Bindings {
 			keys[i] = fmt.Sprint(i, b.ID)
-			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), b.Host, certLabel(b, certs), desktop.ClientCertText(b.ClientCert)}
+			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), hostWithSlot(b), certLabel(b, certs), desktop.ClientCertText(b.ClientCert)}
 		}
 		t.set(keys, rows)
 	}

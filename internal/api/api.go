@@ -137,6 +137,8 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/runs/{run}/log/stream", a.runLogStream)
 		r.Get("/sites/{id}/previews", a.listPreviews)
 		r.Get("/sites/{id}/alert-rules", a.siteAlertRules)
+		r.Get("/sites/{id}/slots", a.listSlots)
+		r.Get("/sites/{id}/slots/{slot}/swap", a.swapPreview)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))
@@ -155,6 +157,10 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/previews/{preview}/redeploy", a.redeployPreview)
 		r.Delete("/sites/{id}/previews/{preview}", a.deletePreview)
 		r.Post("/sites/{id}/secrets/check", a.checkSiteSecrets)
+		r.Post("/sites/{id}/slots/{slot}/swap", a.swapSlot)
+		r.Post("/sites/{id}/slots/{slot}/start", a.slotAction("start"))
+		r.Post("/sites/{id}/slots/{slot}/stop", a.slotAction("stop"))
+		r.Post("/sites/{id}/slots/{slot}/recycle", a.slotAction("recycle"))
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant

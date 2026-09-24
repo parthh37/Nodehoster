@@ -46,6 +46,8 @@ export const qk = {
   alertHistory: (siteId?: string, server?: boolean) => ['alerts', 'history', siteId ?? '', !!server] as const,
   siteAlertRules: (siteId: string) => ['alerts', 'rules', siteId] as const,
   secretStores: ['secret-stores'] as const,
+  slots: (id: string) => ['sites', id, 'slots'] as const,
+  swapPreview: (id: string, slot: string) => ['sites', id, 'slots', slot, 'swap'] as const,
 };
 
 /** Query roots that are about this server whichever server the console operates. */

@@ -150,6 +150,7 @@ var noticeTypes = map[string]bool{
 	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
 	events.RemoteDown: true,
 	events.AlertFiring: true, events.AlertResolved: true,
+	events.SlotSwapped: true, events.SlotSwapFailed: true,
 }
 
 func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {

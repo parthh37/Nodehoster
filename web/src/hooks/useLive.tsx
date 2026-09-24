@@ -48,6 +48,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
           void q.invalidateQueries({ queryKey: qk.siteTasks(e.siteId) });
           void q.invalidateQueries({ queryKey: qk.siteRuns(e.siteId) });
         }
+        if (t.startsWith('slot.') && e.siteId) {
+          void q.invalidateQueries({ queryKey: qk.slots(e.siteId) });
+          void q.invalidateQueries({ queryKey: qk.site(e.siteId), exact: true });
+          void q.invalidateQueries({ queryKey: qk.deployments(e.siteId) });
+        }
         if (t.startsWith('node')) void q.invalidateQueries({ queryKey: qk.nodeVersions });
         if (t.startsWith('alert.')) void q.invalidateQueries({ queryKey: qk.alerts });
         if (t.startsWith('site.created') || t.startsWith('site.deleted')) void q.invalidateQueries({ queryKey: qk.sites, exact: true });

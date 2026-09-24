@@ -159,6 +159,7 @@ func (s *Site) ApplyDefaults() {
 	}
 	s.Deploy.Previews.applyDefaults()
 	s.Alerts.applyDefaults()
+	s.applySlotDefaults()
 }
 
 func (hc *HealthCheck) applyDefaults(intervalSec int) {
@@ -336,6 +337,9 @@ func (s *Site) Validate() error {
 		return err
 	}
 	if err := s.Alerts.validate(s); err != nil {
+		return err
+	}
+	if err := s.validateSlots(); err != nil {
 		return err
 	}
 	r := s.Routing

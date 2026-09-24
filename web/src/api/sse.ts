@@ -85,14 +85,15 @@ export function openServerStream(
   );
 }
 
-/** /api/sites/{id}/logs/stream: `log` (LogLine). */
+/** /api/sites/{id}/logs/stream: `log` (LogLine). `slot` filters by deployment slot. */
 export function openLogStream(
   siteId: string,
   type: LogType,
   h: { onLine: (l: LogLine) => void } & StreamOptions,
+  slot?: string,
 ): StreamHandle {
   return open(
-    `/api/sites/${encodeURIComponent(siteId)}/logs/stream?type=${type}`,
+    `/api/sites/${encodeURIComponent(siteId)}/logs/stream?type=${type}${slot ? `&slot=${encodeURIComponent(slot)}` : ''}`,
     {
       log: (d) => {
         const v = parse<LogLine>(d);

@@ -103,4 +103,5 @@ type LogLine struct {
 	Stream   string    `json:"s"` // stdout | stderr | system
 	Instance int       `json:"i"`
 	Text     string    `json:"m"`
+	Slot     string    `json:"slot,omitempty"` // the deployment slot that wrote it; "" = production
 }

@@ -12,6 +12,8 @@ import { formatBytes, formatDateTime } from '@/lib/format';
 import { highlight, patternProblem, RANGE_PRESETS, timeRange, type RangePreset } from '@/lib/logSearch';
 import { cn } from '@/lib/cn';
 import { runsNode } from '@/lib/siteDefaults';
+import { ALL_SLOTS, hasSlots, logSlotParam } from '@/lib/slots';
+import { LineSlot, LogSlotSelect } from './slots/LogSlot';
 
 type Stream = 'all' | 'stdout' | 'stderr' | 'system';
 
@@ -38,6 +40,10 @@ export function LogSearch({ site, modeSwitch }: { site: SiteView; modeSwitch: Re
   const [searched, setSearched] = useState<{ q: string; regex: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Deployment slots: whose lines, or whose access log.
+  const slotted = hasSlots(site);
+  const [slot, setSlot] = useState(ALL_SLOTS);
+  const [slotSearched, setSlotSearched] = useState(ALL_SLOTS);
   const params = useRef<LogSearchParams>({});
   const abort = useRef<AbortController | null>(null);
   const problem = patternProblem(q, regex);
@@ -48,6 +54,8 @@ export function LogSearch({ site, modeSwitch }: { site: SiteView; modeSwitch: Re
     abort.current = ac;
     if (!more) {
       params.current = { q: q || undefined, regex, source, stream: source === 'app' ? stream : undefined, ...timeRange(range, from, to), limit: 200 };
+      if (slotted) params.current.slot = logSlotParam(slot, source === 'access');
+      setSlotSearched(slot);
       setSearched({ q, regex });
     }
     setLoading(true);
@@ -87,6 +95,7 @@ export function LogSearch({ site, modeSwitch }: { site: SiteView; modeSwitch: Re
             ...(hasAccess ? [{ value: 'access' as const, label: 'Access log' }] : []),
           ]}
         />
+        {slotted && <LogSlotSelect site={site} value={slot} onChange={setSlot} access={source === 'access'} />}
         <Input
           className="w-64"
           mono={regex}
@@ -142,6 +151,7 @@ export function LogSearch({ site, modeSwitch }: { site: SiteView; modeSwitch: Re
             >
               {source === 'app' && <span className="shrink-0 select-none text-zinc-500">{formatDateTime(l.t)}</span>}
               {multiInstance && <span className="w-5 shrink-0 select-none text-right text-zinc-500">{l.i >= 0 ? `#${l.i}` : ''}</span>}
+              {slotted && source === 'app' && slotSearched === ALL_SLOTS && <LineSlot slot={l.slot} />}
               <span className="min-w-0 flex-1">
                 {highlight(l.m, searched.q, searched.regex).map((seg, j) =>
                   seg.match ? (

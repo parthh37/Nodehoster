@@ -54,12 +54,15 @@ import type {
   SiteStatus,
   SharedSize,
   SiteView,
+  SlotsView,
   SSOSettings,
   SSOTestResult,
   ServerConnection,
   ServerTest,
   ServerTestResult,
   ServerView,
+  SwapPreview,
+  SwapProgress,
   TaskRun,
   TaskRunStart,
   TaskView,
@@ -144,24 +147,29 @@ export const sitesApi = {
   remove: (id: string, deleteFiles: boolean) => http.del(`/api/sites/${enc(id)}${qs({ deleteFiles: deleteFiles || undefined })}`),
   action: (id: string, action: SiteAction) => http.post<SiteStatus>(`/api/sites/${enc(id)}/${action}`),
   status: (id: string) => http.get<SiteStatus>(`/api/sites/${enc(id)}/status`),
-  metrics: (id: string, minutes = 60) => http.get<MetricPoint[]>(`/api/sites/${enc(id)}/metrics${qs({ minutes })}`),
-  logs: (id: string, type: LogType, lines = 500) => http.get<LogLine[]>(`/api/sites/${enc(id)}/logs${qs({ type, lines })}`),
-  logsDownloadUrl: (id: string, type: LogType) => routePath(`/api/sites/${enc(id)}/logs/download${qs({ type })}`),
+  /** `slot`: a deployment slot's metrics. */
+  metrics: (id: string, minutes = 60, slot?: string) => http.get<MetricPoint[]>(`/api/sites/${enc(id)}/metrics${qs({ minutes, slot })}`),
+  /** `slot`: application lines of that slot only, or that slot's access log. */
+  logs: (id: string, type: LogType, lines = 500, slot?: string) => http.get<LogLine[]>(`/api/sites/${enc(id)}/logs${qs({ type, lines, slot })}`),
+  logsDownloadUrl: (id: string, type: LogType, slot?: string) => routePath(`/api/sites/${enc(id)}/logs/download${qs({ type, slot })}`),
   clearLogs: (id: string) => http.post(`/api/sites/${enc(id)}/logs/clear`),
   purgeCache: (id: string, path?: string) => http.post<{ purged: number }>(`/api/sites/${enc(id)}/cache/purge`, path ? { path } : {}),
   searchLogs: (id: string, p: LogSearchParams, signal?: AbortSignal) =>
     http.get<LogSearchResult>(`/api/sites/${enc(id)}/logs/search${qs({ ...p, regex: p.regex ? 1 : undefined })}`, { signal }),
 
-  deployments: (id: string) => http.get<Deployment[]>(`/api/sites/${enc(id)}/deployments`),
-  deployZip: (id: string, file: File) => {
+  /** `slot` filters the history ("production" or a slot's name); without it: all. */
+  deployments: (id: string, slot?: string) => http.get<Deployment[]>(`/api/sites/${enc(id)}/deployments${qs({ slot })}`),
+  /** `slot`: deploy to a deployment slot instead of production. */
+  deployZip: (id: string, file: File, slot?: string) => {
     const fd = new FormData();
     fd.append('file', file);
-    return http.post<Deployment>(`/api/sites/${enc(id)}/deploy/zip`, fd);
+    return http.post<Deployment>(`/api/sites/${enc(id)}/deploy/zip${qs({ slot })}`, fd);
   },
-  deployGit: (id: string, branch?: string) =>
-    http.post<Deployment>(`/api/sites/${enc(id)}/deploy/git`, branch ? { branch } : {}),
-  activate: (id: string, depId: string) =>
-    http.post<Deployment>(`/api/sites/${enc(id)}/deployments/${enc(depId)}/activate`),
+  deployGit: (id: string, branch?: string, slot?: string) =>
+    http.post<Deployment>(`/api/sites/${enc(id)}/deploy/git${qs({ slot })}`, branch ? { branch } : {}),
+  /** `slot`: activate the release in a deployment slot instead of production. */
+  activate: (id: string, depId: string, slot?: string) =>
+    http.post<Deployment>(`/api/sites/${enc(id)}/deployments/${enc(depId)}/activate${qs({ slot })}`),
   deploymentLog: (id: string, depId: string) => http.text(`/api/sites/${enc(id)}/deployments/${enc(depId)}/log`),
 };
 
@@ -326,4 +334,18 @@ export const secretStoresApi = {
   test: (store: SecretStore, ref?: string) => http.post<SecretTestResult>('/api/secret-stores/test', { store, ref: ref || undefined }),
   resolve: (r: SecretRef) => http.post<SecretTestResult>('/api/secret-stores/resolve', r),
   checkSite: (siteId: string) => http.post<SecretRefCheck[]>(`/api/sites/${enc(siteId)}/secrets/check`),
+};
+
+export type SlotAction = 'start' | 'stop' | 'recycle';
+
+/**
+ * Deployment slots. The slots and their settings are edited as part of the
+ * site (sitesApi.update); `slot` may be "production" for the site itself.
+ */
+export const slotsApi = {
+  list: (id: string) => http.get<SlotsView>(`/api/sites/${enc(id)}/slots`),
+  swapPreview: (id: string, slot: string) => http.get<SwapPreview>(`/api/sites/${enc(id)}/slots/${enc(slot)}/swap`),
+  /** Starts a swap into production; it runs in the background (poll list). */
+  swap: (id: string, slot: string) => http.post<SwapProgress>(`/api/sites/${enc(id)}/slots/${enc(slot)}/swap`),
+  action: (id: string, slot: string, action: SlotAction) => http.post<SlotsView>(`/api/sites/${enc(id)}/slots/${enc(slot)}/${action}`),
 };

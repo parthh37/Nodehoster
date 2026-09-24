@@ -314,6 +314,8 @@ export const EVENT_TYPES = [
   'preview.updated',
   'preview.deleted',
   'preview.failed',
+  'slot.swapped',
+  'slot.swap_failed',
   'task.failed',
   'task.timeout',
   'cert.issued',

@@ -24,7 +24,8 @@
     'Get-NHPreview', 'Publish-NHPreview', 'Remove-NHPreview',
     'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer',
     'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
-    'Get-NHSecretStore', 'Test-NHSecretReference'
+    'Get-NHSecretStore', 'Test-NHSecretReference',
+    'Get-NHSlot', 'Switch-NHSlot'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

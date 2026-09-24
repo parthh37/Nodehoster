@@ -75,6 +75,7 @@ IIS Manager, with a status icon in the notification area.
 - Upload a `.zip` or deploy from **git** (token auth never exposed in the process list)
 - Install/build commands, shared paths (`.env`, `uploads`) persisted across releases
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
+- **Deployment slots** like Azure App Service's: a `staging` slot runs its own release on its own instances and bindings (`staging.example.com`) with production's configuration, except slot settings (its own variables, production's variables marked sticky, instance count, bindings). Deploy to it (zip, git, webhook, CLI), try it, then **swap**: its instances restart with production's settings, warm-up paths are requested on every instance until they answer (200-399 by default), and production's traffic moves onto them at once — no cold start, in-flight requests finish on the old instances, which become the slot. Swapping again is the rollback; a failed warm-up changes nothing. Optional auto-swap after a deployment, `slot.swapped` / `slot.swap_failed` notifications, per-slot logs and metrics
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
 - **Preview deployments** like Azure Static Web Apps' pull request environments: every pull request (GitLab merge request) or matching branch (`feature/*`) gets a temporary site of its own at `pr-42.preview.example.com` or `feature-login.preview.example.com`, cloned from its site with one instance, its own shared folder and variable overrides (a separate `DATABASE_URL`) plus `PREVIEW`, `PREVIEW_BRANCH`, `PREVIEW_PR`, `PREVIEW_URL`; redeployed on every push and deleted with its releases, logs and certificate when the pull request is closed or merged, the branch deleted or after N days without a push. Forks are never built unless allowed; optional basic auth or IP allow list; per-host Let's Encrypt, a wildcard certificate from the store or one obtained through DNS-01; commit status with the preview's link on GitHub, GitLab and Gitea; `preview.*` notifications
 - **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
@@ -196,7 +197,8 @@ home is a dashboard of the service, CPU, memory and disk); the right pane
 has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
 edit its bindings, environment, URL Rewrite rules, MIME types and basic
 settings, browse it, follow its log live (pause, filter, save), see a
-deployment's output and roll back a release, run or cancel a scheduled
+deployment's output and roll back a release, swap a deployment slot into
+production (with a preview of what the swap does), run or cancel a scheduled
 task, purge its response cache, install Node.js versions, reset a web
 console user's password or two-factor authentication, ban and unban
 addresses, silence or acknowledge an alert, manage the mail queue, change where the web console listens,
@@ -236,8 +238,8 @@ every user (installer task; each user can turn it off from its menu). It
 runs unelevated and reads a read-only status pipe; its color is the overall
 health, its menu lists the sites (and the critical alerts firing) and opens
 the manager, and it notifies about crashes, rapid-fail protection, failed
-deployments, certificates and resource alerts. A critical alert that nobody
-silenced turns it amber.
+deployments, slot swaps, certificates and resource alerts. A critical alert
+that nobody silenced turns it amber.
 
 ### Command line
 
@@ -260,6 +262,10 @@ nodehoster deploy <site> --zip app.zip       upload a release, showing the log u
 nodehoster deploy <site> --git [--branch x]  deploy from the site's repository
 nodehoster releases <site>                   deployments; * marks the active release
 nodehoster rollback <site> [<release-id>]    default: the previous successful release
+nodehoster deploy|releases|rollback|logs <site> --slot staging   the same for a deployment slot
+nodehoster slot list <site>                  slots: state, release, bindings, last swap
+nodehoster slot swap <site> [<slot>] [--yes] [--no-wait]  warm up the slot and swap it into production
+nodehoster slot start|stop|recycle <site> <slot>
 nodehoster logs <site> [-n 100] [-f] [--access]
 nodehoster events [-n 50] [--site x]
 nodehoster task list <site>                  scheduled tasks, next run, last result
@@ -321,13 +327,15 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
 `Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
 `Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`, `Get-NHAlert [-Pending]
-[-History]`, `Set-NHAlertSilence [-Minutes]`, `Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`, `Test-NHSecretReference`. They take site names from the pipeline. `Connect-NHServer
+[-History]`, `Set-NHAlertSilence [-Minutes]`, `Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`, `Test-NHSecretReference`, `Get-NHSlot`, `Switch-NHSlot` (and `-Slot` on
+`Publish-NHSite`, `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog`). They take site names from the pipeline. `Connect-NHServer
 <name|url> [-Token]` makes them target another server until
 `Disconnect-NHServer`; `Get-NHServer` lists the saved connections:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
 Publish-NHSite shop -ZipPath .\build\shop.zip
+Publish-NHSite shop -ZipPath .\build\shop.zip -Slot staging; Switch-NHSlot shop -Confirm:$false
 Get-NHLog shop -Tail 50 | Where-Object Stream -eq 'stderr'
 Get-Help Publish-NHSite -Examples
 ```
@@ -352,6 +360,14 @@ report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
 site: each run starts the script in the site's current release with its
 Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
 deployment during a run does not delete the release it runs in.
+
+To try a release before it goes live, add a **staging slot** (the site's
+Slots tab): give it a binding (`staging.example.com`), mark production's
+variables that must not reach it as slot settings (the database URL) and
+give it its own values, then deploy to it (`nodehoster deploy shop --zip
+app.zip --slot staging`). **Swap** puts it into production without a cold
+start; swap again to go back. Scheduled tasks run in production only, and a
+slot needs automatic ports (not a fixed port).
 
 ### Preview deployments
 

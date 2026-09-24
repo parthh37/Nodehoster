@@ -55,6 +55,11 @@ type Options struct {
 	// (by name) and SecretToken a git token that does; optional.
 	SecretEnv   func(site *model.Site, vars []model.EnvVar) (map[string]string, error)
 	SecretToken func(site *model.Site, ref model.SecretRef) (string, error)
+	// ActivateSlot points a deployment slot at a release (slots.go).
+	ActivateSlot func(ctx context.Context, siteID, slot, release string) error
+	// OnFinish, optional, is told of every deployment that ended, after
+	// the site is free for the next one (auto-swap starts from it).
+	OnFinish func(site *model.Site, dep *model.Deployment)
 }
 
 type Deployer struct {
@@ -161,9 +166,9 @@ func newReleaseID() string {
 // begin reserves the site and creates the deployment record and log.
 func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user string) (*model.Deployment, *depLog, error) {
 	d.mu.Lock()
-	if _, busy := d.running[site.ID]; busy {
+	if holder, busy := d.running[site.ID]; busy {
 		d.mu.Unlock()
-		return nil, nil, ErrBusy
+		return nil, nil, busyError(holder)
 	}
 	id := newReleaseID()
 	d.running[site.ID] = id
@@ -171,7 +176,7 @@ func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user str
 
 	dep := &model.Deployment{
 		ID: id, SiteID: site.ID, Source: source, Status: "running", StartedAt: time.Now(), User: user,
-		ReleaseDir: model.ReleaseDir(d.opts.SitesDir, site.ID, id),
+		ReleaseDir: model.ReleaseDir(d.opts.SitesDir, site.ID, id), Slot: site.Slot,
 	}
 	lp := d.logPath(site.ID, id)
 	os.MkdirAll(filepath.Dir(lp), 0o750)
@@ -306,12 +311,13 @@ func redact(repo string) string {
 // activate, prune.
 func (d *Deployer) run(site *model.Site, dep *model.Deployment, l *depLog, fetch func() error) {
 	ctx := context.Background()
+	defer d.finished(site, dep) // after finish: the site is free again
 	defer d.finish(site.ID, dep.ID)
 	// The release active before this deployment keeps serving while the
 	// rolling recycle drains it, so pruning must not remove it.
 	previous := ""
 	if cur, err := d.opts.Store.GetSite(ctx, site.ID); err == nil {
-		previous = cur.ActiveRelease
+		previous = cur.ReleaseIn(site.Slot)
 	}
 	err := d.steps(ctx, site, dep, l, fetch)
 	now := time.Now()
@@ -372,7 +378,7 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		}
 	}
 	l.printf("activating release %s", dep.ID)
-	if err := d.opts.Activate(ctx, site.ID, dep.ID); err != nil {
+	if err := d.activate(ctx, site, dep.ID); err != nil {
 		return fmt.Errorf("activate: %w", err)
 	}
 	return nil
@@ -499,7 +505,7 @@ func (d *Deployer) Activate(ctx context.Context, site *model.Site, depID string)
 	if _, err := os.Stat(dep.ReleaseDir); err != nil {
 		return nil, errors.New("the release folder no longer exists")
 	}
-	if err := d.opts.Activate(ctx, site.ID, dep.ID); err != nil {
+	if err := d.activate(ctx, site, dep.ID); err != nil {
 		return nil, err
 	}
 	d.opts.Bus.Info(events.DeploySucceeded, site.ID, "%s rolled back to %s", site.Name, dep.ID)

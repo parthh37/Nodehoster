@@ -58,8 +58,12 @@ type Manager struct {
 	health      *http.Client
 
 	mu   sync.Mutex
-	apps map[string]*App
+	apps map[string]*App // by model.SlotKey: a site's production app under its ID
 	logs map[string]*LogSink
+	// Deployment slots (slots.go): sites in the middle of a swap, and
+	// removed slots still stopping.
+	swapping map[string]bool
+	retiring sync.WaitGroup
 
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -138,6 +142,7 @@ func (m *Manager) app(id string) *App {
 // picks the change up: instance count changes are applied directly, and any
 // other change to how the process runs triggers a rolling recycle.
 func (m *Manager) Apply(site *model.Site) {
+	defer m.applySlots(site)
 	if !site.RunsNode() {
 		m.Remove(site.ID)
 		return
@@ -148,18 +153,25 @@ func (m *Manager) Apply(site *model.Site) {
 		a = &App{m: m, id: site.ID, site: site, schedFired: map[string]string{}}
 		m.apps[site.ID] = a
 		m.mu.Unlock()
-		a.logs = m.Logs(site.ID)
+		a.logs = m.Logs(site.ID).view(a.slotName)
 		return
 	}
 	m.mu.Unlock()
+	a.reconfigure(site, false)
+}
 
+// reconfigure gives an app a new configuration. A running app picks the
+// change up: instance count changes are applied directly, and any other
+// change to how the process runs triggers a rolling recycle, in the
+// background unless wait is set (then its error is returned).
+func (a *App) reconfigure(site *model.Site, wait bool) error {
 	a.mu.Lock()
 	old := a.site
 	a.site = site
 	running := a.running
 	a.mu.Unlock()
 	if !running {
-		return
+		return nil
 	}
 	oldCount, newCount := old.Node.Instances, site.Node.Instances
 	if processChanged(old, site) {
@@ -168,15 +180,22 @@ func (m *Manager) Apply(site *model.Site) {
 		if newCount < oldCount {
 			a.resize(newCount)
 		}
-		go func() {
-			a.recycle("configuration changed")
+		recycle := func() error {
+			err := a.recycle("configuration changed")
 			if newCount > oldCount {
 				a.resize(newCount)
 			}
-		}()
+			return err
+		}
+		if !wait {
+			go recycle()
+			return nil
+		}
+		return recycle()
 	} else if newCount != oldCount {
 		a.resize(newCount)
 	}
+	return nil
 }
 
 // processChanged reports whether anything that affects the running process
@@ -201,6 +220,7 @@ func processChanged(a, b *model.Site) bool {
 
 // Remove stops a site and forgets it.
 func (m *Manager) Remove(id string) {
+	defer m.removeSlots(id)
 	m.mu.Lock()
 	a := m.apps[id]
 	delete(m.apps, id)
@@ -334,6 +354,7 @@ func (m *Manager) Shutdown() {
 		}(a)
 	}
 	wg.Wait()
+	m.retiring.Wait()
 	m.agent.close()
 	m.mu.Lock()
 	for _, l := range m.logs {
@@ -462,7 +483,7 @@ func (m *Manager) healthCheck(a *App, inst *Instance, hc model.HealthCheck, now 
 	a.logs.System("instance %d health check failed (%d/%d): %s", inst.index, inst.healthFails, hc.UnhealthyThreshold, detail)
 	if inst.healthFails >= hc.UnhealthyThreshold {
 		inst.healthy = false
-		m.opts.Bus.Warn(events.SiteUnhealthy, a.id, "%s instance %d failed %d health checks", a.site.Name, inst.index, inst.healthFails)
+		m.opts.Bus.Warn(events.SiteUnhealthy, a.id, "%s instance %d failed %d health checks", a.site.Name+a.slotSuffix(), inst.index, inst.healthFails)
 		return "unhealthy"
 	}
 	return ""
