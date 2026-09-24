@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ type Options struct {
 	// Activate points the site at a release and applies it (a rolling
 	// recycle for Node.js sites).
 	Activate func(ctx context.Context, siteID, release string) error
+	// InUse lists releases of a site still used by something other than
+	// its processes, such as a scheduled task run that started before a
+	// deployment: pruning keeps them. Optional.
+	InUse func(siteID string) []string
 }
 
 type Deployer struct {
@@ -467,12 +472,18 @@ func (d *Deployer) Activate(ctx context.Context, site *model.Site, depID string)
 	return dep, nil
 }
 
-// prune deletes releases beyond KeepReleases, never the active one or the
-// one that was active before the latest deployment.
+// prune deletes releases beyond KeepReleases, never the active one, the
+// one that was active before the latest deployment (its processes may
+// still be draining) or one a task run in progress uses. Those in use are
+// deleted by a later deployment.
 func (d *Deployer) prune(ctx context.Context, site *model.Site, previous string) {
 	current, err := d.opts.Store.GetSite(ctx, site.ID)
 	if err != nil {
 		return
+	}
+	var inUse []string
+	if d.opts.InUse != nil {
+		inUse = d.opts.InUse(site.ID)
 	}
 	keep := max(current.Deploy.KeepReleases, 1)
 	list, err := d.opts.Store.ListDeployments(ctx, site.ID, 1000)
@@ -487,6 +498,9 @@ func (d *Deployer) prune(ctx context.Context, site *model.Site, previous string)
 		}
 		if dep.ID == current.ActiveRelease || dep.ID == previous || kept < keep {
 			kept++
+			continue
+		}
+		if slices.Contains(inUse, dep.ID) {
 			continue
 		}
 		os.RemoveAll(dep.ReleaseDir)

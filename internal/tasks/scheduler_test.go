@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -497,6 +498,37 @@ func TestRemoveSiteCancelsWithoutRecording(t *testing.T) {
 	if _, _, err := h.s.Run("s1", "a", "ida"); !errors.Is(err, ErrUnknownTask) {
 		t.Fatalf("run after removal: %v", err)
 	}
+}
+
+// A run keeps the release it started in after a deployment switches the
+// site: the deployer asks which ones before pruning.
+func TestReleasesInUse(t *testing.T) {
+	h := newHarness(t, 50)
+	s := site(task("a", "", ""), task("b", "", ""))
+	s.ActiveRelease = "rel-1"
+	h.s.Apply(s)
+	h.s.Run("s1", "a", "kim")
+	next := site(task("a", "", ""), task("b", "", ""))
+	next.ActiveRelease = "rel-2"
+	h.s.Apply(next)
+	h.s.Run("s1", "b", "kim")
+	if got := strings.Join(sorted(h.s.Releases("s1")), ","); got != "rel-1,rel-2" {
+		t.Fatalf("releases in use: %s", got)
+	}
+	if got := h.s.Releases("other"); len(got) != 0 {
+		t.Fatalf("releases of another site: %v", got)
+	}
+	h.runner.proc(0).exit(0)
+	h.waitStatuses("a", "succeeded")
+	if got := strings.Join(h.s.Releases("s1"), ","); got != "rel-2" {
+		t.Fatalf("releases in use after the first run ended: %s", got)
+	}
+}
+
+func sorted(s []string) []string {
+	s = append([]string(nil), s...)
+	slices.Sort(s)
+	return s
 }
 
 func TestShutdownStopsRuns(t *testing.T) {

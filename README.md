@@ -236,7 +236,8 @@ A process that does not serve HTTP (a BullMQ consumer, a Discord bot) is a
 running once it has stayed up for 2 seconds. Recurring jobs (a nightly
 report, a clean-up every 15 minutes) are **Tasks** of a Node.js or worker
 site: each run starts the script in the site's current release with its
-Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`.
+Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
+deployment during a run does not delete the release it runs in.
 
 ### Migrating from IIS/iisnode or PM2
 

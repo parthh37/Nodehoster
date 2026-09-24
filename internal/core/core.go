@@ -160,7 +160,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease,
+		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
 	})
 
 	sites, err := st.ListSites(ctx)

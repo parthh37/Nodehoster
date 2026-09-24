@@ -851,6 +851,30 @@ func TestPruneKeepsActivePreviousAndNewest(t *testing.T) {
 	}
 }
 
+// A scheduled task run that started before later deployments still runs
+// in its release: pruning keeps it until the run has ended.
+func TestPruneKeepsReleasesInUse(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	var asked string
+	h.d.opts.InUse = func(siteID string) []string { asked = siteID; return []string{"rel-001"} }
+	site := h.staticSite(t, "inuse", func(s *model.Site) { s.Deploy.KeepReleases = 1 })
+	deps := seedDeployments(t, h, site, 4)
+	site.ActiveRelease = "rel-003"
+	h.st.PutSite(context.Background(), site)
+	h.d.prune(context.Background(), site, "rel-002")
+
+	if asked != site.ID {
+		t.Errorf("InUse asked for %q", asked)
+	}
+	for i, want := range []bool{false, true, true, true} {
+		got, _ := h.st.GetDeployment(context.Background(), deps[i].ID)
+		if exists(deps[i].ReleaseDir) != want || (got.ReleaseDir != "") != want {
+			t.Errorf("%s: kept=%v, want %v", deps[i].ID, exists(deps[i].ReleaseDir), want)
+		}
+	}
+}
+
 func TestPruneKeepsConfiguredCount(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)

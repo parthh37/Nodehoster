@@ -277,6 +277,21 @@ func (s *Scheduler) Remove(siteID string) {
 	}
 }
 
+// Releases lists the releases (deployment ids) that runs in progress of a
+// site use: a run keeps the release it started in while later deployments
+// switch the site to others, so pruning must not delete it.
+func (s *Scheduler) Releases(siteID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, r := range s.runs {
+		if r.site.ID == siteID && r.site.ActiveRelease != "" && !slices.Contains(out, r.site.ActiveRelease) {
+			out = append(out, r.site.ActiveRelease)
+		}
+	}
+	return out
+}
+
 // Shutdown stops the loop and every run in progress, gracefully (the
 // agent's shutdown, or SIGTERM) within each site's shutdown timeout.
 func (s *Scheduler) Shutdown() {
