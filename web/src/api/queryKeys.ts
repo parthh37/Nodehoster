@@ -15,6 +15,8 @@ export const qk = {
   certs: ['certificates'] as const,
   nodeVersions: ['node', 'versions'] as const,
   nodeAvailable: ['node', 'available'] as const,
+  runtimes: ['runtimes'] as const,
+  runtimeAvailable: (rt: string) => ['runtimes', 'available', rt] as const,
   settings: ['settings'] as const,
   adminSettings: ['settings', 'admin'] as const,
   dnsCatalog: ['settings', 'dns-catalog'] as const,

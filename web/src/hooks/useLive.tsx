@@ -55,6 +55,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         }
         if (t.startsWith('node')) void q.invalidateQueries({ queryKey: qk.nodeVersions });
         if (t.startsWith('alert.')) void q.invalidateQueries({ queryKey: qk.alerts });
+        if (t.startsWith('runtime.')) void q.invalidateQueries({ queryKey: qk.runtimes });
         if (t.startsWith('site.created') || t.startsWith('site.deleted')) void q.invalidateQueries({ queryKey: qk.sites, exact: true });
         if (t.startsWith('remote.')) void q.invalidateQueries({ queryKey: qk.servers });
       },

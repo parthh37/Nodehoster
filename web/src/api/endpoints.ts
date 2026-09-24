@@ -13,6 +13,7 @@ import type {
   AuditEntry,
   AuthMethods,
   AvailableNode,
+  AvailableRuntime,
   BackupDestination,
   BackupObject,
   BackupStatus,
@@ -44,6 +45,7 @@ import type {
   PreviewDecision,
   PreviewView,
   RewriteImport,
+  RuntimeReport,
   RestoreResult,
   RewriteImportRequest,
   Role,
@@ -234,6 +236,15 @@ export const nodeApi = {
   available: () => http.get<AvailableNode[]>('/api/node/available'),
   install: (version: string) => http.post('/api/node/versions', { version }),
   remove: (version: string) => http.del(`/api/node/versions/${enc(version)}`),
+};
+
+/** Bun and Deno are installed by NodeHoster; Python and .NET are found. */
+export const runtimesApi = {
+  report: () => http.get<RuntimeReport>('/api/runtimes'),
+  refresh: () => http.post<RuntimeReport>('/api/runtimes/refresh'),
+  available: (rt: 'bun' | 'deno') => http.get<AvailableRuntime[]>(`/api/runtimes/${rt}/available`),
+  install: (rt: 'bun' | 'deno', version: string) => http.post(`/api/runtimes/${rt}/versions`, { version }),
+  remove: (rt: 'bun' | 'deno', version: string) => http.del(`/api/runtimes/${rt}/versions/${enc(version)}`),
 };
 
 export const settingsApi = {

@@ -339,6 +339,8 @@ export const EVENT_TYPES = [
   'secret.failed',
   'secret.stale',
   'secret.rotated',
+  'runtime.installed',
+  'runtime.failed',
 ];
 
 const FORMATS = [

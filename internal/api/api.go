@@ -111,6 +111,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/stream", a.stream)
 		r.Get("/sites", a.listSites)
 		r.Get("/node/versions", a.nodeVersions)
+		r.Get("/runtimes", a.runtimes)
 		r.Get("/settings/dns-catalog", a.dnsCatalog)
 		r.Get("/mime/defaults", a.mimeDefaults)
 		// Filtered per alert; silencing checks operator on the alert's site.
@@ -176,6 +177,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/certificates/{id}", a.getCert)
 		r.Get("/tls", a.getTLS)
 		r.Get("/node/available", a.nodeAvailable)
+		r.Get("/runtimes/{runtime}/available", a.runtimeAvailable)
 		r.Get("/mail/status", a.mailStatus)
 		r.Get("/mail/queue", a.mailQueue)
 		// Server connections (servers.go): each is also limited to the
@@ -205,6 +207,9 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/certificates/{id}/export", a.exportCert)
 		r.Post("/node/versions", a.installNode)
 		r.Delete("/node/versions/{version}", a.removeNode)
+		r.Post("/runtimes/refresh", a.refreshRuntimes)
+		r.Post("/runtimes/{runtime}/versions", a.installRuntime)
+		r.Delete("/runtimes/{runtime}/versions/{version}", a.removeRuntime)
 		r.Get("/settings", a.getSettings)
 		r.Put("/settings", a.putSettings)
 		r.Put("/tls", a.putTLS)

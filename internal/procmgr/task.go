@@ -14,15 +14,18 @@ import (
 	"github.com/parthh37/nodehoster/internal/model"
 )
 
-// TaskProcess is one run of a scheduled task: a Node.js process tree with
-// the site's runtime, environment, identity and limits, in a Job Object of
-// its own so a timeout or a cancel ends the whole tree.
+// TaskProcess is one run of a scheduled task: a process tree with the
+// site's runtime (Node.js, Bun, Python...), environment, identity and
+// limits, in a Job Object of its own so a timeout or a cancel ends the
+// whole tree.
 type TaskProcess struct {
 	m     *Manager
 	cmd   *exec.Cmd
 	os    *osProc
 	pid   int
 	token string
+	// console: no agent; stopped with a console Ctrl+Break on Windows.
+	console bool
 
 	exited   chan struct{}
 	exitCode int
@@ -44,12 +47,8 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("application folder %q does not exist", dir)
 	}
-	rt, err := m.resolveNode(site)
-	if err != nil {
-		return nil, err
-	}
 	token := newToken()
-	cmd, env, err := m.nodeCommand(site, rt, dir, task.Script, task.NpmScript, task.Args, token)
+	cmd, env, rt, err := m.processCommand(site, dir, taskEntry(task), token, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +80,7 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", rt.Exe, err)
+		return nil, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	osp, err := afterStart(cmd.Process.Pid, n.Limits)
 	if err != nil {
@@ -89,7 +88,7 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 		cmd.Wait()
 		return nil, err
 	}
-	p := &TaskProcess{m: m, cmd: cmd, os: osp, pid: cmd.Process.Pid, token: token, exited: make(chan struct{})}
+	p := &TaskProcess{m: m, cmd: cmd, os: osp, pid: cmd.Process.Pid, token: token, console: rt.console, exited: make(chan struct{})}
 	m.agent.register(token, p)
 	go func() {
 		err := cmd.Wait()
@@ -124,7 +123,8 @@ func (p *TaskProcess) ExitCode() int {
 }
 
 // Stop asks the task to stop gracefully, through the agent (or SIGTERM on
-// Unix), and kills the process tree if it has not exited within grace.
+// Unix; a console Ctrl+Break on Windows for runtimes other than Node.js),
+// and kills the process tree if it has not exited within grace.
 func (p *TaskProcess) Stop(grace time.Duration) {
 	select {
 	case <-p.exited:
@@ -132,7 +132,9 @@ func (p *TaskProcess) Stop(grace time.Duration) {
 	default:
 	}
 	asked := p.requestShutdown(grace)
-	if !asked {
+	if !asked && p.console {
+		asked = p.os.interrupt(p.pid) == nil
+	} else if !asked {
 		asked = p.os.signalStop(p.pid) == nil
 	}
 	if asked {

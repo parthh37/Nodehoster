@@ -110,8 +110,8 @@ What a site-scoped caller gets:
 | `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
-| `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
+| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| everything else (certificates, Node.js and runtime installs, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 | `/api/servers/*` | 403: a connection is the whole of another server |
 
@@ -199,10 +199,55 @@ a slot the site does not have). `Deployment.slot` records it;
 `GET .../deployments?slot=production|<name>` lists one slot's history. Any
 successful release can be activated into any slot.
 
+### Runtimes
+
+Node and worker sites run with the runtime in `node.runtime` (the object
+keeps its name whatever the runtime; absent on sites saved before runtimes
+existed, which are Node.js, and set to `"node"` on the next write):
+
+| Field | |
+|---|---|
+| `runtime` | `node` (default) \| `bun` \| `deno` \| `python` \| `dotnet` \| `custom` (422 `node.runtime` otherwise) |
+| `runtimeVersion` | `bun`, `deno`: an installed version (`1.1.30`); `python`: a version (`3.12`, the newest 3.12.x found) or the full path of `python.exe`; `dotnet`: the full path of `dotnet.exe`; `""` = the server default (`settings.runtimes`). Ignored for `node` (it has `nodeVersion`) and `custom` |
+| `script` | the entry: a script (node, bun, deno, python), the app's `.dll` (run by `dotnet`) or a self-contained `.exe` (dotnet), the program (custom: a full path, relative to the application folder, or on PATH) |
+| `npmScript` | a package script: `npm run` (node), `bun run` (bun), `deno task` (deno); refused for the others (422 `node.npmScript`, also `tasks[n].npmScript`) |
+| `nodeArgs` | the runtime's own arguments: node or bun flags, `deno run` flags (permissions: Deno grants nothing by default; the consoles start a Deno site with `--allow-net --allow-env --allow-read`, the API adds none), Python interpreter options, `dotnet` host options |
+| `python` | `{module?, server?: "uvicorn"\|"hypercorn"\|"waitress", app?: "main:app", venv}`: python sites set exactly one of `script`, `python.module` or `python.server` with `python.app` (422 `node.script`, `node.python.*`); a worker cannot run a server. `venv` (default `.venv`, relative to the application folder) is used when it exists |
+| `agentEnabled` | honored for `node` and `bun` entry scripts only |
+
+Every instance gets `PORT`; `dotnet` sites also `ASPNETCORE_URLS=http://127.0.0.1:<port>`
+(overriding the site's variables), and Python servers are started with
+`--host 127.0.0.1 --port` (uvicorn), `--bind 127.0.0.1:<port>` (Hypercorn)
+or `--listen=127.0.0.1:<port>` (Waitress). Python processes get
+`PYTHONUNBUFFERED=1` and `PYTHONUTF8=1` (and `VIRTUAL_ENV`), Deno processes
+the site's `DENO_DIR`. Processes without an agent are stopped with a console
+Ctrl+Break on Windows (SIGTERM elsewhere), then killed after
+`shutdownTimeoutSec`. `InstanceStatus` gains `runtime`, `runtimeVersion`
+(what started the process, every runtime) and `agent` (an agent reports
+`heapUsedBytes` / `eventLoopLagMs`: Node.js, Bun).
+
+Deployments default `deploy.installCommand` per runtime when it is empty
+(`npm ci --omit=dev`, `bun install --production`, `deno install`,
+`python -m pip install -r requirements.txt`, none for dotnet and custom); a
+python release gets its own virtual environment (`python -m venv`) before
+the install command, which runs with it first on `PATH`.
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/runtimes` | any signed-in user (a catalog) | `{bun: Managed, deno: Managed, python: Interpreter[], dotnet: {host, runtimes: [{name, version, path}]} \| null, defaults: {bun?, deno?, python?, dotnet?}}`; `Managed` = `{system: {version, path} \| null, installed: [{version, path, status, progress, error?, isDefault}]}` like `/api/node/versions`; `Interpreter` = `{version, path, source: py\|path\|folder, isDefault}`. Detection is cached for a minute |
+| POST | `/api/runtimes/refresh` | admin | the same, detected again now |
+| GET | `/api/runtimes/{bun\|deno}/available` | viewer | `[{version, date}]` stable releases for this platform with a published SHA-256, newest first (GitHub; cached an hour) |
+| POST | `/api/runtimes/{bun\|deno}/versions` | admin | `{version}` → 202; downloaded and verified in the background (events `runtime.installed` / `runtime.failed`; audit `runtime.install`) |
+| DELETE | `/api/runtimes/{bun\|deno}/versions/{version}` | admin | 204; 409 if a site pins it or it is the server default (audit `runtime.remove`) |
+
+Python and .NET are found, never installed (404 for `/api/runtimes/python/...`).
+Server defaults are `settings.runtimes` (`PUT /api/settings`; 422
+`runtimes.<runtime>` for a value a site could not use).
+
 ### Background workers
 
-`type: "worker"` is a managed Node.js process without HTTP (queue consumer,
-bot, long-running script). It is configured by `node` like a node site
+`type: "worker"` is a managed process without HTTP (queue consumer,
+bot, long-running script), in any runtime. It is configured by `node` like a node site
 (script / npm script, instances, restart policy and rapid-fail protection,
 recycling on memory / schedule / interval / file change, limits, run-as,
 agent) and has deployments, releases and rollback, but:
@@ -239,7 +284,8 @@ Node and worker sites have `tasks: ScheduledTask[]`, edited with the site
 | `overlap` | when a run is due while one is still going: `skip` (default; a `skipped` run is recorded), `queue` (runs right after it; at most one waiting), `allow` (concurrently, at most 10) |
 | `env` | extra variables (`secret` supported, masked like the site's) |
 
-A run uses the site's Node.js version, environment and secrets, run-as
+A run uses the site's runtime and version (a python site's virtual
+environment; never its ASGI/WSGI server), environment and secrets, run-as
 identity and Job Object limits (on Windows each run has its own job), with
 `NODEHOSTER_TASK=<name>` and `NODEHOSTER_TASK_RUN=<run id>` and no `PORT`.
 Tasks run whether the site is started or stopped (disable a task to stop

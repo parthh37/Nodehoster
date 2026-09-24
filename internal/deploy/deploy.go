@@ -42,6 +42,9 @@ type Options struct {
 	Settings func() model.Settings
 	// ResolveNode finds the runtime used for install and build commands.
 	ResolveNode func(version string) (procmgr.NodeRuntime, error)
+	// ResolveRuntime finds the runtime of a site that is not Node.js
+	// (bun, deno, python, dotnet; "" version = the server default).
+	ResolveRuntime func(runtime, version string) (procmgr.RuntimeExe, error)
 	// Activate points the site at a release and applies it (a rolling
 	// recycle for Node.js sites).
 	Activate func(ctx context.Context, siteID, release string) error
@@ -358,6 +361,9 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 	if err != nil {
 		return err
 	}
+	if env, err = d.prepareVenv(ctx, site, workDir, env, l); err != nil {
+		return err
+	}
 	for _, step := range []struct{ name, cmd string }{
 		{"install", site.Deploy.InstallCommand},
 		{"build", site.Deploy.BuildCommand},
@@ -365,8 +371,8 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		if strings.TrimSpace(step.cmd) == "" {
 			continue
 		}
-		if step.name == "install" && !fileExists(filepath.Join(workDir, "package.json")) {
-			l.printf("no package.json, skipping install")
+		if msg := installSkipMessage(site, workDir); step.name == "install" && msg != "" {
+			l.printf("%s", msg)
 			continue
 		}
 		l.printf("%s: %s", step.name, step.cmd)
@@ -386,7 +392,8 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 
 // commandEnv is the environment for install/build commands: the service's
 // environment, the site's node and git on PATH (npm fetches git
-// dependencies with it), and the site's variables.
+// dependencies with it), the site's own runtime ahead of them when it is
+// not Node.js, and the site's variables.
 func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env := os.Environ()
 	if git, err := d.findGit(); err == nil {
@@ -399,10 +406,15 @@ func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	if version == "" {
 		version = d.opts.Settings().DefaultNodeVersion
 	}
+	// Node.js is on PATH for every site when there is one (a Python site
+	// may still build its front end with npm); only Node.js sites need it.
 	rt, err := d.opts.ResolveNode(version)
 	if err == nil {
 		env = prependPath(env, filepath.Dir(rt.Exe))
-	} else if site.RunsNode() {
+	} else if siteRuntime(site) == model.RuntimeNode {
+		return nil, err
+	}
+	if env, err = d.runtimeEnv(site, env); err != nil {
 		return nil, err
 	}
 	env = append(env, "npm_config_cache="+filepath.Join(d.opts.SitesDir, site.ID, ".npm-cache"),

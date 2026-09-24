@@ -63,6 +63,7 @@ func (s *Site) ApplyDefaults() {
 			s.Node = &NodeConfig{}
 		}
 		n := s.Node
+		n.applyRuntimeDefaults()
 		if n.Instances <= 0 {
 			n.Instances = 1
 		}
@@ -101,7 +102,7 @@ func (s *Site) ApplyDefaults() {
 		}
 		lb.HealthCheck.applyDefaults(15)
 		if len(n.WatchIgnore) == 0 {
-			n.WatchIgnore = []string{"node_modules", ".git", "logs"}
+			n.WatchIgnore = DefaultWatchIgnore(n.Runtime)
 		}
 	case SiteProxy:
 		if s.Proxy == nil {
@@ -152,7 +153,7 @@ func (s *Site) ApplyDefaults() {
 		s.Deploy.KeepReleases = 5
 	}
 	if s.Deploy.InstallCommand == "" && s.RunsNode() {
-		s.Deploy.InstallCommand = "npm ci --omit=dev"
+		s.Deploy.InstallCommand = DefaultInstallCommand(s.Node.Runtime)
 	}
 	for i := range s.Tasks {
 		s.Tasks[i].applyDefaults()
@@ -240,8 +241,8 @@ func (s *Site) Validate() error {
 		if strings.TrimSpace(n.AppRoot) == "" && s.ActiveRelease == "" {
 			return verr("node.appRoot", "application path is required")
 		}
-		if n.Script == "" && n.NpmScript == "" {
-			return verr("node.script", "set an entry script or an npm script")
+		if err := s.validateRuntime(); err != nil {
+			return err
 		}
 		if n.Instances > 64 {
 			return verr("node.instances", "at most 64 instances")

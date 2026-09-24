@@ -115,6 +115,10 @@ function Add-NHType($Object, [string] $TypeName) {
 function ConvertTo-NHSite($Site) {
   foreach ($s in $Site) {
     Add-Member -InputObject $s -NotePropertyName State -NotePropertyValue $s.status.state -Force
+    # node and worker sites: node (Node.js), bun, deno, python, dotnet or custom.
+    $rt = $null
+    if ($s.PSObject.Properties['node'] -and $s.node) { $rt = if ($s.node.runtime) { $s.node.runtime } else { 'node' } }
+    Add-Member -InputObject $s -NotePropertyName Runtime -NotePropertyValue $rt -Force
     Add-NHType $s 'NodeHoster.Site'
   }
 }
@@ -141,7 +145,7 @@ function ConvertTo-NHLogLine($Line, [string] $Site) {
   }
 }
 
-Update-TypeData -TypeName NodeHoster.Site -DefaultDisplayPropertySet Name, Type, State, AutoStart, Id -Force
+Update-TypeData -TypeName NodeHoster.Site -DefaultDisplayPropertySet Name, Type, Runtime, State, AutoStart, Id -Force
 Update-TypeData -TypeName NodeHoster.Deployment -DefaultDisplayPropertySet Id, Source, Status, StartedAt, User, Message -Force
 Update-TypeData -TypeName NodeHoster.Event -DefaultDisplayPropertySet Time, Level, Type, SiteId, Message -Force
 Update-TypeData -TypeName NodeHoster.Certificate -DefaultDisplayPropertySet Name, Domains, Status, NotAfter, AutoRenew, Id -Force
@@ -150,6 +154,7 @@ Update-TypeData -TypeName NodeHoster.TaskRun -DefaultDisplayPropertySet Id, Task
 Update-TypeData -TypeName NodeHoster.BackupRun -DefaultDisplayPropertySet StartedAt, Trigger, Status, File, Size, Error -Force
 Update-TypeData -TypeName NodeHoster.TlsSetting -DefaultDisplayPropertySet MinVersion, Http2, Http3, Http3Listeners -Force
 Update-TypeData -TypeName NodeHoster.Preview -DefaultDisplayPropertySet Site, PullRequest, Branch, State, Url, Id -Force
+Update-TypeData -TypeName NodeHoster.Runtime -DefaultDisplayPropertySet Runtime, Version, Status, IsDefault, Path -Force
 
 <#
 .SYNOPSIS
@@ -1256,6 +1261,90 @@ function Switch-NHSlot {
   }
 }
 
+<#
+.SYNOPSIS
+Gets the runtimes besides Node.js that sites can run with.
+.DESCRIPTION
+One object per Bun or Deno version (installed by NodeHoster, or found on
+PATH), Python interpreter and .NET runtime found on this computer.
+IsDefault marks what sites that pin no version use.
+.PARAMETER Runtime
+bun, deno, python or dotnet; wildcards are allowed. Default: all.
+.EXAMPLE
+Get-NHRuntime
+.EXAMPLE
+Get-NHRuntime python | Where-Object IsDefault
+#>
+function Get-NHRuntime {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0)]
+    [SupportsWildcards()]
+    [string] $Runtime = '*'
+  )
+  $r = Invoke-NHCli @('runtime', 'list')
+  $out = New-Object System.Collections.Generic.List[object]
+  foreach ($rt in 'bun', 'deno') {
+    $m = $r.$rt
+    foreach ($i in @($m.installed)) {
+      if ($null -eq $i) { continue }
+      $out.Add([pscustomobject]@{ PSTypeName = 'NodeHoster.Runtime'; Runtime = $rt; Version = $i.version; Status = $i.status; IsDefault = [bool] $i.isDefault; Path = $i.path; Error = $i.error })
+    }
+    if ($m.system) {
+      $default = -not (@($m.installed | Where-Object { $_.isDefault }).Count -gt 0)
+      $out.Add([pscustomobject]@{ PSTypeName = 'NodeHoster.Runtime'; Runtime = $rt; Version = $m.system.version; Status = 'on PATH'; IsDefault = $default; Path = $m.system.path; Error = $null })
+    }
+  }
+  foreach ($p in @($r.python)) {
+    if ($null -eq $p) { continue }
+    $out.Add([pscustomobject]@{ PSTypeName = 'NodeHoster.Runtime'; Runtime = 'python'; Version = $p.version; Status = "found ($($p.source))"; IsDefault = [bool] $p.isDefault; Path = $p.path; Error = $null })
+  }
+  if ($r.dotnet) {
+    foreach ($d in @($r.dotnet.runtimes)) {
+      if ($null -eq $d) { continue }
+      $out.Add([pscustomobject]@{ PSTypeName = 'NodeHoster.Runtime'; Runtime = 'dotnet'; Version = $d.version; Status = $d.name; IsDefault = $false; Path = $r.dotnet.host; Error = $null })
+    }
+  }
+  $out | Where-Object { $_.Runtime -like $Runtime }
+}
+
+<#
+.SYNOPSIS
+Installs a Bun or Deno version for NodeHoster's sites.
+.DESCRIPTION
+Downloads the official release for this computer from GitHub, checks its
+published SHA-256, unpacks it into NodeHoster's data folder and waits for
+it. Python and .NET are not installed by NodeHoster: use their installers.
+.PARAMETER Runtime
+bun or deno.
+.PARAMETER Version
+The version, e.g. 1.1.30. Default: the newest release.
+.PARAMETER Default
+Makes it the server's default for sites that pin no version (it becomes
+the default anyway when there is none and none on PATH).
+.EXAMPLE
+Install-NHRuntime bun
+.EXAMPLE
+Install-NHRuntime deno 2.1.4 -Default
+#>
+function Install-NHRuntime {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0)]
+    [ValidateSet('bun', 'deno')]
+    [string] $Runtime,
+    [Parameter(Position = 1)]
+    [string] $Version,
+    [switch] $Default
+  )
+  $what = if ($Version) { "$Runtime $Version" } else { "the newest $Runtime" }
+  if (-not $PSCmdlet.ShouldProcess($what, 'install')) { return }
+  $cliArgs = @('runtime', 'install', $Runtime)
+  if ($Version) { $cliArgs += $Version }
+  if ($Default) { $cliArgs += '--default' }
+  Invoke-NHCli $cliArgs
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
@@ -1264,4 +1353,5 @@ Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHS
   Connect-NHServer, Disconnect-NHServer, Get-NHServer,
   Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence,
   Get-NHSecretStore, Test-NHSecretReference,
-  Get-NHSlot, Switch-NHSlot
+  Get-NHSlot, Switch-NHSlot,
+  Get-NHRuntime, Install-NHRuntime

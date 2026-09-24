@@ -21,6 +21,7 @@ import {
   Users,
   X,
   Hexagon,
+  Layers,
   Lock,
   Network,
 } from 'lucide-react';
@@ -52,6 +53,7 @@ const nav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/certificates', label: 'Certificates', icon: BadgeCheck },
   { to: '/node', label: 'Node.js', icon: Hexagon },
+  { to: '/runtimes', label: 'Runtimes', icon: Layers },
   { to: '/mail', label: 'Mail', icon: Mail },
   { to: '/events', label: 'Events', icon: Activity },
   { to: '/servers', label: 'Servers', icon: Network },

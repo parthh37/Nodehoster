@@ -212,10 +212,11 @@ func resumeProcess(pid uint32) error {
 	return nil
 }
 
-// signalStop asks the process to stop when no agent is connected. Console
-// control events cannot cross into a process with no console, so on Windows
-// there is nothing gentler than the agent; requests have already been drained
-// by the proxy by the time this is called.
+// signalStop asks a Node.js process to stop when no agent is connected.
+// On Windows there is nothing gentler than the agent for Node.js, which
+// has no default Ctrl+Break handling worth sending (other runtimes get
+// one: interrupt, in ctrlbreak_windows.go); requests have already been
+// drained by the proxy by the time this is called.
 func (p *osProc) signalStop(pid int) error { return errors.New("not supported") }
 
 func (p *osProc) kill(pid int) error {

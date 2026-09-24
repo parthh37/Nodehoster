@@ -1,6 +1,8 @@
 /*
  * NodeHoster agent. Preloaded into hosted Node.js applications with
- * `--require` when "agent" is enabled for a site.
+ * `--require` when "agent" is enabled for a site, and into Bun applications
+ * started from an entry script (Bun runs it through its Node.js
+ * compatibility: net, process events and memoryUsage behave the same).
  *
  * Windows has no SIGTERM, so a supervisor cannot ask a Node process to shut
  * down gracefully. The agent fills that gap: it connects back to NodeHoster
@@ -40,9 +42,9 @@
   }
 
   const servers = new Set();
-  try {
-    const origListen = net.Server.prototype.listen;
-    net.Server.prototype.listen = function patchedListen() {
+  function patchListen(proto) {
+    const origListen = proto.listen;
+    proto.listen = function patchedListen() {
       servers.add(this);
       this.once('close', () => servers.delete(this));
       this.once('listening', () => {
@@ -53,6 +55,17 @@
       });
       return origListen.apply(this, arguments);
     };
+  }
+  try {
+    patchListen(net.Server.prototype);
+    // Under Bun, http.Server does not inherit net.Server's listen (under
+    // Node.js it does, and loading https here would only slow startup).
+    if (process.versions && process.versions.bun) {
+      for (const mod of ['http', 'https']) {
+        const proto = require(mod).Server.prototype;
+        if (proto.listen !== net.Server.prototype.listen) patchListen(proto);
+      }
+    }
   } catch (_) { /* ignore */ }
 
   let socket = null;
@@ -134,7 +147,7 @@
     }
     socket.setEncoding('utf8');
     socket.on('connect', () => {
-      send({ type: 'hello', token, pid: process.pid, node: process.version });
+      send({ type: 'hello', token, pid: process.pid, node: process.version, bun: (process.versions && process.versions.bun) || undefined });
       report();
     });
     socket.on('data', (chunk) => {

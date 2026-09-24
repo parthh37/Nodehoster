@@ -17,6 +17,7 @@ import { ErrorBox } from '@/components/Field';
 import { formatNumber } from '@/lib/format';
 import { runsNode, SITE_TYPES } from '@/lib/siteDefaults';
 import { groupSites } from '@/lib/previews';
+import { runtimeLabel } from '@/lib/runtimes';
 import { BindingList, SiteRowActions } from './shared';
 
 export function SitesPage() {
@@ -158,6 +159,7 @@ export function SitesPage() {
                   </Td>
                   <Td>
                     <SiteTypeBadge type={site.type} />
+                    {runsNode(site.type) && <span className="ml-1.5 text-xs text-zinc-500">{runtimeLabel(site.node?.runtime)}</span>}
                   </Td>
                   <Td>
                     <div className="flex items-center gap-1.5">

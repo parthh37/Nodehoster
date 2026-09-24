@@ -21,8 +21,9 @@ const (
 	SiteWorker SiteType = "worker"
 )
 
-// RunsNode reports whether the site is Node.js processes supervised by the
-// process manager (node and worker sites, both configured by Node).
+// RunsNode reports whether the site is processes supervised by the process
+// manager (node and worker sites, both configured by Node), whichever
+// runtime (Node.js, Bun, Deno, Python, .NET, a custom command) runs them.
 func (s *Site) RunsNode() bool { return s.Type == SiteNode || s.Type == SiteWorker }
 
 // Site is the unit of hosting, the equivalent of an IIS site: a set of
@@ -118,6 +119,15 @@ type NodeConfig struct {
 
 	NodeVersion string   `json:"nodeVersion,omitempty"` // "" = server default
 	Env         []EnvVar `json:"env,omitempty"`
+
+	// Runtime runs the processes: node (also when empty), bun, deno,
+	// python, dotnet or custom; see runtimes.go. For the others, Script is
+	// the entry (.py file, app .dll or .exe, the program of a custom
+	// command), NpmScript a package.json script (bun) or task (deno), and
+	// NodeArgs the runtime's own arguments.
+	Runtime        string        `json:"runtime,omitempty"`
+	RuntimeVersion string        `json:"runtimeVersion,omitempty"` // bun, deno: version; python: version or python.exe; dotnet: dotnet.exe; "" = server default
+	Python         *PythonConfig `json:"python,omitempty"`
 
 	Instances int    `json:"instances"`           // processes load-balanced behind the site
 	PortMode  string `json:"portMode"`            // "auto" (PORT env assigned) | "fixed"

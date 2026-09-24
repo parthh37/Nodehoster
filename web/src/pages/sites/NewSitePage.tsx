@@ -17,6 +17,7 @@ import { bindingLabel } from '@/lib/bindings';
 import { clone } from '@/lib/obj';
 import { HOST_RE, LB_STRATEGIES, NAME_RE, newSite, runsNode, SITE_TYPES, siteTypeLabel } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
+import { entryError, runtimeLabel, runtimeOf, startCommand } from '@/lib/runtimes';
 import { BindingsEditor } from './editors/BindingsEditor';
 import { NodeEssentials, ProxyEssentials, RedirectEssentials, StaticEssentials } from './editors/TypeSettings';
 
@@ -44,7 +45,8 @@ function essentialsError(s: Site): string | null {
   if (!NAME_RE.test(s.name)) return 'Enter a site name (letters, digits, space, . _ -).';
   if (runsNode(s.type)) {
     if (!s.node?.appRoot.trim()) return 'Enter the application path.';
-    if (!s.node?.script && !s.node?.npmScript) return 'Enter an entry script or an npm script.';
+    const entry = entryError(s);
+    if (entry) return entry;
     if ((s.node?.instances ?? 1) < 1 || (s.node?.instances ?? 1) > 64) return 'Instances must be between 1 and 64.';
   }
   if (s.type === 'proxy') {
@@ -350,8 +352,10 @@ function reviewItems(s: Site): [string, React.ReactNode][] {
     case 'worker':
       return [
         ['Application path', mono(s.node!.appRoot)],
-        ['Start', mono(s.node!.npmScript ? `npm run ${s.node!.npmScript}` : `node ${s.node!.script}`)],
-        ['Node.js', s.node!.nodeVersion ? mono(s.node!.nodeVersion) : 'Server default'],
+        ['Start', mono(startCommand(s.node!))],
+        runtimeOf(s.node) === 'node'
+          ? ['Node.js', s.node!.nodeVersion ? mono(s.node!.nodeVersion) : 'Server default']
+          : [runtimeLabel(s.node!.runtime), runtimeOf(s.node) === 'custom' ? 'Custom command' : s.node!.runtimeVersion ? mono(s.node!.runtimeVersion) : 'Server default'],
         ['Instances', String(s.node!.instances)],
       ];
     case 'proxy':

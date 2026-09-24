@@ -92,6 +92,7 @@ export function normalizeSettings(s: Settings): Settings {
     updates: normalizeUpdates(s.updates),
     alerts: normalizeAlerts(s.alerts),
     secretStores: normalizeSecretStores(s.secretStores),
+    runtimes: { ...s.runtimes },
   };
 }
 

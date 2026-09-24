@@ -33,6 +33,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/proxy"
 	"github.com/parthh37/nodehoster/internal/rewrite"
+	"github.com/parthh37/nodehoster/internal/runtimes"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/secretstore"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -55,6 +56,7 @@ type Core struct {
 	Proxy     *proxy.Server
 	Certs     *certs.Manager
 	Nodes     *nodeversions.Manager
+	Runtimes  *runtimes.Manager // Bun, Deno, Python and .NET
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
 	Bans      *ipban.Manager
@@ -141,6 +143,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Auth = auth.New(st, box)
 	c.openSecretStores()
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
+	c.openRuntimes()
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
 	if err := c.Certs.Load(ctx); err != nil {
 		return nil, fmt.Errorf("load certificates: %w", err)
@@ -149,6 +152,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		Log: log, Bus: c.Bus,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
+		ResolveRuntime:   c.resolveRuntime,
 		IsLocationTarget: c.isLocationTarget,
 		ResolveEnv:       c.procSecretEnv,
 		OnLog: func(siteID string, l model.LogLine) {
@@ -184,7 +188,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.releasesInUse,
+		ResolveNode: c.Nodes.Resolve, ResolveRuntime: c.resolveRuntime, Activate: c.activateRelease, InUse: c.releasesInUse,
 		ActivateSlot: c.activateSlot, OnFinish: c.deployFinished,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
 		SecretEnv: func(s *model.Site, vars []model.EnvVar) (map[string]string, error) {
@@ -359,6 +363,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 		return cur, err
 	}
 	if err := c.prepareSecretStores(&in.SecretStores, cur.SecretStores); err != nil {
+		return cur, err
+	}
+	in.Runtimes.ApplyDefaults()
+	if err := in.Runtimes.Validate(); err != nil {
 		return cur, err
 	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {

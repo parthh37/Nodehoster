@@ -553,9 +553,10 @@ func basicSettingsDialog(m *manager, siteID string) {
 	if s == nil {
 		return
 	}
-	var name, path, entry, npm, version, target *walk.LineEdit
+	var name, path, target *walk.LineEdit
 	var auto, preserve *walk.CheckBox
 	var instances *walk.NumberEdit
+	var rtf runtimeFields
 	var upstreams *walk.TextEdit
 	var code *walk.ComboBox
 	codes := []string{"301", "302", "307", "308"}
@@ -572,13 +573,9 @@ func basicSettingsDialog(m *manager, siteID string) {
 	}
 	switch {
 	case s.Node != nil:
-		fields = append(fields,
-			Label{Text: "Application folder:"}, folder(s.Node.AppRoot),
-			Label{Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: s.Node.Script, CueBanner: "server.js"},
-			Label{Text: "or npm script:"}, LineEdit{AssignTo: &npm, Text: s.Node.NpmScript, CueBanner: "start"},
-			Label{Text: "Instances:"}, NumberEdit{AssignTo: &instances, Value: float64(s.Node.Instances), MinValue: 1, MaxValue: 64},
-			Label{Text: "Node.js version:"}, LineEdit{AssignTo: &version, Text: s.Node.NodeVersion, CueBanner: "server default"},
-		)
+		fields = append(fields, Label{Text: "Application folder:"}, folder(s.Node.AppRoot))
+		fields = append(fields, rtf.widgets(s.Node)...)
+		fields = append(fields, Label{Text: "Instances:"}, NumberEdit{AssignTo: &instances, Value: float64(s.Node.Instances), MinValue: 1, MaxValue: 64})
 	case s.Static != nil:
 		fields = append(fields, Label{Text: "Folder:"}, folder(s.Static.Root))
 	case s.Proxy != nil:
@@ -596,7 +593,7 @@ func basicSettingsDialog(m *manager, siteID string) {
 		)
 	}
 	ok := runDialog(m.mw, "Basic settings — "+s.Name, Size{Width: 560}, []Widget{
-		intro(desktop.SiteTypeIcon(string(s.Type)), desktop.SiteTypeText(s.Type)+". Other settings (routing, recycling, limits, health checks) are in the web console."),
+		intro(desktop.SiteTypeIcon(string(s.Type)), desktop.SiteKindText(s)+". Other settings (routing, recycling, limits, health checks) are in the web console."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: fields},
 	}, func(dlg *walk.Dialog) bool {
 		s.Name, s.AutoStart = strings.TrimSpace(name.Text()), auto.Checked()
@@ -605,8 +602,10 @@ func basicSettingsDialog(m *manager, siteID string) {
 		}
 		switch {
 		case s.Node != nil:
-			s.Node.AppRoot, s.Node.Script, s.Node.NpmScript = path.Text(), strings.TrimSpace(entry.Text()), strings.TrimSpace(npm.Text())
-			s.Node.Instances, s.Node.NodeVersion = int(instances.Value()), strings.TrimSpace(version.Text())
+			if msg := rtf.apply(s); msg != "" {
+				return invalid(dlg, msg)
+			}
+			s.Node.AppRoot, s.Node.Instances = path.Text(), int(instances.Value())
 		case s.Static != nil:
 			s.Static.Root = path.Text()
 		case s.Proxy != nil:
@@ -644,16 +643,17 @@ func weightOf(ups []model.Upstream, u string) int {
 
 func addSiteDialog(m *manager) {
 	types := []model.SiteType{model.SiteNode, model.SiteWorker, model.SiteStatic, model.SiteProxy, model.SiteRedirect}
-	typeNames := []string{"Node.js application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
+	typeNames := []string{"Application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
 	typeNotes := []string{
-		"Runs a Node.js app (server.js or an npm script) behind the reverse proxy, with process management and zero-downtime recycling.",
-		"Runs a Node.js process that serves no HTTP: a queue consumer, a bot, a long-running script. It has no binding.",
+		"Runs an app (Node.js, Bun, Deno, Python, .NET or any command) behind the reverse proxy, with process management and zero-downtime recycling.",
+		"Runs a process that serves no HTTP: a queue consumer, a bot, a long-running script. It has no binding.",
 		"Serves the files of a folder, with compression, caching and MIME types.",
 		"Forwards requests to one or more servers, with load balancing and health checks.",
 		"Answers every request with a redirect to another URL.",
 	}
 	var name, path, entry, target, ip, host *walk.LineEdit
-	var typ, proto *walk.ComboBox
+	var typ, proto, rtBox *walk.ComboBox
+	var rtLabel *walk.Label
 	var port *walk.NumberEdit
 	var start *walk.CheckBox
 	var pathBox *walk.Composite
@@ -676,6 +676,8 @@ func addSiteDialog(m *manager) {
 		pathBox.SetVisible(hasPath)
 		entryLabel.SetVisible(node)
 		entry.SetVisible(node)
+		rtLabel.SetVisible(node)
+		rtBox.SetVisible(node)
 		// A worker serves no HTTP, so it has no binding.
 		bindingBox.SetVisible(t != model.SiteWorker)
 		httpsNote.SetVisible(t != model.SiteWorker)
@@ -687,6 +689,21 @@ func addSiteDialog(m *manager) {
 		} else {
 			targetLabel.SetText("Redirect to:")
 			target.SetCueBanner("https://www.example.com")
+		}
+	}
+
+	// The entry follows the runtime: its label, and an example until one
+	// is typed.
+	onRuntime := func() {
+		if entry == nil || entryLabel == nil || rtBox == nil {
+			return
+		}
+		rt := model.Runtimes[max(rtBox.CurrentIndex(), 0)]
+		label, example := desktop.EntryHint(rt)
+		entryLabel.SetText(label)
+		entry.SetCueBanner(example)
+		if cur := entry.Text(); cur == "server.js" || cur == "" {
+			entry.SetText(map[bool]string{true: "server.js", false: ""}[rt == model.RuntimeNode])
 		}
 	}
 
@@ -705,6 +722,7 @@ func addSiteDialog(m *manager) {
 				LineEdit{AssignTo: &path, CueBanner: `C:\apps\my-app`},
 				PushButton{Text: "Browse…", Image: img(desktop.IconFolder), OnClicked: func() { browseFolder(m.mw, path, "Folder of the site") }},
 			}},
+			Label{AssignTo: &rtLabel, Text: "Runtime:"}, ComboBox{AssignTo: &rtBox, Model: desktop.RuntimeOptions(), CurrentIndex: 0, OnCurrentIndexChanged: onRuntime},
 			Label{AssignTo: &entryLabel, Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: "server.js"},
 			Label{AssignTo: &targetLabel, Text: "Upstream URL:", Visible: false}, LineEdit{AssignTo: &target, Visible: false},
 		}},
@@ -743,12 +761,17 @@ func addSiteDialog(m *manager) {
 			b.CertMode = model.CertModeAuto
 		}
 		s.Bindings = []model.Binding{b}
+		rt := model.Runtimes[max(rtBox.CurrentIndex(), 0)]
+		var rtArgs []string
+		if rt == model.RuntimeDeno { // Deno grants nothing unless told to
+			rtArgs = slices.Clone(model.DenoWebPermissions)
+		}
 		switch t {
 		case model.SiteNode:
-			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
+			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1, Runtime: rt, NodeArgs: rtArgs}
 		case model.SiteWorker:
 			s.Bindings = nil
-			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
+			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1, Runtime: rt, NodeArgs: rtArgs}
 		case model.SiteStatic:
 			s.Static = &model.StaticConfig{Root: path.Text()}
 		case model.SiteProxy:

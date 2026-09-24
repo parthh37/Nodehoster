@@ -46,6 +46,9 @@ const (
 	UpdateInstalling = "update.installing" // the updater is starting setup
 	UpdateInstalled  = "update.installed"  // the service runs the new version
 	UpdateFailed     = "update.failed"     // downloading or installing failed
+
+	RuntimeInstalled = "runtime.installed" // a Bun or Deno version was installed
+	RuntimeFailed    = "runtime.failed"    // installing a Bun or Deno version failed
 )
 
 // SecurityBanned: automatic IP banning banned an address (or an
@@ -96,7 +99,8 @@ var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteR
 	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed,
 	RemoteDown, RemoteUp,
 	AlertFiring, AlertResolved,
-	SlotSwapped, SlotSwapFailed}
+	SlotSwapped, SlotSwapFailed,
+	RuntimeInstalled, RuntimeFailed}
 
 type Bus struct {
 	store    *store.Store

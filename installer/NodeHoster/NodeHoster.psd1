@@ -12,7 +12,7 @@
   Author = 'NodeHoster'
   CompanyName = 'NodeHoster'
   Copyright = '(c) NodeHoster contributors'
-  Description = 'Manage NodeHoster sites, deployments, preview deployments, logs, events, certificates, scheduled tasks, backups and alerts on this computer.'
+  Description = 'Manage NodeHoster sites, deployments, preview deployments, deployment slots, logs, events, certificates, scheduled tasks, backups, alerts and runtimes on this computer.'
   PowerShellVersion = '5.1'
   CompatiblePSEditions = @('Desktop', 'Core')
   FunctionsToExport = @(
@@ -25,7 +25,8 @@
     'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer',
     'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
     'Get-NHSecretStore', 'Test-NHSecretReference',
-    'Get-NHSlot', 'Switch-NHSlot'
+    'Get-NHSlot', 'Switch-NHSlot',
+    'Get-NHRuntime', 'Install-NHRuntime'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

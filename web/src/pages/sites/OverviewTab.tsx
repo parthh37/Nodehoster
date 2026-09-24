@@ -12,6 +12,7 @@ import { AreaChart } from '@/components/Charts';
 import { Segmented } from '@/components/Tabs';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, formatCompact, formatMs, formatNumber, formatPercent, formatUptime, relativeTime } from '@/lib/format';
+import { agentMetrics, runtimeLabel, runtimeOf } from '@/lib/runtimes';
 import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import { CachePanel } from './CachePanel';
@@ -80,7 +81,11 @@ function WorkerStats({ site, status }: { site: SiteView; status: SiteStatus | un
 function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStatus | undefined; now: number }) {
   const inst = [...(status?.instances ?? [])].sort((a, b) => a.index - b.index);
   const agent = site.node?.agentEnabled;
+  // Heap and event-loop lag come from the agent: Node.js and Bun only.
+  const metrics = agentMetrics(site.node) || inst.some((i) => i.agent);
   const http = site.type !== 'worker';
+  const cols = (http ? 11 : 8) + (metrics ? 2 : 0);
+  const started = inst.find((i) => i.runtimeVersion || i.nodeVersion);
   const ports = !http ? 'no port' : site.node?.portMode === 'fixed' ? `fixed port ${site.node.fixedPort}` : 'automatic ports';
   return (
     <Card title="Instances" description={`${site.node?.instances ?? 1} configured · ${ports}`} flush>
@@ -96,15 +101,19 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
             <Th className="text-right">Restarts</Th>
             <Th className="text-right">CPU</Th>
             <Th className="text-right">Memory</Th>
-            <Th className="text-right" title="Reported by the NodeHoster agent">Heap</Th>
-            <Th className="text-right" title="Reported by the NodeHoster agent">Loop lag</Th>
+            {metrics && (
+              <>
+                <Th className="text-right" title="Reported by the NodeHoster agent">Heap</Th>
+                <Th className="text-right" title="Reported by the NodeHoster agent">Loop lag</Th>
+              </>
+            )}
             {http && <Th className="text-right">Requests</Th>}
             <Th>Last exit</Th>
           </tr>
         </THead>
         <TBody>
           {inst.length === 0 && (
-            <TableMessage colSpan={http ? 13 : 10}>
+            <TableMessage colSpan={cols}>
               {status?.state === 'stopped' || !status ? 'The site is stopped. Start it to launch its processes.' : 'Waiting for instances…'}
             </TableMessage>
           )}
@@ -141,16 +150,20 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
                 <Td className={cn('text-right tabular', i.restarts > 0 && 'text-amber-600 dark:text-amber-400')}>{i.restarts}</Td>
                 <Td className="text-right tabular">{running ? formatPercent(i.cpuPercent) : '—'}</Td>
                 <Td className="text-right tabular">{running ? formatBytes(i.memoryBytes) : '—'}</Td>
-                <Td className="text-right tabular">
-                  {i.heapUsedBytes ? (
-                    <span title={`of ${formatBytes(i.heapTotalBytes)}`}>{formatBytes(i.heapUsedBytes)}</span>
-                  ) : (
-                    <span className="text-zinc-400" title={agent ? 'Not reported yet' : 'Enable the agent to collect heap metrics'}>—</span>
-                  )}
-                </Td>
-                <Td className={cn('text-right tabular', (i.eventLoopLagMs ?? 0) > 100 && 'text-amber-600 dark:text-amber-400')}>
-                  {i.eventLoopLagMs ? formatMs(i.eventLoopLagMs) : <span className="text-zinc-400">—</span>}
-                </Td>
+                {metrics && (
+                  <>
+                    <Td className="text-right tabular">
+                      {i.heapUsedBytes ? (
+                        <span title={`of ${formatBytes(i.heapTotalBytes)}`}>{formatBytes(i.heapUsedBytes)}</span>
+                      ) : (
+                        <span className="text-zinc-400" title={agent ? 'Not reported yet' : 'Enable the agent to collect heap metrics'}>—</span>
+                      )}
+                    </Td>
+                    <Td className={cn('text-right tabular', (i.eventLoopLagMs ?? 0) > 100 && 'text-amber-600 dark:text-amber-400')}>
+                      {i.eventLoopLagMs ? formatMs(i.eventLoopLagMs) : <span className="text-zinc-400">—</span>}
+                    </Td>
+                  </>
+                )}
                 {http && <Td className="text-right tabular">{formatCompact(i.requests)}</Td>}
                 <Td className="whitespace-nowrap text-xs">
                   {i.lastExitCode !== undefined && i.lastExitCode !== null ? (
@@ -167,9 +180,9 @@ function InstancesCard({ site, status, now }: { site: SiteView; status: SiteStat
           })}
         </TBody>
       </Table>
-      {inst.some((i) => i.nodeVersion) && (
+      {started && (
         <div className="border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800">
-          Node.js <Mono>{inst.find((i) => i.nodeVersion)?.nodeVersion}</Mono>
+          {runtimeLabel(started.runtime ?? runtimeOf(site.node))} <Mono>{started.nodeVersion?.replace(/^v/, '') || started.runtimeVersion}</Mono>
         </div>
       )}
     </Card>

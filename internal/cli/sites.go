@@ -83,9 +83,9 @@ func siteList(e *Env, _ []string) error {
 			previews++ // listed by: nodehoster preview list <site>
 			continue
 		}
-		rows = append(rows, []string{s.Name, string(s.Type), stateText(s.Status), instancesText(s), bindingsText(s.Bindings), s.ID})
+		rows = append(rows, []string{s.Name, string(s.Type), runtimeText(s), stateText(s.Status), instancesText(s), bindingsText(s.Bindings), s.ID})
 	}
-	e.table([]string{"NAME", "TYPE", "STATE", "INSTANCES", "BINDINGS", "ID"}, rows)
+	e.table([]string{"NAME", "TYPE", "RUNTIME", "STATE", "INSTANCES", "BINDINGS", "ID"}, rows)
 	if previews > 0 {
 		e.printf("\n%d preview deployment(s) not shown: nodehoster preview list <site>\n", previews)
 	}
@@ -164,7 +164,7 @@ func siteShow(e *Env, args []string) error {
 	}
 	switch {
 	case s.Node != nil:
-		kv = append(kv, []string{"Application", s.Node.AppRoot}, []string{"Script", s.Node.Script}, []string{"Instances", instancesText(*s)})
+		kv = append(kv, []string{"Runtime", runtimeText(*s)}, []string{"Application", s.Node.AppRoot}, []string{"Start", s.Node.StartText()}, []string{"Instances", instancesText(*s)})
 	case s.Static != nil:
 		kv = append(kv, []string{"Root", s.Static.Root})
 	case s.Redirect != nil:

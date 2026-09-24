@@ -11,6 +11,7 @@ import { ImportSitesPage } from '@/pages/sites/ImportSitesPage';
 import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
+import { RuntimesPage } from '@/pages/runtimes/RuntimesPage';
 import { EventsPage } from '@/pages/EventsPage';
 import { AlertsPage } from '@/pages/alerts/AlertsPage';
 import { MailPage } from '@/pages/mail/MailPage';
@@ -138,6 +139,14 @@ const router = createBrowserRouter([
         element: (
           <ServerOnly>
             <NodePage />
+          </ServerOnly>
+        ),
+      },
+      {
+        path: 'runtimes',
+        element: (
+          <ServerOnly>
+            <RuntimesPage />
           </ServerOnly>
         ),
       },

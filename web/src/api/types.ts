@@ -80,6 +80,27 @@ export type PortMode = 'auto' | 'fixed';
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 export type RapidFailAction = 'recover' | 'stop';
 
+/** What runs a node or worker site's processes; absent on sites saved before runtimes existed (= node). */
+export type RuntimeName = 'node' | 'bun' | 'deno' | 'python' | 'dotnet' | 'custom';
+
+export type PythonServer = 'uvicorn' | 'hypercorn' | 'waitress';
+
+/** How a python site starts: exactly one of node.script, module or server (with app). */
+export interface PythonConfig {
+  module?: string;
+  server?: PythonServer | '' | string;
+  /** "main:app" for server. */
+  app?: string;
+  /** Virtual environment relative to the application folder; "" = .venv. */
+  venv?: string;
+}
+
+/**
+ * The process configuration of node and worker sites, whatever the runtime
+ * (the name is historical). For runtimes other than Node.js, script is the
+ * entry (.py, app .dll/.exe, a custom program), npmScript a package.json
+ * script (bun) or task (deno) and nodeArgs the runtime's own arguments.
+ */
 export interface NodeConfig {
   appRoot: string;
   script?: string;
@@ -88,6 +109,10 @@ export interface NodeConfig {
   nodeArgs?: string[];
   nodeVersion?: string;
   env?: EnvVar[];
+  runtime?: RuntimeName | string;
+  /** bun, deno: installed version; python: "3.12" or python.exe; dotnet: dotnet.exe; "" = server default. */
+  runtimeVersion?: string;
+  python?: PythonConfig | null;
   instances: number;
   portMode: PortMode | string;
   fixedPort?: number;
@@ -505,6 +530,11 @@ export interface InstanceStatus {
   heapTotalBytes?: number;
   eventLoopLagMs?: number;
   nodeVersion?: string;
+  /** The runtime and version that started the process (every runtime). */
+  runtime?: RuntimeName | string;
+  runtimeVersion?: string;
+  /** An agent reports heap and event-loop lag (Node.js, Bun). */
+  agent?: boolean;
 }
 
 export interface TrafficStats {
@@ -712,6 +742,18 @@ export interface Settings {
   updates: UpdateSettings;
   alerts: AlertSettings;
   secretStores: SecretStore[];
+  /** Defaults for sites of other runtimes that pin no version. */
+  runtimes?: RuntimeDefaults;
+}
+
+/** model.RuntimeDefaults. */
+export interface RuntimeDefaults {
+  bun?: string;
+  deno?: string;
+  /** "3.12" or a path to python.exe; "" = the newest found. */
+  python?: string;
+  /** Path to dotnet.exe; "" = found automatically. */
+  dotnet?: string;
 }
 
 /** Automatic updates from the signed release feed (model.UpdateSettings). */
@@ -984,6 +1026,46 @@ export interface AvailableNode {
   lts: string | false;
   date: string;
   security: boolean;
+}
+
+// ---------------------------------------------------------------- other runtimes (GET /api/runtimes)
+
+/** Bun or Deno: versions NodeHoster installed, and the one on PATH. */
+export interface ManagedRuntime {
+  system: SystemNode | null;
+  installed: InstalledNode[] | null;
+}
+
+export interface PythonInterpreter {
+  version: string;
+  path: string;
+  /** py (the py launcher) | path | folder */
+  source: string;
+  isDefault: boolean;
+}
+
+export interface DotnetRuntime {
+  name: string;
+  version: string;
+  path: string;
+}
+
+export interface DotnetInfo {
+  host: string;
+  runtimes: DotnetRuntime[] | null;
+}
+
+export interface RuntimeReport {
+  bun: ManagedRuntime;
+  deno: ManagedRuntime;
+  python: PythonInterpreter[] | null;
+  dotnet: DotnetInfo | null;
+  defaults: RuntimeDefaults;
+}
+
+export interface AvailableRuntime {
+  version: string;
+  date: string;
 }
 
 // ---------------------------------------------------------------- mail (built-in SMTP server)
