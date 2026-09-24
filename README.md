@@ -457,7 +457,21 @@ processes is the same for all of them; what differs is how they start:
   `dotnet publish -c Release -o publish` and the application to
   `publish\MyApp.dll`, or deploy a ready-built app. A step is skipped when
   the release has nothing for it (`package.json`, `deno.json`,
-  `requirements.txt`/`pyproject.toml`).
+  `requirements.txt`/`pyproject.toml`). The virtual environment and the
+  default pip install run Python in isolated mode (`-I`), by the
+  environment's full path, so a `venv.py`, `pip.py` or `python.bat` in the
+  release is not what runs; an install or build command of your own runs as
+  you wrote it (`python -m ...` there imports from the release first, as
+  Python always does).
+- **Who runs the install and build commands**: the site's **Run as**
+  account when it has one, like its instances (see
+  [Data directory](#data-directory)), and the service (SYSTEM) otherwise. These
+  commands run the application's own code (package scripts, NuGet build
+  targets, `setup.py`), and use caches in the site's folder (`.npm-cache`,
+  `.bun-cache`, `.deno-cache`, `.pip-cache`, `.nuget`) that a run-as
+  account can change. **Give a site that builds code you do not fully
+  trust, such as pull request previews, a run-as account**: without one,
+  that code runs as SYSTEM.
 - **Scheduled tasks** and **background workers** run with the site's
   runtime: a Python site's task is `python <script>` in its virtual
   environment; package scripts are for Node.js, Bun and Deno.
@@ -580,6 +594,17 @@ permissions: changing or turning off the identity removes the previous
 account's access. An application folder outside the data directory is the
 administrator's to share with that account. Applications' output is
 written to `logs\sites\<id>\` by the service, so that folder stays closed.
+
+A deployment of such a site runs its install and build commands (and
+Python's `-m venv`) as that account too, in a Job Object, with `TEMP` in
+`sites\<id>\.tmp`: what those commands run, and the package caches in the
+site's folder that the account can change, never run as SYSTEM. The
+service still extracts the upload or clones the repository and links the
+shared paths, into a release folder the account cannot open until then,
+and opens it for the commands. If you turn a site's run-as account off,
+delete the caches in its folder (`.npm-cache`, `.bun-cache`,
+`.deno-cache`, `.pip-cache`, `.nuget`, `.dotnet`): the account could have
+changed them, and SYSTEM would now build with them.
 
 Run unelevated (for development), the server also admits its own account,
 so it does not lock itself out of a data folder it created.

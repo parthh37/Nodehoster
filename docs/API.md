@@ -229,8 +229,14 @@ Ctrl+Break on Windows (SIGTERM elsewhere), then killed after
 Deployments default `deploy.installCommand` per runtime when it is empty
 (`npm ci --omit=dev`, `bun install --production`, `deno install`,
 `python -m pip install -r requirements.txt`, none for dotnet and custom); a
-python release gets its own virtual environment (`python -m venv`) before
-the install command, which runs with it first on `PATH`.
+python release gets its own virtual environment (`python -I -m venv`) before
+the install command, which runs with it first on `PATH`; the default python
+install command runs as `<venv>\Scripts\python.exe -I -X utf8 -m pip install
+-r requirements.txt` (isolated: modules in the release cannot stand in for
+`venv` or `pip`). The environment's creation and the install and build
+commands run as the site's `node.runAs` account when it is enabled (in a Job
+Object, `TEMP`/`TMP` = `sites\<id>\.tmp`; the deployment log says `commands
+run as <account>`), as the service otherwise.
 
 | Method | Path | Role | Response |
 |---|---|---|---|

@@ -84,9 +84,15 @@ func logonUser(username, password string) (windows.Token, error) {
 }
 
 // prepare configures the command before it starts. siteDir is the site's
-// folder under the data directory (sites\<id>).
+// folder under the data directory (sites\<id>). A raw command line the
+// caller set (cmd.exe's, for a deployment's shell command) is kept.
 func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, password, siteDir string) (func(), error) {
+	cmdLine := ""
+	if cmd.SysProcAttr != nil {
+		cmdLine = cmd.SysProcAttr.CmdLine
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine:       cmdLine,
 		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 		HideWindow:    true,
 	}

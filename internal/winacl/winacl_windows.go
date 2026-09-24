@@ -4,6 +4,7 @@ package winacl
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"sync"
 	"unsafe"
@@ -106,6 +107,28 @@ func Set(path, sddl string) error {
 	}
 	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, nil, nil, wantDACL, nil); err != nil {
 		return fmt.Errorf("set permissions of %s: %w", path, err)
+	}
+	return nil
+}
+
+// Mkdir creates a folder that has the DACL described by sddl from the
+// moment it exists: unlike creating it and then calling Set, no one the
+// folder it is in admits can open it (and keep the handle) in between.
+func Mkdir(path, sddl string) error {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return fmt.Errorf("parse %q: %w", sddl, err)
+	}
+	if dacl, _, err := sd.DACL(); err != nil || dacl == nil {
+		return fmt.Errorf("%q has no DACL", sddl)
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	if err := windows.CreateDirectory(p, sa); err != nil {
+		return &os.PathError{Op: "mkdir", Path: path, Err: err}
 	}
 	return nil
 }
