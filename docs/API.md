@@ -111,7 +111,7 @@ What a site-scoped caller gets:
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
 | `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, log shipping, server log search, rewrite import, server metrics) | 403 |
+| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 
 **Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
@@ -618,6 +618,35 @@ encrypted archive without `passphrase` (or with a wrong one) is a 422 with
 
 Events: `backup.completed` (info), `backup.failed` (error: no destination,
 or not every destination, received the archive).
+
+## Updates
+
+The server checks the signed release feed (`latest.json` and
+`latest.json.sig`, an Ed25519 signature of the manifest's exact bytes) and
+installs newer releases with setup. The settings are `settings.updates`
+`{auto, time: "HH:MM", weekdays: [0-6]}` (also in `GET/PUT /api/settings`).
+Admin only: installing runs setup as SYSTEM.
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| GET | `/api/updates` | | `UpdateStatus` |
+| PUT | `/api/updates` | `{auto, time, weekdays}` | `UpdateStatus`; 422 with `field` `updates.time` or `updates.weekdays` |
+| POST | `/api/updates/check` | | `UpdateStatus` after reading the feed; 409 when this installation cannot update itself (development build, portable copy) or a check/install is running; 502 when the feed cannot be read or its signature does not verify |
+| POST | `/api/updates/install` | | 202 `UpdateStatus` (checks first, then downloads and starts setup in the background; the service stops shortly after); 409 as above, or when there is nothing newer |
+
+`UpdateStatus` = `{auto, time, weekdays, current, state:
+idle|checking|downloading|installing, supported, reason?, available?:
+{version, published, size, notes, manual, failed}, lastCheck?, lastError?,
+nextCheck?, nextInstall?, lastResult?: {from, to, trigger:
+schedule|manual, startedAt, finishedAt?, ok, exitCode, error?, log?}}`.
+`manual`: the update policy leaves the release to an administrator even
+with `auto` on; `failed`: installing it failed before, so it is not retried
+unattended. `nextInstall` is set when the available release will install
+itself.
+
+Events: `update.available` (info, once per version), `update.installing`
+(info), `update.installed` (info, from the service that starts after the
+update), `update.failed` (error).
 
 ## Log shipping
 

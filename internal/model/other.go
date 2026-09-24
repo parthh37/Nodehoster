@@ -100,6 +100,7 @@ type Settings struct {
 	IPBan              IPBanSettings       `json:"ipBan"`
 	Backup             BackupSettings      `json:"backup"`
 	LogShipping        LogShippingSettings `json:"logShipping"`
+	Updates            UpdateSettings      `json:"updates"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

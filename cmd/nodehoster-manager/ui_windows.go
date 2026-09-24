@@ -181,14 +181,23 @@ func (s sortedTable) SortChanged() *walk.Event    { return s.sortChanged.Event()
 // model, and again when it restores its saved state; until the window is
 // built (arm) those are ignored, so a list starts in the server's order
 // (newest first, for the lists of events).
+//
+// The list view also sorts again whenever rows change, so on every refresh:
+// when that leaves the order as it was, the rows are only redrawn (by the
+// list view, on SortChanged), and the selection and scroll position stay.
 func (s sortedTable) Sort(col int, order walk.SortOrder) error {
 	if !s.armed {
 		col = -1
 	}
 	sel := s.selected()
+	same := col == s.sortCol && order == s.sortOrder
+	before := slices.Clone(s.shown)
 	s.sortCol, s.sortOrder = col, order
-	s.sortChanged.Publish()
 	s.rebuild()
+	s.sortChanged.Publish()
+	if same && slices.Equal(before, s.shown) {
+		return nil
+	}
 	s.PublishRowsReset()
 	s.reselect(sel)
 	return nil

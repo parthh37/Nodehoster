@@ -190,15 +190,9 @@ type nodeRelease struct {
 
 var versionRe = regexp.MustCompile(`^v?(\d+\.\d+\.\d+)`)
 
-// installNodeDialog asks which version to install, offering the recent
-// releases of each line (the LTS ones marked) and taking any typed one.
-func installNodeDialog(m *manager) (string, bool) {
-	var list []nodeRelease
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	listErr := m.cl.Get(ctx, "/api/node/available", &list)
-	cancel()
-
-	// The newest release of each major version, newest majors first.
+// releaseChoices lists the newest release of each major version, newest
+// majors first, the LTS ones marked.
+func releaseChoices(list []nodeRelease) []string {
 	var items []string
 	seen := map[string]bool{}
 	for _, r := range list {
@@ -218,20 +212,50 @@ func installNodeDialog(m *manager) (string, bool) {
 		}
 		items = append(items, label)
 	}
-	note := "Pick a release, or type any version, such as 20.18.1. It is downloaded from nodejs.org and verified by SHA-256."
-	if listErr != nil {
-		note = "The list of releases could not be read (" + listErr.Error() + "). Type a version, such as 22.12.0."
-	}
+	return items
+}
 
+// installNodeDialog asks which version to install, offering the recent
+// releases of each line and taking any typed one. The releases load in the
+// background (the server asks nodejs.org, which a firewalled server may
+// not reach), so the dialog opens at once and typing works meanwhile.
+func installNodeDialog(m *manager) (string, bool) {
 	var cb *walk.ComboBox
+	var note *walk.TextLabel
 	var version string
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // the dialog closed: drop a late answer
+	go func() {
+		var list []nodeRelease
+		rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
+		err := m.cl.Get(rctx, "/api/node/available", &list)
+		rcancel()
+		m.mw.Synchronize(func() {
+			if ctx.Err() != nil || cb == nil {
+				return
+			}
+			if err != nil {
+				note.SetText("The list of releases could not be read (" + err.Error() + "). Type a version, such as 22.12.0.")
+				return
+			}
+			typed := cb.Text()
+			cb.SetModel(releaseChoices(list))
+			if strings.TrimSpace(typed) == "" && len(list) > 0 {
+				cb.SetCurrentIndex(0)
+			} else {
+				cb.SetText(typed)
+			}
+			note.SetText("Pick a release, or type any version, such as 20.18.1. It is downloaded from nodejs.org and verified by SHA-256.")
+		})
+	}()
+
 	ok := runDialog(m.mw, "Install Node.js", Size{Width: 480}, []Widget{
 		intro(desktop.IconNode, "Install a version of Node.js for the sites to run on."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Version:"},
-			ComboBox{AssignTo: &cb, Editable: true, Model: items, CurrentIndex: map[bool]int{true: 0, false: -1}[len(items) > 0]},
+			ComboBox{AssignTo: &cb, Editable: true},
 		}},
-		hint(note),
+		TextLabel{AssignTo: &note, Text: "Loading the releases from nodejs.org…", TextColor: colorMuted},
 	}, func(dlg *walk.Dialog) bool {
 		v := versionRe.FindStringSubmatch(strings.TrimSpace(cb.Text()))
 		if v == nil {

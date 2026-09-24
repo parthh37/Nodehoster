@@ -20,8 +20,9 @@ import { LogShippingTab } from './LogShippingTab';
 import { MimeTab } from './MimeTab';
 import { SecurityTab } from './SecurityTab';
 import { SsoTab } from './SsoTab';
+import { UpdatesTab } from './UpdatesTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup' | 'updates';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
@@ -35,9 +36,10 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'admin', label: 'Admin console' },
   { key: 'sso', label: 'Single sign-on' },
   { key: 'backup', label: 'Backups' },
+  { key: 'updates', label: 'Updates' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup', 'updates'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -50,6 +52,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('ipBan')) return 'security';
   if (field.startsWith('backup')) return 'backup';
   if (field.startsWith('logShipping')) return 'logshipping';
+  if (field.startsWith('updates')) return 'updates';
   return 'process';
 }
 
@@ -134,6 +137,7 @@ export function SettingsPage() {
         {props && tab === 'sso' && <SsoTab {...props} />}
         {props && tab === 'logshipping' && <LogShippingTab {...props} />}
         {props && tab === 'backup' && <BackupsTab {...props} />}
+        {props && tab === 'updates' && <UpdatesTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
       {dirty && (

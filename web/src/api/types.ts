@@ -644,6 +644,55 @@ export interface Settings {
   ipBan: IPBanSettings;
   backup: BackupSettings;
   logShipping: LogShippingSettings;
+  updates: UpdateSettings;
+}
+
+/** Automatic updates from the signed release feed (model.UpdateSettings). */
+export interface UpdateSettings {
+  auto: boolean;
+  /** "HH:MM", server local time: when automatic installs happen. */
+  time: string;
+  /** 0 = Sunday … 6 = Saturday; empty = every day. */
+  weekdays: number[];
+}
+
+export type UpdateState = 'idle' | 'checking' | 'downloading' | 'installing';
+
+export interface UpdateRelease {
+  version: string;
+  published: string;
+  size: number;
+  /** Release notes page. */
+  notes: string;
+  /** Not installed automatically (the update policy); "Install now" does. */
+  manual: boolean;
+  /** Installing it failed before; not retried automatically. */
+  failed: boolean;
+}
+
+export interface UpdateResult {
+  from: string;
+  to: string;
+  trigger: 'schedule' | 'manual';
+  startedAt: string;
+  finishedAt?: string;
+  ok: boolean;
+  exitCode: number;
+  error?: string;
+  log?: string;
+}
+
+export interface UpdateStatus extends UpdateSettings {
+  current: string;
+  state: UpdateState;
+  supported: boolean;
+  reason?: string;
+  available?: UpdateRelease;
+  lastCheck?: string;
+  lastError?: string;
+  nextCheck?: string;
+  nextInstall?: string;
+  lastResult?: UpdateResult;
 }
 
 /** Single sign-on to the console with OpenID Connect (Entra ID and others). */

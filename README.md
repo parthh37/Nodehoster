@@ -87,6 +87,7 @@ IIS Manager, with a status icon in the notification area.
 - **Log shipping** to syslog (RFC 5424 over UDP, TCP or TLS), Seq (CLEF) or any HTTP collector (JSON or NDJSON batches): server log, sites' output and access logs, events and audit log, per-site filters; bounded queues that drop the oldest records rather than ever slowing a site, retries with back-off, delivery counters
 - **Log search** across current and rotated (also gzipped) log files: text or regular expressions, stream and time range, newest first
 - Backup & restore of the whole configuration
+- **Automatic updates**: new releases are announced in the consoles, the event log and the status icon, and installed at a maintenance time you choose (setup asks whether to turn this on; Settings → Updates, NodeHoster Manager or `nodehoster update auto on|off` change it). Every release manifest is signed (Ed25519) and the setup it names is checked against it before it runs; a failed update restarts the previous version and is not retried unattended
 - **Scheduled backups** to a folder or network share, S3-compatible storage (AWS, R2, B2, MinIO, Wasabi), Azure Blob Storage or SFTP (host key verified): configuration, certificates and keys, optionally the sites' shared folders; retention per destination; optional passphrase encryption (AES-256-GCM) that makes an archive restorable on a replacement server; restore from a file or straight from a destination
 
 ## Install
@@ -95,7 +96,9 @@ Download `NodeHoster-<version>-setup.exe` (release files are hosted on S3;
 the GitHub release page links to them) and run it. The installer registers
 the **NodeHoster** service (automatic, delayed start, restart on failure),
 opens the firewall for the program, starts it and checks that it is running.
-Upgrades install over the top; sites and data are kept.
+Upgrades install over the top; sites and data are kept. A first
+installation also asks whether NodeHoster may install its own updates (see
+[Updates](#updates)).
 
 Unattended install:
 
@@ -106,7 +109,8 @@ NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addt
 Exit code `0` means installed and running, `1` installed but the service did
 not start (see `C:\ProgramData\NodeHoster\logs\nodehoster.log`), `7` not
 installed because a newer version is (add `/ALLOWDOWNGRADE` to install the
-older one anyway; interactive setups ask instead).
+older one anyway; interactive setups ask instead). Add `autoupdate` to
+`/TASKS` to turn automatic updates on.
 
 Uninstall from **Settings → Apps**, or unattended (keeps the data):
 
@@ -132,6 +136,25 @@ Portable use: unzip `nodehoster.exe` anywhere and run, from an elevated prompt,
 nodehoster service install
 nodehoster service start
 ```
+
+### Updates
+
+The service checks the release feed a couple of minutes after it starts and
+every six hours, and announces a newer version once (event
+`update.available`, which webhooks and the status icon show). With
+**automatic updates** on, it installs it at the time you set (03:00 by
+default, optionally on some weekdays only): it downloads the setup, checks
+its size and SHA-256 against the release manifest, whose signature must
+verify with the key built into NodeHoster, and runs it unattended. Setup
+restarts the service, so sites are offline for a few seconds; the status
+icons that were open come back. Otherwise install from **Settings →
+Updates**, **NodeHoster Manager → Updates** or `nodehoster update install`.
+
+If setup fails, the previous version is started again, the failure is
+reported (`update.failed`, with setup's log in
+`C:\ProgramData\NodeHoster\logs\update-<version>.log`) and that version is not
+retried automatically. A portable `nodehoster.exe` and development builds
+never update themselves. Upgrades never change the setting.
 
 ### NodeHoster Manager
 
@@ -200,6 +223,9 @@ nodehoster backup <file>                     .zip: the full archive (encrypted w
                                              passphrase, if set); any other name: the configuration (JSON)
 nodehoster backup run | backup history [-n 10]  back up to the destinations now; recent backups
 nodehoster restore <file> [--yes] [--passphrase-file <file>]
+nodehoster update                            installed and newest version, automatic update settings
+nodehoster update check | update install [--yes]
+nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
 ```
 
 `backup run` and `backup history` are commands: to save a backup in a file

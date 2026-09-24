@@ -10,11 +10,18 @@
 // its SHA-256 as metadata and verified by size afterwards; a manifest.json
 // describing the upload is written next to the files, and optionally copied
 // to a fixed "latest" key that download scripts can poll.
+//
+// With -sign, each manifest gets a detached Ed25519 signature next to it
+// (<key>.sig, base64), made with the key in UPDATE_SIGNING_KEY (the base64
+// 32-byte seed). NodeHoster's automatic updates only trust a latest.json
+// whose signature verifies with a public key built into them.
 package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -63,6 +70,7 @@ func run() error {
 	commit := flag.String("commit", "", "commit recorded in manifest.json")
 	latest := flag.String("latest", "", "also write the manifest to this key")
 	immutable := flag.Bool("immutable", false, "fail instead of overwriting files that already exist")
+	sign := flag.Bool("sign", false, "sign the manifests with the Ed25519 key in UPDATE_SIGNING_KEY")
 	flag.Parse()
 
 	files := flag.Args()
@@ -80,6 +88,15 @@ func run() error {
 	id, secret := os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("S3_SECRET_ACCESS_KEY")
 	if id == "" || secret == "" {
 		return errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set")
+	}
+	// Checked before anything is uploaded: an unsigned release would be
+	// refused by every server that updates itself.
+	var key ed25519.PrivateKey
+	if *sign {
+		var err error
+		if key, err = signingKey(os.Getenv("UPDATE_SIGNING_KEY")); err != nil {
+			return err
+		}
 	}
 
 	client, err := minio.New(*endpoint, &minio.Options{
@@ -117,15 +134,51 @@ func run() error {
 	if *latest != "" {
 		keys = append(keys, *latest)
 	}
-	for _, key := range keys {
-		_, err := client.PutObject(ctx, *bucket, key, strings.NewReader(string(body)), int64(len(body)),
-			minio.PutObjectOptions{ContentType: "application/json", CacheControl: "no-cache"})
-		if err != nil {
-			return fmt.Errorf("write %s: %w", key, err)
+	for _, k := range keys {
+		if err := writeManifest(ctx, client, *bucket, k, body, key); err != nil {
+			return err
 		}
-		fmt.Printf("wrote s3://%s/%s\n", *bucket, key)
 	}
 	return nil
+}
+
+// signingKey reads the base64 Ed25519 seed (or full private key).
+func signingKey(b64 string) (ed25519.PrivateKey, error) {
+	if b64 == "" {
+		return nil, errors.New("-sign: UPDATE_SIGNING_KEY is not set")
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	switch {
+	case err != nil:
+		return nil, errors.New("-sign: UPDATE_SIGNING_KEY is not base64")
+	case len(raw) == ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(raw), nil
+	case len(raw) == ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(raw), nil
+	}
+	return nil, fmt.Errorf("-sign: UPDATE_SIGNING_KEY is %d bytes, expected a 32-byte seed", len(raw))
+}
+
+// writeManifest writes the manifest to key and, with a signing key, its
+// signature to key + ".sig". Neither is cached: clients poll them.
+func writeManifest(ctx context.Context, c *minio.Client, bucket, key string, body []byte, priv ed25519.PrivateKey) error {
+	put := func(k, contentType string, data []byte) error {
+		_, err := c.PutObject(ctx, bucket, k, strings.NewReader(string(data)), int64(len(data)),
+			minio.PutObjectOptions{ContentType: contentType, CacheControl: "no-cache"})
+		if err != nil {
+			return fmt.Errorf("write %s: %w", k, err)
+		}
+		fmt.Printf("wrote s3://%s/%s\n", bucket, k)
+		return nil
+	}
+	if err := put(key, "application/json", body); err != nil {
+		return err
+	}
+	if priv == nil {
+		return nil
+	}
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body)) + "\n"
+	return put(key+".sig", "text/plain", []byte(sig))
 }
 
 func upload(ctx context.Context, c *minio.Client, bucket, prefix, file string, immutable bool) (fileEntry, error) {

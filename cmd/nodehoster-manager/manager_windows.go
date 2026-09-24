@@ -49,6 +49,7 @@ type manager struct {
 
 	pendingSite  string // shown as soon as a refresh lists it
 	pendingTries int    // refreshes that did not list it
+	resumeSite   string // the site shown when the connection dropped
 	rebuilding   bool   // the tree is being rebuilt: ignore its selection changes
 
 	// What runs in the background, and the last outcome, for the status bar.
@@ -75,6 +76,7 @@ type manager struct {
 	mail     mailPage
 	bans     bansPage
 	backups  backupsPage
+	updates  updatesPage
 }
 
 // page is what the middle and right panes show for a node of the tree.
@@ -131,6 +133,7 @@ func runManager(openSite string) {
 		{navMail, m.mail.init(m), m.mail.content(m), m.mail.actionsPane(m)},
 		{navBans, m.bans.init(m), m.bans.content(m), m.bans.actionsPane(m)},
 		{navBackups, m.backups.init(m), m.backups.content(m), m.backups.actionsPane(m)},
+		{navUpdates, m.updates.init(m), m.updates.content(m), m.updates.actionsPane(m)},
 	}
 	m.pages = map[navKind]*page{}
 	var contents, actions []Widget
@@ -226,6 +229,7 @@ func runManager(openSite string) {
 		fatal(err)
 	}
 	armSortables()
+	syncCommands()
 
 	m.tree.SetExpanded(m.nav.root, true)
 	m.tree.SetCurrentItem(m.nav.root)
@@ -356,10 +360,11 @@ func (m *manager) refresh(full bool) {
 }
 
 func (m *manager) apply(svc string, sites []localapi.Site, info *model.ServerInfo, account string, err error) {
-	if err != nil && m.cur == m.pages[navSite] && m.site != "" && m.pendingSite == "" {
-		// The connection dropped (the service restarts, say): come back
-		// to this site once it answers again.
-		m.openWhenListed(m.site)
+	if err != nil && m.cur == m.pages[navSite] && m.site != "" {
+		// The connection dropped (the service restarts, say): the tree
+		// loses the sites and falls back to the list; come back to this
+		// site once it answers again, unless the user went elsewhere.
+		m.resumeSite = m.site
 	}
 	m.service, m.connErr = svc, err
 	if err == nil {
@@ -382,6 +387,12 @@ func (m *manager) apply(svc string, sites []localapi.Site, info *model.ServerInf
 		if m.cur.update != nil {
 			m.cur.update()
 		}
+	}
+	if m.resumeSite != "" && err == nil {
+		if m.cur == m.pages[navSites] {
+			m.showSite(m.resumeSite)
+		}
+		m.resumeSite = ""
 	}
 	if m.pendingSite != "" && err == nil {
 		if m.showSite(m.pendingSite) {
@@ -772,6 +783,7 @@ const (
 	navMail
 	navBans
 	navBackups
+	navUpdates
 )
 
 type navItem struct {
@@ -823,6 +835,7 @@ func newNavModel() *navModel {
 		{kind: navBans, text: "Banned IP addresses", parent: root, image: ico(desktop.IconBans)},
 		{kind: navActivity, text: "Events and audit log", parent: root, image: ico(desktop.IconActivity)},
 		{kind: navBackups, text: "Backups", parent: root, image: ico(desktop.IconBackups)},
+		{kind: navUpdates, text: "Updates", parent: root, image: ico(desktop.IconDownload)},
 	}
 	return m
 }

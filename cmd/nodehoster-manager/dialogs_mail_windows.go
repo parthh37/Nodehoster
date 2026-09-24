@@ -103,6 +103,17 @@ func mailPropertiesDialog(m *manager) {
 		}
 	}
 	dkimList.t.onSelect = showRecord
+	// Removing a key deletes its private key once saved: ask, from the
+	// button and from the Delete key alike.
+	removeKey := func() {
+		if k := dkimList.current(); k != nil && ask(dlg, "Remove DKIM key", "Remove the key of "+k.Domain+"?",
+			"Its private key is deleted when the settings are saved; mail from "+k.Domain+" is no longer signed.",
+			walk.TaskDialogSystemIconWarning, [2]string{"Remove", ""}) == 0 {
+			dkimList.remove()
+			showRecord()
+		}
+	}
+	dkimList.onDelete = removeKey
 	copyRecord := func(name bool) {
 		if k := dkimList.current(); k != nil && k.DNSRecord != "" {
 			if name {
@@ -201,14 +212,7 @@ func mailPropertiesDialog(m *manager) {
 							dkimList.refresh()
 						}
 					}),
-					button("Remove", func() {
-						if k := dkimList.current(); k != nil && ask(dlg, "Remove DKIM key", "Remove the key of "+k.Domain+"?",
-							"Its private key is deleted when the settings are saved; mail from "+k.Domain+" is no longer signed.",
-							walk.TaskDialogSystemIconWarning, [2]string{"Remove", ""}) == 0 {
-							dkimList.remove()
-							showRecord()
-						}
-					}),
+					button("Remove", removeKey),
 				),
 				TextEdit{AssignTo: &dkimRecord, ReadOnly: true, VScroll: true, MinSize: Size{Height: 80}, Font: Font{Family: "Consolas", PointSize: 9}},
 				Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{

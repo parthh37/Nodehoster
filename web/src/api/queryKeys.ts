@@ -31,6 +31,7 @@ export const qk = {
   ssoCallbackUrl: ['settings', 'sso', 'callback-url'] as const,
   bans: ['bans'] as const,
   backups: ['backups'] as const,
+  updates: ['updates'] as const,
   backupFiles: (destId: string) => ['backups', 'files', destId] as const,
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
   logShippingStatus: ['logshipping', 'status'] as const,
