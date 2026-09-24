@@ -85,6 +85,21 @@ func (e *env) previews(opts []opt, siteID string, want int) []model.PreviewView 
 	return nil
 }
 
+// previewUntil waits for the site's one preview to satisfy done and
+// returns it. A webhook or an approval only queues its work: until that
+// runs, the preview reads as settled in its previous state.
+func (e *env) previewUntil(opts []opt, siteID string, done func(model.PreviewView) bool) model.PreviewView {
+	e.t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		p := e.previews(opts, siteID, 1)[0]
+		if done(p) || time.Now().After(deadline) {
+			return p
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestPreviewWebhook(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -336,7 +351,7 @@ func TestPreviewApproveEndpoint(t *testing.T) {
 	expect(t, e.do(http.MethodPost, approve, map[string]string{"commit": "fedcba9876"}, op...), http.StatusUnprocessableEntity)
 	rec := e.do(http.MethodPost, approve, map[string]string{"commit": "0123456"}, op...)
 	expect(t, rec, http.StatusAccepted)
-	p = e.previews(op, parent.ID, 1)[0]
+	p = e.previewUntil(op, parent.ID, func(p model.PreviewView) bool { return p.LastDeployment != nil })
 	// The repository does not exist: the approved deployment fails.
 	if p.State != model.PreviewFailed || p.Preview.ApprovedBy != "op" || p.Preview.AwaitingApproval || p.LastDeployment == nil {
 		t.Errorf("after approval = %+v", p)
@@ -348,7 +363,7 @@ func TestPreviewApproveEndpoint(t *testing.T) {
 	// A new push waits again.
 	const next = "89abcdef0123456789abcdef0123456789abcdef"
 	expect(t, e.hook(parent.ID, "pull_request", prPayloadAt("synchronize", 9, true, next)), http.StatusAccepted)
-	p = e.previews(op, parent.ID, 1)[0]
+	p = e.previewUntil(op, parent.ID, func(p model.PreviewView) bool { return p.Preview.Commit == next })
 	if p.State != model.PreviewAwaitingApproval || p.Preview.Commit != next {
 		t.Errorf("after a push = %+v", p)
 	}
