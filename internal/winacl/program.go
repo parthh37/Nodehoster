@@ -161,3 +161,16 @@ func chain(exe string, extra []string) []node {
 	}
 	return nodes
 }
+
+// CheckServiceProgram is CheckProgram when this process is privileged
+// (the NodeHoster service, LocalSystem; root elsewhere), and nil
+// otherwise: a program other users could replace only lets them run code
+// as an account more powerful than theirs when the server runs as one.
+// A server run as an ordinary account (development, CI) runs what it
+// finds, as that account.
+func CheckServiceProgram(exe string, dirs ...string) error {
+	if !Privileged() {
+		return nil
+	}
+	return CheckProgram(exe, dirs...)
+}

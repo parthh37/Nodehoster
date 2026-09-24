@@ -532,7 +532,8 @@ processes is the same for all of them; what differs is how they start:
   page shows what was found and links there when nothing was.
   `nodehoster deps` lists every runtime a site uses as required.
 - **Only programs administrators control are run.** The service runs as
-  SYSTEM, and runs what it finds (to ask an interpreter its version, and in
+  SYSTEM (checked when NodeHoster runs as SYSTEM or root, not when a
+  developer runs it as their own account), and runs what it finds (to ask an interpreter its version, and in
   deployments). So an interpreter, `dotnet.exe`, a `bun`/`deno`, and a
   `node`, `git` or custom command's program found on PATH are used only when no account but SYSTEM, Administrators and
   TrustedInstaller can change it, its folder (for Python also `Lib`,

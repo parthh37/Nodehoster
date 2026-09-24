@@ -30,6 +30,9 @@ import (
 // runtimes.
 func GitDir(data string) string { return filepath.Join(data, "git") }
 
+// checkProgram vets a git before deployments run it (tests replace it).
+var checkProgram = winacl.CheckServiceProgram
+
 // FindGit returns the git that deployments run: the one on PATH, else
 // NodeHoster's own, else Git for Windows in its standard folder. The last
 // two matter because a Windows service keeps the PATH it started with
@@ -55,7 +58,7 @@ func FindGit(data string) (string, error) {
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
-		if err := winacl.CheckProgram(p); err != nil {
+		if err := checkProgram(p); err != nil {
 			if untrusted == nil {
 				untrusted = err
 			}

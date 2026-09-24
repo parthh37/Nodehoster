@@ -309,7 +309,7 @@ func findProgram(dir, name string) (string, error) {
 	}
 	// Found on PATH, not chosen by path: only one that users other than
 	// administrators cannot replace.
-	if err := winacl.CheckProgram(p); err != nil {
+	if err := winacl.CheckServiceProgram(p); err != nil {
 		return "", fmt.Errorf("the program %q found on PATH is not used: %w; give its full path", name, err)
 	}
 	return p, nil

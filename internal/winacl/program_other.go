@@ -68,3 +68,7 @@ func checkNode(n node, self int) error {
 	}
 	return nil
 }
+
+// Privileged reports whether this process runs as root: the account whose
+// programs other users must not be able to plant.
+func Privileged() bool { return os.Geteuid() == 0 }

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 func TestMinGitAssetNames(t *testing.T) {
@@ -84,7 +86,7 @@ func TestFindGitOnPath(t *testing.T) {
 
 // Deployments run git as the service: a git in a folder anyone can write
 // to is passed over.
-func TestFindGitSkipsUntrusted(t *testing.T) {
+func TestFindGitSkipsUntrusted(t *testing.T) { // not parallel: replaces checkProgram
 	if runtime.GOOS == "windows" {
 		t.Skip("folder permissions are set with ACLs on Windows (winacl tests)")
 	}
@@ -96,6 +98,9 @@ func TestFindGitSkipsUntrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
+	old := checkProgram
+	checkProgram = winacl.CheckProgram // as the service would
+	defer func() { checkProgram = old }()
 	if p, err := FindGit(t.TempDir()); err == nil || !strings.Contains(err.Error(), "is not used") {
 		t.Fatalf("FindGit = %q, %v", p, err)
 	}

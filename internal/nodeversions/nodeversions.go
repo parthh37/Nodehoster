@@ -153,7 +153,7 @@ func (m *Manager) System() *System {
 	}
 	// Sites and deployments run it as the service: not one that users
 	// other than administrators could replace.
-	if winacl.CheckProgram(p) != nil {
+	if winacl.CheckServiceProgram(p) != nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

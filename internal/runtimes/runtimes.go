@@ -164,7 +164,7 @@ func New(dir, tmp string, log *slog.Logger) *Manager {
 			_, err := os.Stat(p)
 			return err
 		},
-		trusted:         winacl.CheckProgram,
+		trusted:         winacl.CheckServiceProgram,
 		registryPythons: registryPythons,
 		jobs:            map[string]*Installed{},
 		avail:           map[string]availCache{},

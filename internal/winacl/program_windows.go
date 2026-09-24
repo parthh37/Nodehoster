@@ -116,3 +116,14 @@ func accountName(sid string) string {
 	}
 	return account + " (" + sid + ")"
 }
+
+// Privileged reports whether this process runs as LocalSystem, as the
+// NodeHoster service does: the account whose programs other users must
+// not be able to plant.
+func Privileged() bool {
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return true // unknown: be strict
+	}
+	return u.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
+}
