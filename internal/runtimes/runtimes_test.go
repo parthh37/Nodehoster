@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -566,7 +567,7 @@ func TestInstallManagedRuntimes(t *testing.T) {
 	if err != nil || exe.Exe != filepath.Join(m.dir, "bun", "1.2.0", "bun") {
 		t.Fatalf("resolve bun: %+v %v", exe, err)
 	}
-	if st, err := os.Stat(exe.Exe); err != nil || st.Mode()&0o100 == 0 {
+	if st, err := os.Stat(exe.Exe); err != nil || (runtime.GOOS != "windows" && st.Mode()&0o100 == 0) { // Windows has no execute bit
 		t.Fatalf("bun is not executable: %v", err)
 	}
 	if err := m.Install(model.RuntimeBun, "1.2.0"); err == nil {

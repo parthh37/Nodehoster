@@ -174,10 +174,16 @@ func TestClientCertRequirePathsCanonical(t *testing.T) {
 	// With a valid certificate every spelling is served as it would be
 	// without mTLS (nothing is refused as uncheckable either).
 	good := e.client("files.example.com", ca.issue(t, "device-1", time.Time{}))
-	for _, p := range []string{"/admin/secret.txt", "//admin/secret.txt", "/ADMIN/secret.txt"} {
+	for _, p := range []string{"/admin/secret.txt", "//admin/secret.txt"} {
 		if r := e.mustGet(good, "files.example.com", p); r.status != 200 || r.body != "top secret" {
 			t.Errorf("%s with a certificate: %d %q", p, r.status, r.body)
 		}
+	}
+	// Found or not as the file system has it (case-insensitive on Windows
+	// and macOS, not on Linux), but never refused.
+	if r := e.mustGet(good, "files.example.com", "/ADMIN/secret.txt"); r.status == http.StatusForbidden || r.status == http.StatusBadRequest ||
+		(r.status == 200 && r.body != "top secret") {
+		t.Errorf("/ADMIN/secret.txt with a certificate: %d %q", r.status, r.body)
 	}
 	if r := e.mustGet(e.client("app.example.com", ca.issue(t, "device-1", time.Time{})), "app.example.com", "/admin%2Fx"); r.status != 200 {
 		t.Errorf("encoded slash with a certificate: %d", r.status)

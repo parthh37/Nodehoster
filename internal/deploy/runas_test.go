@@ -25,7 +25,7 @@ type runAsRecorder struct {
 
 func (r *runAsRecorder) run(ctx context.Context, cmd *exec.Cmd, ra model.RunAsConfig, password, siteDir string) error {
 	r.mu.Lock()
-	r.calls = append(r.calls, ra.Username+" "+password+" "+siteDir+": "+strings.Join(cmd.Args[1:], " "))
+	r.calls = append(r.calls, ra.Username+" "+password+" "+siteDir+": "+commandLine(cmd))
 	r.dirs = append(r.dirs, cmd.Dir)
 	r.mu.Unlock()
 	return cmd.Run()

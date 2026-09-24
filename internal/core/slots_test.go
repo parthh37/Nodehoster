@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +16,7 @@ func slotTestSite() *model.Site {
 			{Protocol: "http", Port: 8081, Host: "www.example.com"},
 			{Protocol: "http", Port: 8081, Host: "staging.example.com", Slot: "staging"},
 		},
-		Node: &model.NodeConfig{AppRoot: filepath.Join("C:", "apps", "shop"), Script: "server.js", Instances: 2,
+		Node: &model.NodeConfig{AppRoot: `C:\apps\shop`, Script: "server.js", Instances: 2,
 			Env: []model.EnvVar{{Name: "DB", Value: "prod", SlotSetting: true}}},
 		Slots: []model.DeploymentSlot{{Name: "staging", Env: []model.EnvVar{{Name: "TOKEN", Value: "s3cret", Secret: true}}}},
 	}

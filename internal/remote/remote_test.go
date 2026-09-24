@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -174,10 +175,16 @@ func TestSavedConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(p)
-	if strings.Contains(string(raw), "nh_secret\"") || !strings.Contains(string(raw), `"token": "plain:`) {
+	// Protected with DPAPI for the Windows account; elsewhere the file is
+	// its only protection.
+	prefix := `"token": "plain:`
+	if runtime.GOOS == "windows" {
+		prefix = `"token": "dpapi:`
+	}
+	if strings.Contains(string(raw), "nh_secret\"") || !strings.Contains(string(raw), prefix) {
 		t.Fatalf("stored:\n%s", raw)
 	}
-	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(p); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("mode: %v, %v", fi.Mode(), err)
 	}
 	list, err := LoadSavedFrom(p)
