@@ -131,6 +131,10 @@ func TestIISApplicationHost(t *testing.T) {
 			t.Errorf("shop: no %s note about %q:\n%s", n.level, n.text, notes(shop))
 		}
 	}
+	// iisnode ran it as the pool identity; here it is the service account.
+	if !hasNote(shop, model.NoteApproximated, "LocalSystem", "Run as") || !hasNote(find(t, pv, "iis-shop-api"), model.NoteApproximated, "LocalSystem") {
+		t.Errorf("no service account note:\n%s", notes(shop))
+	}
 	if strings.Contains(notes(shop), "enc:") {
 		t.Error("the app pool password leaked into a note")
 	}
@@ -155,7 +159,7 @@ func TestIISApplicationHost(t *testing.T) {
 	if !reflect.DeepEqual(docs.Routing.Locations, []model.Location{{Path: "/legacy/files", Kind: "static", Root: `C:\share\files`, StripPrefix: true}}) {
 		t.Errorf("docs locations %+v", docs.Routing.Locations)
 	}
-	if !hasNote(docsItem, model.NoteSkipped, "/legacy", "PHP") || !hasNote(docsItem, model.NoteSkipped, "NetworkService") {
+	if !hasNote(docsItem, model.NoteSkipped, "/legacy", "PHP") || !hasNote(docsItem, model.NoteSkipped, "NetworkService") || hasNote(docsItem, model.NoteApproximated, "LocalSystem") {
 		t.Errorf("docs notes:\n%s", notes(docsItem))
 	}
 

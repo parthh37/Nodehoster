@@ -83,6 +83,16 @@ func TestImportPreviewAndApply(t *testing.T) {
 	if len(res.Created) != 3 || len(res.Failed) != 1 || res.Failed[0].Key != "dup" || !strings.Contains(res.Failed[0].Error, "already exists") {
 		t.Fatalf("result: %+v", res)
 	}
+	// The apps ran as the user who started PM2; here they run as the
+	// service account, and both the preview and the result say so.
+	if !strings.Contains(notesText(items["pm2-api"]), "LocalSystem") {
+		t.Errorf("preview has no service account note: %+v", items["pm2-api"].Notes)
+	}
+	for _, c := range res.Created {
+		if want := c.Kind == model.ImportKindSite; strings.Contains(c.Warning, "LocalSystem") != want {
+			t.Errorf("%s: warning %q", c.Key, c.Warning)
+		}
+	}
 
 	var api, worker *model.Site
 	for _, s := range e.c.Sites() {
@@ -159,8 +169,11 @@ func TestImportApplyMountsInOrder(t *testing.T) {
 	if !e.c.IsRunning(p) {
 		t.Error("parent not started")
 	}
-	if res.Created[0].Warning == "" {
-		t.Errorf("no warning for the node site that could not start: %+v", res.Created[0])
+	if w := res.Created[0].Warning; !strings.Contains(w, "could not be started") || !strings.Contains(w, "LocalSystem") {
+		t.Errorf("warning for the node site that could not start: %+v", res.Created[0])
+	}
+	if res.Created[1].Warning != "" {
+		t.Errorf("warning for the static site: %+v", res.Created[1])
 	}
 }
 
@@ -176,4 +189,12 @@ func TestImportLocalIIS(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "only possible on Windows") {
 		t.Fatalf("body: %s", rec.Body)
 	}
+}
+
+func notesText(it model.ImportItem) string {
+	var b strings.Builder
+	for _, n := range it.Notes {
+		b.WriteString(n.Text + "\n")
+	}
+	return b.String()
 }

@@ -129,6 +129,7 @@ func Preview(source string, data []byte, filename string, opts Options) (model.I
 		}
 		return pv, &model.ValidationError{Field: "file", Message: err.Error()}
 	}
+	serviceAccountNotes(&pv)
 	checkConflicts(&pv, opts.Existing)
 	if pv.Items == nil {
 		pv.Items = []model.ImportItem{}
@@ -137,6 +138,24 @@ func Preview(source string, data []byte, filename string, opts Options) (model.I
 		pv.Warnings = []string{}
 	}
 	return pv, nil
+}
+
+// ServiceAccountWarning is said of every imported Node.js site that has no
+// Run as. IIS ran it as a low-privilege application pool identity and PM2
+// as the user who started it; NodeHoster runs it as its own service
+// account unless told otherwise, which an import must not hide.
+const ServiceAccountWarning = "It runs as the NodeHoster service account (LocalSystem), which has full control of this server: set Run as on the site's Settings tab to a low-privilege account before starting it."
+
+func serviceAccountNotes(pv *model.ImportPreview) {
+	for i := range pv.Items {
+		it := &pv.Items[i]
+		for _, o := range it.Options {
+			if o.Kind == model.ImportKindSite && o.Site != nil && o.Site.RunsNode() && (o.Site.Node == nil || !o.Site.Node.RunAs.Enabled) {
+				it.Notes = append(it.Notes, model.ImportNote{Level: model.NoteApproximated, Text: ServiceAccountWarning})
+				break
+			}
+		}
+	}
 }
 
 // ---- building items

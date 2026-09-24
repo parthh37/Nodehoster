@@ -118,7 +118,11 @@ func (c *Core) ImportApply(ctx context.Context, req model.ImportApplyRequest) mo
 			}
 			ids[it.Key] = site.ID
 			created = append(created, site)
-			res.Created = append(res.Created, model.ImportCreated{Key: it.Key, Kind: model.ImportKindSite, SiteID: site.ID, Name: site.Name})
+			ic := model.ImportCreated{Key: it.Key, Kind: model.ImportKindSite, SiteID: site.ID, Name: site.Name}
+			if site.RunsNode() && !site.Node.RunAs.Enabled {
+				ic.Warning = importer.ServiceAccountWarning
+			}
+			res.Created = append(res.Created, ic)
 		}
 		if !progress {
 			for _, it := range next {
@@ -158,7 +162,11 @@ func (c *Core) ImportApply(ctx context.Context, req model.ImportApplyRequest) mo
 			if err := c.StartSite(s.ID); err != nil {
 				for i := range res.Created {
 					if res.Created[i].SiteID == s.ID && res.Created[i].Kind == model.ImportKindSite {
-						res.Created[i].Warning = "created, but it could not be started: " + err.Error()
+						w := "created, but it could not be started: " + err.Error()
+						if prev := res.Created[i].Warning; prev != "" {
+							w += ". " + prev
+						}
+						res.Created[i].Warning = w
 					}
 				}
 			}

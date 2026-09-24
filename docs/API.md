@@ -363,7 +363,13 @@ task?, taskSite?}`; `taskSite` is `import:<key>` or an existing node or
 worker site id). It creates sites that others mount first, never overwrites
 a site (a taken name fails that item), adds tasks to their site, and leaves
 the sites stopped unless `start` is true. Each creation is audited
-(`site.import`; a task added to a site: `site.update`).
+(`site.import`; a task added to a site: `site.update`). Passwords are never
+imported, so Node.js and worker drafts have no Run as: they would run as
+the NodeHoster service account (LocalSystem) where IIS used a low-privilege
+pool identity and PM2 the user who started it. Their preview carries an
+`approximated` note saying so, and each such created site a `warning` in
+the result (after "could not be started", when that happened too); `start`
+still starts them, as it would a site created by hand.
 
 ## URL rewrite and MIME types
 
