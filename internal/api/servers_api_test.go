@@ -421,6 +421,21 @@ func TestRoleLimitHeader(t *testing.T) {
 	if got := e.do("GET", "/api/sites", nil, withBearer(adminTok)).Header().Get(model.RoleLimitAppliedHeader); got != "" {
 		t.Errorf("applied limit %q without one asked", got)
 	}
+
+	// The account behind a limited request is out of reach, even at the
+	// admin limit: nothing mints a token or changes the sign-in through a
+	// connection, whether or not its proxy's own check holds.
+	adm, _ := e.c.Store.GetUserByName(context.Background(), "adm")
+	for _, lim := range []string{"admin", "viewer"} {
+		limited := []opt{withBearer(adminTok), withHeader(model.RoleLimitHeader, lim)}
+		expect(t, e.do("POST", "/api/tokens", map[string]any{"name": "more"}, limited...), http.StatusForbidden)
+		expect(t, e.do("GET", "/api/tokens", nil, limited...), http.StatusForbidden)
+		expect(t, e.do("POST", "/api/auth/password", map[string]any{"current": testPassword, "new": "Another-passw0rd!"}, limited...), http.StatusForbidden)
+		expect(t, e.do("POST", "/api/auth/totp/setup", nil, limited...), http.StatusForbidden)
+		expect(t, e.do("PUT", "/api/users/"+adm.ID, map[string]any{"role": "admin"}, limited...), http.StatusForbidden)
+	}
+	expect(t, e.do("GET", "/api/tokens", nil, withBearer(adminTok)), http.StatusOK)
+	expect(t, e.do("GET", "/api/auth/me", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer")), http.StatusOK)
 }
 
 // oldServer is a fake remote console that answers like a NodeHoster server

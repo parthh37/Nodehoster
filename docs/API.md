@@ -1373,7 +1373,9 @@ nothing a remote server sends runs as a page of this server. Rules:
   administrator's token (`auth/me` shows the capped access). Any client
   may send the header to narrow its own access; an unknown role is 400.
   The server answers `X-NodeHoster-Role-Limit-Applied: <role>` when it
-  applied it.
+  applied it, and refuses a limited request to the account endpoints
+  (`auth/*` other than `auth/me`, `tokens`, and a change to the token's
+  own user through `/users/{id}`) with 403.
 - An older remote server ignores the header, which would give the token's
   full rights to anyone: only administrators may use it. For others the
   proxy answers 403 (`… is too old for role limits`) when the last check
