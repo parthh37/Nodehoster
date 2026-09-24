@@ -466,7 +466,10 @@ A ban lasts `banMinutes` (15), doubling for each further ban of the same
 address within a week, up to `maxBanMinutes` (1440). IPv4 addresses are
 banned one by one, IPv6 by `ipv6Prefix` (64). Loopback, `allowList` and
 `proxy.trustedProxies` are never banned: bans apply to the client address
-resolved through trusted proxies. Enforcement is the first thing a request
+resolved through trusted proxies (the right-most `X-Forwarded-For` entry
+that is not a trusted proxy; `ip:port` and `[v6]:port` entries are read,
+and an entry that cannot be read resolves to the proxy itself rather than
+to anything the client wrote left of it). Enforcement is the first thing a request
 meets on every listener, before the site's pipeline: a banned client gets a
 bare `403 Forbidden` with `Connection: close` (not a closed connection,
 which behind a CDN would break a connection shared with other clients).

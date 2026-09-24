@@ -640,7 +640,10 @@ func (s *Server) trustsForwarded(r *http.Request) bool {
 }
 
 // clientIP is the real client address: the peer, or, behind trusted proxies,
-// the right-most untrusted address in X-Forwarded-For.
+// the right-most untrusted address in X-Forwarded-For. Only the entries
+// trusted proxies appended are believed: an entry that cannot be read ends
+// the walk at the peer, because everything to its left may have been
+// written by the client (to pick someone else's address, or dodge a ban).
 func (s *Server) clientIP(r *http.Request) string {
 	if v, ok := r.Context().Value(ctxClientIP).(string); ok {
 		return v
@@ -649,16 +652,43 @@ func (s *Server) clientIP(r *http.Request) string {
 	if !s.trustsForwarded(r) {
 		return peer
 	}
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	parts := strings.Split(forwardedFor(r), ",")
 	s.trustedMu.RLock()
 	defer s.trustedMu.RUnlock()
 	for i := len(parts) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(parts[i])
-		if parsed := net.ParseIP(ip); parsed != nil && !inNets(parsed, s.trusted) {
-			return ip
+		ip := forwardedIP(parts[i])
+		if ip == nil {
+			return peer
+		}
+		if !inNets(ip, s.trusted) {
+			return ip.String()
 		}
 	}
 	return peer
+}
+
+// forwardedFor is the X-Forwarded-For chain, from every header line: a
+// proxy that adds its own line rather than appending to the client's must
+// not leave the client's line to be read as the whole chain.
+func forwardedFor(r *http.Request) string {
+	return strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+}
+
+// forwardedIP reads an X-Forwarded-For entry: an address, or an address
+// with a port as some load balancers write it (Azure Application Gateway:
+// 203.0.113.7:51234, [2001:db8::7]:51234). nil when it is neither.
+func forwardedIP(entry string) net.IP {
+	entry = strings.TrimSpace(entry)
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(entry); err == nil {
+		return net.ParseIP(host)
+	}
+	if strings.HasPrefix(entry, "[") && strings.HasSuffix(entry, "]") {
+		return net.ParseIP(entry[1 : len(entry)-1])
+	}
+	return nil
 }
 
 // ---- status for the API

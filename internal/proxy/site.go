@@ -456,7 +456,7 @@ func (rt *siteRuntime) forwardHeaders(pr *httputil.ProxyRequest) {
 	clientIP, _ := in.Context().Value(ctxClientIP).(string)
 	prior := ""
 	if rt.srv.trustsForwarded(in) {
-		prior = in.Header.Get("X-Forwarded-For")
+		prior = forwardedFor(in)
 	}
 	if prior != "" {
 		pr.Out.Header.Set("X-Forwarded-For", prior+", "+remoteIP(in))

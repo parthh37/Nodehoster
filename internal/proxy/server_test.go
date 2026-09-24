@@ -66,3 +66,42 @@ func TestAuthFailuresCountOnlyPasswordGuesses(t *testing.T) {
 		}
 	}
 }
+
+// TestClientIPBehindTrustedProxies: only entries trusted proxies appended
+// are believed. Entries with a port (as Azure Application Gateway writes
+// them) are read, and one that cannot be read never lets the walk go on
+// into what the client wrote.
+func TestClientIPBehindTrustedProxies(t *testing.T) {
+	s := testServer(model.DefaultSettings())
+	_, lan, _ := net.ParseCIDR("10.0.0.0/8")
+	s.trusted = []*net.IPNet{lan}
+	for _, tc := range []struct {
+		name string
+		peer string
+		xff  []string
+		want string
+	}{
+		{"direct client", "198.51.100.7:4000", []string{"1.2.3.4"}, "198.51.100.7"},
+		{"no header", "10.0.0.1:4000", nil, "10.0.0.1"},
+		{"one hop", "10.0.0.1:4000", []string{"198.51.100.7"}, "198.51.100.7"},
+		{"client-written entry", "10.0.0.1:4000", []string{"1.2.3.4, 198.51.100.7"}, "198.51.100.7"},
+		{"chain of trusted proxies", "10.0.0.1:4000", []string{"198.51.100.7, 10.0.0.2"}, "198.51.100.7"},
+		{"with a port", "10.0.0.1:4000", []string{"1.2.3.4, 198.51.100.7:51234"}, "198.51.100.7"},
+		{"IPv6 with a port", "10.0.0.1:4000", []string{"1.2.3.4, [2001:db8::7]:51234"}, "2001:db8::7"},
+		{"IPv6 in brackets", "10.0.0.1:4000", []string{"1.2.3.4, [2001:db8::7]"}, "2001:db8::7"},
+		{"trusted proxy with a port", "10.0.0.1:4000", []string{"198.51.100.7:1, 10.0.0.2:2"}, "198.51.100.7"},
+		{"unreadable entry", "10.0.0.1:4000", []string{"1.2.3.4, unknown"}, "10.0.0.1"},
+		{"unreadable entry after a trusted hop", "10.0.0.1:4000", []string{"1.2.3.4, bogus:80, 10.0.0.2"}, "10.0.0.1"},
+		{"empty entry", "10.0.0.1:4000", []string{"1.2.3.4, , 10.0.0.2"}, "10.0.0.1"},
+		{"a proxy adding its own line", "10.0.0.1:4000", []string{"1.2.3.4", "198.51.100.7"}, "198.51.100.7"},
+	} {
+		req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+		req.RemoteAddr = tc.peer
+		for _, v := range tc.xff {
+			req.Header.Add("X-Forwarded-For", v)
+		}
+		if got := s.clientIP(req); got != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
