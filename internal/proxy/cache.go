@@ -188,9 +188,25 @@ func (c *responseCache) bypassed(r *http.Request) bool {
 	if r.Header.Get("Range") != "" || parseCacheControl(r.Header.Values("Cache-Control")).has("no-store") {
 		return true
 	}
+	if len(c.bypass) == 0 {
+		return false
+	}
+	// Bypassing is the safe side: a path under a prefix as sent, or in
+	// either of the forms applications read it in (/x/../api, /API), is
+	// bypassed, and so is a path those forms cannot be made of.
+	literal, resolved, ok := pathForms(r.URL.Path, r.URL.RawPath)
+	if !ok {
+		return true
+	}
 	for _, p := range c.bypass {
 		if strings.HasPrefix(r.URL.Path, p) {
 			return true
+		}
+		if _, px, ok := pathForms(p, ""); ok {
+			px = strings.TrimSuffix(px, "/")
+			if underPrefix(literal, px) || underPrefix(resolved, px) {
+				return true
+			}
 		}
 	}
 	return false

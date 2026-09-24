@@ -315,7 +315,7 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, ro.ErrorPages, http.StatusTooManyRequests, "Too many requests. Slow down and try again.")
 		return
 	}
-	if rt.basicUsers != nil && !excluded(r.URL.Path, ro.BasicAuth.ExcludePaths) && !rt.checkBasic(r) {
+	if rt.basicUsers != nil && !excluded(r.URL.Path, r.URL.RawPath, ro.BasicAuth.ExcludePaths) && !rt.checkBasic(r) {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm=%q, charset="UTF-8"`, ro.BasicAuth.Realm))
 		errorPage(w, ro.ErrorPages, http.StatusUnauthorized, "Authentication is required.")
 		return
@@ -444,9 +444,28 @@ func applyHeaderRules(h http.Header, rules []model.HeaderRule) {
 	}
 }
 
-func excluded(p string, prefixes []string) bool {
+// excluded reports whether basic authentication skips the path. An
+// exclusion takes protection away, so it is the reverse of requirePaths:
+// the path must fall under the prefix, segment by segment, both as sent and
+// with its dot segments resolved (/public/../admin is neither under
+// /public for an application resolving it nor for a file system), and a
+// path pathForms cannot read, or an entry it cannot read, is never
+// excluded.
+func excluded(p, raw string, prefixes []string) bool {
+	literal, resolved, ok := pathForms(p, raw)
+	if !ok {
+		return false
+	}
 	for _, x := range prefixes {
-		if x != "" && strings.HasPrefix(p, x) {
+		if x == "" {
+			continue
+		}
+		_, px, ok := pathForms(x, "")
+		if !ok {
+			continue
+		}
+		px = strings.TrimSuffix(px, "/")
+		if underPrefix(literal, px) && underPrefix(resolved, px) {
 			return true
 		}
 	}

@@ -323,7 +323,7 @@ export function AccessCard(props: SiteEditorProps) {
                   )}
                 />
               </Field>
-              <Field label="Exclude paths" path="routing.basicAuth.excludePaths" prefix hint="Path prefixes that do not require a password, e.g. /healthz or /.well-known">
+              <Field label="Exclude paths" path="routing.basicAuth.excludePaths" prefix hint="Paths (and everything below them) that do not require a password, e.g. /healthz or /.well-known. Matched whole segments at a time, ignoring case: /public does not cover /publicity or /public/../admin.">
                 <ListEditor values={ba.excludePaths} onChange={(v) => setBA({ excludePaths: v })} placeholder="/healthz" />
               </Field>
             </>
