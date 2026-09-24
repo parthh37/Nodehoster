@@ -110,7 +110,10 @@ What a site-scoped caller gets:
 | `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
-| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog`, `/api/waf/rules` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| `GET /api/alerts`, `/api/alerts/history` | only the granted sites' alerts; server alerts are left out, `?siteId=` of another site answers 404 and `?server=1` 403 |
+| `POST`/`DELETE /api/alerts/{alert}/silence` | `operator` on the alert's site (403 with `viewer`); server alerts and other sites' alerts answer 404 |
+| `GET /api/waf/events` | only the granted sites' events; `?siteId=` of another site returns none |
 | everything else (certificates, Node.js and runtime installs, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 | `/api/servers/*` | 403: a connection is the whole of another server |

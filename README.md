@@ -195,19 +195,21 @@ never update themselves. Upgrades never change the setting.
 administrator rights, like IIS Manager). The left pane lists the server,
 its sites (with their state on their icons), certificates, SMTP e-mail,
 Node.js versions, web console users, banned addresses, the web application
-firewall, alerts, the event and audit logs and backups; the middle pane shows the selected one (the server's
-home is a dashboard of the service, CPU, memory and disk); the right pane
-has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
-edit its bindings, environment, URL Rewrite rules, MIME types and basic
-settings, browse it, follow its log live (pause, filter, save), see a
-deployment's output and roll back a release, swap a deployment slot into
-production (with a preview of what the swap does), run or cancel a scheduled
-task, purge its response cache, install Node.js versions, reset a web
-console user's password or two-factor authentication, ban and unban
-addresses, silence or acknowledge an alert, switch a site's firewall between off, detect and block, see the
-requests it blocked and exclude the rules behind a false positive, manage the mail queue, change where the web console listens,
-back up to a file, run a scheduled backup now and see its history, restore
-from a backup, and start or stop the service.
+firewall, alerts, the event and audit logs and backups; the middle pane
+shows the selected one (the server's home is a dashboard of the service,
+CPU, memory and disk); the right pane has its actions:
+start/stop/restart/recycle a site, deploy a `.zip` to it, edit its bindings,
+environment, URL Rewrite rules, MIME types and basic settings, browse it,
+follow its log live (pause, filter, save), see a deployment's output and
+roll back a release, swap a deployment slot into production (with a preview
+of what the swap does), run or cancel a scheduled task, purge its response
+cache, install Node.js versions, reset a web console user's password or
+two-factor authentication, ban and unban addresses, silence or acknowledge
+an alert, switch a site's firewall between off, detect and block, see the
+requests it blocked and exclude the rules behind a false positive, manage
+the mail queue, change where the web console listens, back up to a file, run
+a scheduled backup now and see its history, restore from a backup, and start
+or stop the service.
 
 **Connect to a server…** (File menu, or the tool bar) adds another
 NodeHoster server to the connections tree: its web console URL and an API
@@ -218,12 +220,12 @@ The token is saved for your Windows account, protected by DPAPI, and the
 command line shares these connections. Selecting the server's node shows
 the same pages for it, over HTTPS instead of the pipe, with what the
 token's role allows there: sites (start, stop, recycle, deploy a `.zip`,
-live logs, settings), certificates, Node.js, mail, users, bans, events,
-backups and updates. What needs the server's own computer — starting and
-stopping its Windows service, changing where its web console listens, and
-opening its data folder, log files or site folders — is disabled for remote
-servers (use NodeHoster Manager on that server). File → Remove connection
-forgets it.
+live logs, settings), preview deployments, certificates, Node.js, mail,
+users, bans, alerts, the web application firewall, events, backups and
+updates. What needs the server's own computer — starting and stopping its
+Windows service, changing where its web console listens, and opening its
+data folder, log files or site folders — is disabled for remote servers (use
+NodeHoster Manager on that server). File → Remove connection forgets it.
 
 Every list can be searched (Ctrl+F) and sorted by clicking a column, and
 has the actions of its rows on a right-click; Delete removes, Enter opens,
@@ -339,12 +341,16 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 `Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
 [-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
 `Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
-`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`, `Get-NHAlert [-Pending]
-[-History]`, `Set-NHAlertSilence [-Minutes]`, `Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`, `Test-NHSecretReference`, `Get-NHSlot`, `Switch-NHSlot` (and `-Slot` on
-`Publish-NHSite`, `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog`), `Get-NHRuntime`, `Install-NHRuntime bun|deno [-Version]
-[-Default]`, `Get-NHWafEvent`, `Set-NHWafMode`, `Add-NHWafExclusion`. They take site names from the pipeline. `Connect-NHServer
-<name|url> [-Token]` makes them target another server until
-`Disconnect-NHServer`; `Get-NHServer` lists the saved connections:
+`Publish-NHPreview -Branch|-Preview`, `Remove-NHPreview`, `Get-NHAlert
+[-Pending] [-History]`, `Set-NHAlertSilence [-Minutes]`,
+`Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`,
+`Test-NHSecretReference`, `Get-NHSlot`, `Switch-NHSlot` (and `-Slot` on
+`Publish-NHSite`, `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog`),
+`Get-NHRuntime`, `Install-NHRuntime bun|deno [-Version] [-Default]`,
+`Get-NHWafEvent`, `Set-NHWafMode`, `Add-NHWafExclusion`. They take site
+names from the pipeline. `Connect-NHServer <name|url> [-Token]` makes them
+target another server until `Disconnect-NHServer`; `Get-NHServer` lists the
+saved connections:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
