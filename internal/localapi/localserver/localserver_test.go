@@ -204,7 +204,7 @@ func TestRemoteDownNotice(t *testing.T) {
 	}
 	for msg, want := range map[string]string{
 		"Server web02 (" + s.URL + ") is unreachable: cannot connect: connection refused": "Server web02 is unreachable",
-		"Server gone (https://gone.example) is unreachable: x":                           "A connected server is unreachable",
+		"Server gone (https://gone.example) is unreachable: x":                            "A connected server is unreachable",
 	} {
 		n, ok := notice(c, model.Event{Level: "warning", Type: events.RemoteDown, Message: msg})
 		if !ok || n.Message != want || strings.Contains(n.Message, "10.0.0.5") {

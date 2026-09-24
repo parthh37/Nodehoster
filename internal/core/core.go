@@ -88,7 +88,7 @@ type Core struct {
 	updates updateState
 
 	previews previewState // preview deployments' workers (previews.go)
-	servers serverState // connections to other NodeHoster servers
+	servers  serverState  // connections to other NodeHoster servers
 	// UpdateFeed is where new releases come from (tests replace it).
 	UpdateFeed *update.Feed
 
