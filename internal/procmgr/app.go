@@ -692,6 +692,9 @@ func (m *Manager) nodeCommand(site *model.Site, rt NodeRuntime, dir, script, npm
 	e.set("npm_config_update_notifier", "false")
 	e.set("npm_config_cache", filepath.Join(m.opts.SitesDir, site.ID, ".npm-cache"))
 	for _, v := range n.Env {
+		if v.From != nil {
+			continue // set by the caller: see setSecretEnv
+		}
 		val := v.Value
 		if v.Secret {
 			val = m.opts.Unseal(val)
@@ -780,6 +783,10 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 	cmd, env, err := a.m.nodeCommand(site, rt, dir, script, npmScript, n.Args, token)
 	if err != nil {
+		releasePort()
+		return nil, err
+	}
+	if err := a.m.setSecretEnv(env, site, n.Env, ""); err != nil {
 		releasePort()
 		return nil, err
 	}

@@ -111,7 +111,7 @@ What a site-scoped caller gets:
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
 | `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, server log search, rewrite import, server metrics) | 403 |
+| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 | `/api/servers/*` | 403: a connection is the whole of another server |
 
@@ -857,6 +857,81 @@ is added.
 |---|---|---|---|
 | GET | `/api/logshipping/status` | | `[{id, name, type, enabled, queued, sent, dropped, failed, lastError?, lastErrorAt?, lastSuccess?}]` |
 | POST | `/api/logshipping/test` | `LogTarget` (masked secrets are taken from the saved target with the same `id`) | 204, or 502 `{error}` with the collector's answer |
+
+## Secret stores
+
+`Settings.secretStores[]` (`SecretStore`), admin only: external secret
+managers that environment variables and git tokens take their values from.
+`{id, name, type: vault|infisical|bitwarden, url, caCert?, cacheTtlSec,
+watchIntervalSec, vault | infisical | bitwarden}`:
+
+- `name` is what references use (letters, digits, `.`, `_`, `-`; unique,
+  not case-sensitive). A store that a site references cannot be removed or
+  renamed, and its type must understand the references (422 on
+  `secretStores`, naming the site and the variable).
+- `url`: Vault/OpenBao's address (required); for Infisical and Bitwarden
+  `""` is their cloud, else a self-hosted server's base URL.
+- `caCert`: PEM certificates trusted for this store besides the system's.
+  TLS verification cannot be turned off.
+- `cacheTtlSec` (default 300, 10–86400): how long a value read is reused.
+  `watchIntervalSec` (0 = off, else 60–86400): how often the secrets that
+  running sites' instances started with are read again; a site whose value
+  changed is recycled (rolling, no downtime) with a `secret.rotated` event.
+- `vault: {auth: token|approle, token, roleId, secretId, authMount
+  (default approle), namespace, mount (default secret), kvVersion: 1|2
+  (default 2)}` — `token` and `secretId` are secrets. AppRole tokens are
+  renewed at half their TTL and replaced by a new login when renewal is
+  capped by the max TTL or refused; a renewable token given directly is
+  renewed too.
+- `infisical: {clientId, clientSecret, projectId, environment}` — a
+  machine identity's Universal Auth credentials (`clientSecret` secret);
+  `environment` is the slug (`prod`).
+- `bitwarden: {accessToken, region: us|eu, apiUrl?, identityUrl?}` — a
+  Secrets Manager machine account's access token (secret; format
+  `0.<id>.<secret>:<key>`, checked when saved). Without `url`, `region`
+  picks `api.bitwarden.com`/`identity.bitwarden.com` or the `.eu` hosts;
+  with `url`, `<url>/api` and `<url>/identity`. Vaultwarden does not
+  implement Secrets Manager.
+
+Credentials are sealed with the master key, masked as `__SECRET__` in
+responses (send the mask back to keep them), carried by configuration
+backups like other secrets (portable with a passphrase; restoring onto a
+server that has a store of the same name and type keeps that store's
+credentials when the archive's cannot be read).
+
+References: `EnvVar.from: {store, ref}` (site and task variables; the
+variable then has no `value` and `secret` is false; `NODE_OPTIONS` cannot
+be one) and `deploy.git.tokenFrom: {store, ref}` (then `deploy.git.token`
+must be empty). Text form, as NodeHoster Manager and the command line show
+it: `secretref:<store>/<ref>`. `ref` is, per store type:
+
+| Store | `ref` | Example |
+|---|---|---|
+| vault | `<path>#<key>`, path relative to the mount | `app/prod#DB_PASSWORD` |
+| infisical | secret name, optionally in a folder | `DB_PASSWORD`, `/backend/DB_PASSWORD` |
+| bitwarden | secret ID (UUID) | `3b3f5c1e-8f8a-4a3e-9c1e-2b7f0a6d4c10` |
+
+Saving a site checks that each store exists and each `ref` has its
+store's syntax (422 on `node.env[i].from.store`, `….from.ref`,
+`tasks[i].env[j].from.ref`, `deploy.git.tokenFrom.ref`).
+
+Values are read when an instance starts (every start, restart and
+recycle), a task runs and a deployment builds (install and build commands,
+git clone), kept in memory only, and never returned by any endpoint. A
+value younger than the store's `cacheTtlSec` is reused. When the store
+cannot be read, the last value read is used (event `secret.stale`,
+warning, at most every 10 minutes per store); a secret the store says does
+not exist, or one never read, fails the start (event `secret.failed`,
+error, with the variable and the store's explanation; at most every 10
+minutes per site and kind of start). A recycle that fails this way keeps
+the running instances.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/secret-stores` | | `[{name, type, cached, references, lastSuccess?, lastError?, lastErrorAt?, tokenExpires?}]` (admin) |
+| POST | `/api/secret-stores/test` | `{store: SecretStore, ref?}` (masked credentials are the saved store's with the same `id`) | `{ok, detail?, error?}` (admin, audited `secretstore.test`): signs in (Vault: token lookup; Infisical: login and a value-less listing of the environment; Bitwarden: login and decryption of the organization key) and reads `ref` if given, reporting its length only |
+| POST | `/api/secret-stores/resolve` | `{store, ref}` | `{ok, detail?, error?}` (admin, audited `secretstore.resolve`): reads the reference from the saved store now; the value is never returned |
+| POST | `/api/sites/{id}/secrets/check` | | `[{field, variable?, task?, ref: {store, ref}, ok, error?}]` (operator on the site): reads every reference of the site now |
 
 ## Log search
 

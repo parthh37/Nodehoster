@@ -26,8 +26,10 @@ import { durationBetween, formatDateTime, relativeTime } from '@/lib/format';
 import { runsNode } from '@/lib/siteDefaults';
 import { cn } from '@/lib/cn';
 import type { SiteEditorProps } from './editors/types';
+import { SecretRefInput, useSecretStores } from './editors/SecretRefInput';
+import { Checkbox } from '@/components/Switch';
 
-export function DeployConfigCard({ site, update }: SiteEditorProps) {
+export function DeployConfigCard({ site, update, readOnly }: SiteEditorProps) {
   const d = site.deploy;
   const set = (p: Partial<typeof d>) =>
     update((s) => {
@@ -35,6 +37,7 @@ export function DeployConfigCard({ site, update }: SiteEditorProps) {
     });
   const setGit = (p: Partial<typeof d.git>) => set({ git: { ...d.git, ...p } });
   const hookUrl = `${window.location.origin}/hooks/deploy/${site.id}`;
+  const stores = useSecretStores(!readOnly);
 
   return (
     <Card title="Deployment settings" description="Each deployment is extracted into a new release folder, built, and activated with a zero-downtime switch.">
@@ -47,10 +50,22 @@ export function DeployConfigCard({ site, update }: SiteEditorProps) {
             <Field label="Branch" path="deploy.git.branch">
               <Input mono value={d.git.branch ?? ''} placeholder="main" onChange={(e) => setGit({ branch: e.target.value.trim() })} />
             </Field>
-            <Field label="Access token" path="deploy.git.token" hint="Stored encrypted.">
-              <SecretInput value={d.git.token} onChange={(v) => setGit({ token: v })} placeholder="ghp_…" />
-            </Field>
+            {d.git.tokenFrom ? (
+              <Field label="Access token" hint="Read from the secret store at each deployment.">
+                <SecretRefInput value={d.git.tokenFrom} onChange={(r) => setGit({ tokenFrom: r })} path="deploy.git.tokenFrom" stores={stores} readOnly={readOnly} />
+              </Field>
+            ) : (
+              <Field label="Access token" path="deploy.git.token" hint="Stored encrypted.">
+                <SecretInput value={d.git.token} onChange={(v) => setGit({ token: v })} placeholder="ghp_…" />
+              </Field>
+            )}
           </Grid>
+          <Checkbox
+            checked={!!d.git.tokenFrom}
+            onChange={(on) => setGit(on ? { token: '', tokenFrom: { store: stores[0]?.name ?? '', ref: '' } } : { tokenFrom: undefined })}
+            label="Read the access token from a secret store"
+            description="Vault / OpenBao, Infisical or Bitwarden Secrets Manager (Settings → Secret stores). A stored token is removed."
+          />
         </FormSection>
         <FormSection title="Build" description="Commands run in the release folder before it is activated.">
           <Field label="Install command" path="deploy.installCommand">

@@ -23,7 +23,8 @@
     'Update-NHCertificateOcsp', 'Get-NHTlsSetting', 'Set-NHTlsSetting',
     'Get-NHPreview', 'Publish-NHPreview', 'Remove-NHPreview',
     'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer',
-    'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence'
+    'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
+    'Get-NHSecretStore', 'Test-NHSecretReference'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

@@ -334,6 +334,9 @@ export const EVENT_TYPES = [
   'remote.up',
   'alert.firing',
   'alert.resolved',
+  'secret.failed',
+  'secret.stale',
+  'secret.rotated',
 ];
 
 const FORMATS = [

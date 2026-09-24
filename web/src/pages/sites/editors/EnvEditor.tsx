@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { ClipboardPaste, EyeOff, Lock, Plus, Search, Trash2, Unlock } from 'lucide-react';
-import type { EnvVar } from '@/api/types';
+import { ClipboardPaste, EyeOff, Lock, Plus, Search, Trash2, Unlock, Vault } from 'lucide-react';
+import type { EnvVar, SecretStoreStatus } from '@/api/types';
 import { SECRET } from '@/api/types';
 import { Button, IconButton } from '@/components/Button';
 import { Dialog } from '@/components/Dialog';
@@ -13,6 +13,8 @@ import { Badge } from '@/components/Badge';
 import { ENV_NAME_RE } from '@/lib/siteDefaults';
 import { looksSecret, parseDotEnv } from '@/lib/dotenv';
 import { cn } from '@/lib/cn';
+import { parseRefText, withSource } from '@/lib/secretStores';
+import { SecretRefInput, useSecretStores } from './SecretRefInput';
 import type { SiteEditorProps } from './types';
 
 export function EnvEditor({ site, update, readOnly }: SiteEditorProps) {
@@ -57,6 +59,7 @@ export function EnvVarsEditor({
 }) {
   const [filter, setFilter] = useState('');
   const [importing, setImporting] = useState(false);
+  const stores = useSecretStores(!readOnly);
 
   const setVar = (i: number, patch: Partial<EnvVar>) => setEnv(env.map((e, j) => (j === i ? { ...e, ...patch } : e)));
 
@@ -81,6 +84,7 @@ export function EnvVarsEditor({
         />
         <span className="text-xs text-zinc-500">
           {env.length} variables · {env.filter((e) => e.secret).length} secret
+          {env.some((e) => e.from) && <> · {env.filter((e) => e.from).length} from secret stores</>}
         </span>
         {!readOnly && (
           <div className="ml-auto flex gap-2">
@@ -128,7 +132,7 @@ export function EnvVarsEditor({
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_2.25rem] gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-2xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+          <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_4rem] gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-2xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
             <span>Name</span>
             <span>Value</span>
             <span className="text-center">Secret</span>
@@ -145,6 +149,7 @@ export function EnvVarsEditor({
                 readOnly={readOnly}
                 onChange={(p) => setVar(i, p)}
                 onRemove={() => setEnv(env.filter((_, j) => j !== i))}
+                stores={stores}
               />
             ))}
             {visible.length === 0 && <p className="px-3 py-4 text-center text-xs text-zinc-500">No variables match “{filter}”.</p>}
@@ -173,6 +178,7 @@ function EnvRow({
   readOnly,
   onChange,
   onRemove,
+  stores,
 }: {
   /** Server field path of the variable, e.g. "node.env[2]". */
   path: string;
@@ -182,6 +188,7 @@ function EnvRow({
   readOnly?: boolean;
   onChange: (p: Partial<EnvVar>) => void;
   onRemove: () => void;
+  stores: SecretStoreStatus[];
 }) {
   const nameErr = useFieldError(`${path}.name`);
   const rowErr = useFieldError(path, false);
@@ -194,7 +201,7 @@ function EnvRow({
 
   return (
     <div className="px-3 py-2">
-      <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_2.25rem] items-center gap-2">
+      <div className="grid grid-cols-[minmax(10rem,18rem)_1fr_5.5rem_4rem] items-center gap-2">
         <Input
           mono
           value={v.name}
@@ -203,32 +210,65 @@ function EnvRow({
           placeholder="NAME"
           invalid={!!(nameErr || clientNameErr)}
           onChange={(e) => onChange({ name: e.target.value.replace(/\s/g, '') })}
-          onBlur={() => !v.secret && v.name && looksSecret(v.name) && v.value !== SECRET && !v.value && onChange({ secret: true })}
+          onBlur={() => !v.secret && !v.from && v.name && looksSecret(v.name) && v.value !== SECRET && !v.value && onChange({ secret: true })}
         />
-        {v.secret ? (
+        {v.from ? (
+          <SecretRefInput value={v.from} onChange={(from) => onChange({ from })} readOnly={readOnly} path={`${path}.from`} stores={stores} compact />
+        ) : v.secret ? (
           <SecretInput value={v.value} onChange={(val) => onChange({ value: val })} placeholder="value" allowClear={false} />
         ) : (
-          <Input mono value={v.value} placeholder="value" onChange={(e) => onChange({ value: e.target.value })} />
+          <Input
+            mono
+            value={v.value}
+            placeholder="value"
+            onChange={(e) => {
+              // Typing or pasting secretref:<store>/<ref> makes it a reference.
+              const ref = parseRefText(e.target.value);
+              onChange(ref && ref.ref ? { value: '', secret: false, from: ref } : { value: e.target.value });
+            }}
+          />
         )}
         <div className="flex justify-center">
-          <button
-            type="button"
-            disabled={readOnly || (isStoredSecret && v.secret)}
-            onClick={() => onChange({ secret: !v.secret })}
-            title={isStoredSecret ? 'Stored secrets cannot be revealed. Enter a new value to change it.' : v.secret ? 'Secret — click to make plain' : 'Plain — click to mark secret'}
-            className={cn(
-              'inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed',
-              v.secret
-                ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'
-                : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800',
-            )}
-          >
-            {v.secret ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
-            {v.secret ? 'Secret' : 'Plain'}
-          </button>
+          {v.from ? (
+            <button
+              type="button"
+              disabled={readOnly}
+              onClick={() => onChange(withSource(v, 'plain'))}
+              title="From a secret store — click to enter a value instead"
+              className="inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-1 text-xs font-medium text-violet-800 transition-colors disabled:cursor-not-allowed dark:bg-violet-500/15 dark:text-violet-300"
+            >
+              <Vault className="h-3.5 w-3.5" />
+              Store
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={readOnly || (isStoredSecret && v.secret)}
+              onClick={() => onChange({ secret: !v.secret })}
+              title={isStoredSecret ? 'Stored secrets cannot be revealed. Enter a new value to change it.' : v.secret ? 'Secret — click to make plain' : 'Plain — click to mark secret'}
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed',
+                v.secret
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'
+                  : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800',
+              )}
+            >
+              {v.secret ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+              {v.secret ? 'Secret' : 'Plain'}
+            </button>
+          )}
         </div>
         {!readOnly ? (
-          <IconButton label="Remove variable" variant="danger-ghost" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={onRemove} />
+          <div className="flex justify-end gap-0.5">
+            {!v.from && (
+              <IconButton
+                label="Take the value from a secret store"
+                icon={<Vault className="h-3.5 w-3.5" />}
+                onClick={() => onChange(withSource(v, 'store', stores[0]?.name ?? ''))}
+              />
+            )}
+            <IconButton label="Remove variable" variant="danger-ghost" icon={<Trash2 className="h-3.5 w-3.5" />} onClick={onRemove} />
+          </div>
         ) : (
           <span />
         )}
@@ -262,7 +302,11 @@ function ImportDialog({
   const replaced = parsed.vars.filter((v) => existingNames.has(v.name));
 
   const apply = () => {
-    const incoming = parsed.vars.map((v) => ({ ...v, secret: autoSecret ? v.secret : false }));
+    const incoming = parsed.vars.map((v): EnvVar => {
+      const ref = parseRefText(v.value);
+      if (ref && ref.ref) return { name: v.name, value: '', secret: false, from: ref };
+      return { ...v, secret: autoSecret ? v.secret : false };
+    });
     const byName = new Map(incoming.map((v) => [v.name, v]));
     const next = existing.map((e) => (overwrite && byName.has(e.name) ? byName.get(e.name)! : e));
     for (const v of incoming) if (!existingNames.has(v.name)) next.push(v);

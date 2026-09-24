@@ -6,6 +6,7 @@ import { normalizeBackup } from './backup';
 import { normalizeLogShipping } from './logShipping';
 import { normalizeUpdates } from './updates';
 import { normalizeAlerts } from './alerts';
+import { normalizeSecretStores } from './secretStores';
 
 export function defaultMail(): MailSettings {
   return {
@@ -90,6 +91,7 @@ export function normalizeSettings(s: Settings): Settings {
     logShipping: normalizeLogShipping(s.logShipping),
     updates: normalizeUpdates(s.updates),
     alerts: normalizeAlerts(s.alerts),
+    secretStores: normalizeSecretStores(s.secretStores),
   };
 }
 

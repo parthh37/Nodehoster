@@ -34,6 +34,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/proxy"
 	"github.com/parthh37/nodehoster/internal/rewrite"
 	"github.com/parthh37/nodehoster/internal/secrets"
+	"github.com/parthh37/nodehoster/internal/secretstore"
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/tasks"
 	"github.com/parthh37/nodehoster/internal/update"
@@ -60,6 +61,7 @@ type Core struct {
 	Tasks     *tasks.Scheduler
 	Ship      *logship.Shipper
 	Alerts    *alerts.Engine
+	Secrets   *secretstore.Manager
 	StartedAt time.Time
 	IsService bool
 
@@ -136,6 +138,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		}
 	}
 	c.Auth = auth.New(st, box)
+	c.openSecretStores()
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
 	if err := c.Certs.Load(ctx); err != nil {
@@ -146,6 +149,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
 		IsLocationTarget: c.isLocationTarget,
+		ResolveEnv:       c.procSecretEnv,
 		OnLog: func(siteID string, l model.LogLine) {
 			if c.Ship.Wants(model.LogSourceApp) {
 				c.Ship.Ship(appRecord(siteID, l))
@@ -181,6 +185,10 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
 		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
+		SecretEnv: func(s *model.Site, vars []model.EnvVar) (map[string]string, error) {
+			return c.secretEnv(s, vars, "the deployment", false)
+		},
+		SecretToken: c.secretToken,
 	})
 
 	sites, err := st.ListSites(ctx)
@@ -234,6 +242,7 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.previewLoop(ctx) })
 	c.wg.Go(func() { c.serverMonitor(ctx) })
 	c.wg.Go(func() { c.alertLoop(ctx) })
+	c.wg.Go(func() { c.Secrets.Run(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -346,6 +355,9 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := in.Alerts.Validate(); err != nil {
 		return cur, err
 	}
+	if err := c.prepareSecretStores(&in.SecretStores, cur.SecretStores); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -357,6 +369,7 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.reload()
 	c.Mail.Apply(in.Mail)
 	c.applyLogShipping(in.LogShipping)
+	c.Secrets.Apply(in.SecretStores)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
 		go c.Certs.RetryPending(context.Background())
 	}
@@ -412,6 +425,7 @@ func (c *Core) MaskedSettings() model.Settings {
 	maskSSO(&s.SSO)
 	maskBackup(&s.Backup)
 	maskLogShipping(&s.LogShipping)
+	maskSecretStores(&s.SecretStores)
 	return s
 }
 
@@ -639,6 +653,9 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 		return err
 	}
 	if err := rewrite.Validate(in.Routing); err != nil {
+		return err
+	}
+	if err := c.checkSiteSecretRefs(in); err != nil {
 		return err
 	}
 	if m := c.Settings().Mail; m.Enabled {

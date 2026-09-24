@@ -635,8 +635,11 @@ func (s *sitePage) init(m *manager) *page {
 		if col != 0 || row >= len(s.env.rows) {
 			return nil
 		}
-		if s.env.rows[row][2] == "Yes" {
+		switch s.env.rows[row][2] {
+		case desktop.EnvSecret:
 			return img(desktop.IconLock)
+		case desktop.EnvStore:
+			return img(desktop.IconKey)
 		}
 		return img(desktop.IconBraces)
 	}
@@ -735,7 +738,7 @@ func (s *sitePage) content(m *manager) []Widget {
 				}},
 				{Title: "Environment", Image: img(desktop.IconBraces), Layout: VBox{}, Children: []Widget{
 					s.env.viewWith(tableOpts{name: "siteEnv", onActivate: s.editEnv.trigger, menu: menu(s.editEnv)},
-						col("Name", 240), col("Value", 380), col("Secret", 60)),
+						col("Name", 240), col("Value", 380), col("Source", 80)),
 					hint("Changes apply with a zero-downtime recycle. Secret values are encrypted at rest and never shown again."),
 					buttons(s.editEnv),
 				}},
@@ -932,8 +935,9 @@ func (s *sitePage) redraw(m *manager) {
 	keys, rows = nil, nil
 	if st.Node != nil {
 		for _, e := range st.Node.Env {
+			v, source := desktop.EnvText(e)
 			keys = append(keys, e.Name)
-			rows = append(rows, []string{e.Name, e.Value, yesNo(e.Secret)})
+			rows = append(rows, []string{e.Name, v, source})
 		}
 	}
 	s.env.set(keys, rows)

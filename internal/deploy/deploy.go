@@ -51,6 +51,10 @@ type Options struct {
 	InUse func(siteID string) []string
 	// FindGit locates git for git deployments; nil looks on PATH.
 	FindGit func() (string, error)
+	// SecretEnv reads the site's variables that come from secret stores
+	// (by name) and SecretToken a git token that does; optional.
+	SecretEnv   func(site *model.Site, vars []model.EnvVar) (map[string]string, error)
+	SecretToken func(site *model.Site, ref model.SecretRef) (string, error)
 }
 
 type Deployer struct {
@@ -241,6 +245,14 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 	token := d.opts.Box.MustUnseal(g.Token)
 	snapshot := *dep // the worker keeps updating dep; callers get it as started
 	go d.run(site, dep, l, func() error {
+		if g.TokenFrom != nil {
+			l.printf("reading the token from secret store %q", g.TokenFrom.Store)
+			t, err := d.secretToken(site, *g.TokenFrom)
+			if err != nil {
+				return err
+			}
+			token = t
+		}
 		args := []string{"clone", "--depth", "1", "--single-branch"}
 		if branch != "" {
 			args = append(args, "--branch", branch)
@@ -390,9 +402,15 @@ func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env = append(env, "npm_config_cache="+filepath.Join(d.opts.SitesDir, site.ID, ".npm-cache"),
 		"npm_config_update_notifier=false", "CI=true")
 	if site.RunsNode() {
+		fromStore, err := d.secretEnv(site, site.Node.Env)
+		if err != nil {
+			return nil, err
+		}
 		for _, e := range site.Node.Env {
 			v := e.Value
-			if e.Secret {
+			if e.From != nil {
+				v = fromStore[e.Name]
+			} else if e.Secret {
 				v = d.opts.Box.MustUnseal(v)
 			}
 			env = append(env, e.Name+"="+v)

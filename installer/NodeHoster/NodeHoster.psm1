@@ -1040,10 +1040,108 @@ function Clear-NHAlertSilence {
   }
 }
 
+<#
+.SYNOPSIS
+Gets the secret stores (HashiCorp Vault / OpenBao, Infisical, Bitwarden
+Secrets Manager) and their state: references, values in memory, last read
+and last error. Never any value.
+.PARAMETER Name
+A store name; wildcards are allowed. Default: all.
+.PARAMETER Test
+Also sign in to each store now; with -Reference, read that reference too.
+Adds TestOK, TestDetail and TestError.
+.PARAMETER Reference
+With -Test: a reference to read, e.g. app/prod#DB_PASSWORD.
+.EXAMPLE
+Get-NHSecretStore
+.EXAMPLE
+Get-NHSecretStore vault -Test -Reference 'app/prod#DB_PASSWORD'
+#>
+function Get-NHSecretStore {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0)]
+    [SupportsWildcards()]
+    [string] $Name = '*',
+    [switch] $Test,
+    [string] $Reference
+  )
+  foreach ($s in @(Invoke-NHCli @('secrets', 'list'))) {
+    if ($null -eq $s -or -not ($s.name -like $Name)) { continue }
+    if ($Test) {
+      $cliArgs = @('secrets', 'test', $s.name)
+      if ($Reference) { $cliArgs += @('--ref', $Reference) }
+      try {
+        $r = Invoke-NHCli $cliArgs
+        Add-Member -InputObject $s -NotePropertyName TestOK -NotePropertyValue ([bool] $r.ok) -Force
+        Add-Member -InputObject $s -NotePropertyName TestDetail -NotePropertyValue $r.detail -Force
+        Add-Member -InputObject $s -NotePropertyName TestError -NotePropertyValue $r.error -Force
+      } catch {
+        Add-Member -InputObject $s -NotePropertyName TestOK -NotePropertyValue $false -Force
+        Add-Member -InputObject $s -NotePropertyName TestError -NotePropertyValue $_.Exception.Message -Force
+      }
+    }
+    Add-NHType $s 'NodeHoster.SecretStore'
+  }
+}
+
+<#
+.SYNOPSIS
+Reads every secret store reference of a site now (its variables, its
+tasks' variables and its git token) and returns one result per reference.
+Values are never returned.
+.PARAMETER Name
+The site's name or ID. Accepts pipeline input.
+.EXAMPLE
+Test-NHSecretReference shop | Where-Object { -not $_.ok }
+.EXAMPLE
+Get-NHSite | Test-NHSecretReference
+#>
+function Test-NHSecretReference {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name
+  )
+  process {
+    foreach ($n in $Name) {
+      # A reference that fails makes the command exit with 1 after writing
+      # every result as JSON: read them all rather than stopping.
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName = Get-NHExecutable
+      $psi.Arguments = ConvertTo-NHCommandLine @('--json', 'secrets', 'check', $n)
+      $psi.UseShellExecute = $false
+      $psi.CreateNoWindow = $true
+      $psi.RedirectStandardOutput = $true
+      $psi.RedirectStandardError = $true
+      $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+      $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+      $p = [System.Diagnostics.Process]::Start($psi)
+      $stderr = $p.StandardError.ReadToEndAsync()
+      $out = $p.StandardOutput.ReadToEnd()
+      $p.WaitForExit()
+      if ($p.ExitCode -ne 0 -and -not $out.Trim()) {
+        $msg = (($stderr.Result -split "`r?`n") | Where-Object { $_ } | Select-Object -First 1) -replace '^error:\s*', ''
+        if (-not $msg) { $msg = "nodehoster.exe exited with code $($p.ExitCode)" }
+        throw $msg
+      }
+      foreach ($r in @(ConvertFrom-Json -InputObject $out)) {
+        foreach ($item in @($r)) {
+          if ($null -eq $item) { continue }
+          Add-Member -InputObject $item -NotePropertyName Site -NotePropertyValue $n -Force
+          Add-NHType $item 'NodeHoster.SecretReferenceCheck'
+        }
+      }
+    }
+  }
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
   Update-NHCertificateOcsp, Get-NHTlsSetting, Set-NHTlsSetting,
   Get-NHPreview, Publish-NHPreview, Remove-NHPreview,
   Connect-NHServer, Disconnect-NHServer, Get-NHServer,
-  Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence
+  Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence,
+  Get-NHSecretStore, Test-NHSecretReference

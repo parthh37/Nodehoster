@@ -42,6 +42,8 @@ export interface EnvVar {
   name: string;
   value: string;
   secret?: boolean;
+  /** Read from a secret store when a process starts (value is then empty). */
+  from?: SecretRef;
 }
 
 export interface HealthCheck {
@@ -352,6 +354,8 @@ export interface GitSource {
   repo?: string;
   branch?: string;
   token?: string;
+  /** Read from a secret store at each deployment instead of token. */
+  tokenFrom?: SecretRef;
 }
 
 export interface DeployConfig {
@@ -697,6 +701,7 @@ export interface Settings {
   logShipping: LogShippingSettings;
   updates: UpdateSettings;
   alerts: AlertSettings;
+  secretStores: SecretStore[];
 }
 
 /** Automatic updates from the signed release feed (model.UpdateSettings). */
@@ -1530,4 +1535,80 @@ export interface ServerTestResult {
   /** The TLS connection is trusted as configured; the token is only tried then. */
   trusted: boolean;
   health: ServerHealth;
+}
+
+// ---------------------------------------------------------------- secret stores
+
+export type SecretStoreType = 'vault' | 'infisical' | 'bitwarden';
+
+/** A value taken from a secret store: store name and the secret in it (model.SecretRef). */
+export interface SecretRef {
+  store: string;
+  ref: string;
+}
+
+export interface VaultStore {
+  auth: 'token' | 'approle';
+  token?: string;
+  roleId?: string;
+  secretId?: string;
+  authMount?: string;
+  namespace?: string;
+  mount: string;
+  kvVersion: number;
+}
+
+export interface InfisicalStore {
+  clientId: string;
+  clientSecret: string;
+  projectId: string;
+  environment: string;
+}
+
+export interface BitwardenStore {
+  accessToken: string;
+  region?: 'us' | 'eu' | '';
+  apiUrl?: string;
+  identityUrl?: string;
+}
+
+/** An external secret manager (model.SecretStore). Credentials come back as SECRET. */
+export interface SecretStore {
+  id: string;
+  name: string;
+  type: SecretStoreType;
+  url: string;
+  caCert?: string;
+  cacheTtlSec: number;
+  watchIntervalSec: number;
+  vault?: VaultStore;
+  infisical?: InfisicalStore;
+  bitwarden?: BitwardenStore;
+}
+
+export interface SecretStoreStatus {
+  name: string;
+  type: SecretStoreType;
+  cached: number;
+  references: number;
+  lastSuccess?: string;
+  lastError?: string;
+  lastErrorAt?: string;
+  tokenExpires?: string;
+}
+
+/** Outcome of a connection test or a resolution; never carries the value. */
+export interface SecretTestResult {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+}
+
+export interface SecretRefCheck {
+  field: string;
+  variable?: string;
+  task?: string;
+  ref: SecretRef;
+  ok: boolean;
+  error?: string;
 }

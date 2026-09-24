@@ -105,6 +105,7 @@ type Settings struct {
 	LogShipping        LogShippingSettings `json:"logShipping"`
 	Updates            UpdateSettings      `json:"updates"`
 	Alerts             AlertSettings       `json:"alerts"`
+	SecretStores       []SecretStore       `json:"secretStores"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

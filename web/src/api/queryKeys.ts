@@ -45,6 +45,7 @@ export const qk = {
   alertList: (siteId?: string) => ['alerts', 'list', siteId ?? ''] as const,
   alertHistory: (siteId?: string, server?: boolean) => ['alerts', 'history', siteId ?? '', !!server] as const,
   siteAlertRules: (siteId: string) => ['alerts', 'rules', siteId] as const,
+  secretStores: ['secret-stores'] as const,
 };
 
 /** Query roots that are about this server whichever server the console operates. */

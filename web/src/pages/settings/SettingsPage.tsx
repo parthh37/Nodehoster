@@ -19,11 +19,12 @@ import { BackupsTab } from './BackupsTab';
 import { LogShippingTab } from './LogShippingTab';
 import { MimeTab } from './MimeTab';
 import { SecurityTab } from './SecurityTab';
+import { SecretStoresTab } from './SecretStoresTab';
 import { SsoTab } from './SsoTab';
 import { UpdatesTab } from './UpdatesTab';
 import { AlertsTab } from './AlertsTab';
 
-type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup' | 'updates' | 'alerts';
+type TabKey = 'acme' | 'dns' | 'notifications' | 'tls' | 'mime' | 'security' | 'process' | 'logshipping' | 'admin' | 'sso' | 'backup' | 'updates' | 'alerts' | 'secrets';
 
 const tabs: TabItem<TabKey>[] = [
   { key: 'acme', label: 'ACME' },
@@ -33,6 +34,7 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'tls', label: 'TLS & proxy' },
   { key: 'mime', label: 'MIME types' },
   { key: 'security', label: 'Security' },
+  { key: 'secrets', label: 'Secret stores' },
   { key: 'process', label: 'Process & logs' },
   { key: 'logshipping', label: 'Log shipping' },
   { key: 'admin', label: 'Admin console' },
@@ -41,7 +43,7 @@ const tabs: TabItem<TabKey>[] = [
   { key: 'updates', label: 'Updates' },
 ];
 
-const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup', 'updates', 'alerts'];
+const SHARED_TABS: TabKey[] = ['acme', 'dns', 'notifications', 'tls', 'mime', 'security', 'process', 'logshipping', 'sso', 'backup', 'updates', 'alerts', 'secrets'];
 
 function tabForField(field: string | undefined): TabKey | null {
   if (!field) return null;
@@ -56,6 +58,7 @@ function tabForField(field: string | undefined): TabKey | null {
   if (field.startsWith('logShipping')) return 'logshipping';
   if (field.startsWith('updates')) return 'updates';
   if (field.startsWith('alerts')) return 'alerts';
+  if (field.startsWith('secretStores')) return 'secrets';
   return 'process';
 }
 
@@ -109,6 +112,7 @@ export function SettingsPage() {
       setDraft(clone(fresh));
       setError(null);
       void qc.invalidateQueries({ queryKey: qk.nodeVersions });
+      void qc.invalidateQueries({ queryKey: qk.secretStores });
       toast.success('Settings saved');
     },
     onError: (e) => {
@@ -142,6 +146,7 @@ export function SettingsPage() {
         {props && tab === 'backup' && <BackupsTab {...props} />}
         {props && tab === 'updates' && <UpdatesTab {...props} />}
         {props && tab === 'alerts' && <AlertsTab {...props} />}
+        {props && tab === 'secrets' && <SecretStoresTab {...props} />}
       </FormErrors>
       {tab === 'admin' && <AdminConsoleTab />}
       {dirty && (

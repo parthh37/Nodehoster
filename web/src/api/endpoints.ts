@@ -2,6 +2,7 @@
 
 import { http, qs } from './client';
 import { routePath } from './target';
+import type { SecretRef, SecretRefCheck, SecretStore, SecretStoreStatus, SecretTestResult } from './types';
 import type {
   TLSView,
   ACMEOptions,
@@ -317,4 +318,12 @@ export const serversApi = {
   test: (t: ServerTest) => http.post<ServerTestResult>('/api/servers/test', t),
   /** Who the connection's token is on that server, capped at the caller's role. */
   remoteMe: (id: string) => http.get<Me>(`/api/servers/${enc(id)}/proxy/auth/me`),
+};
+
+/** Secret stores (Settings → Secret stores). No endpoint returns a value. */
+export const secretStoresApi = {
+  status: () => http.get<SecretStoreStatus[]>('/api/secret-stores'),
+  test: (store: SecretStore, ref?: string) => http.post<SecretTestResult>('/api/secret-stores/test', { store, ref: ref || undefined }),
+  resolve: (r: SecretRef) => http.post<SecretTestResult>('/api/secret-stores/resolve', r),
+  checkSite: (siteId: string) => http.post<SecretRefCheck[]>(`/api/sites/${enc(siteId)}/secrets/check`),
 };
