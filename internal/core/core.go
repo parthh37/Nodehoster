@@ -813,32 +813,54 @@ func (c *Core) activateRelease(ctx context.Context, id, release string) error {
 	return nil
 }
 
-// DeleteSite stops and removes a site, optionally with its files.
+// DeleteSite stops and removes a site, optionally with its files. The
+// site leaves the configuration under the lock; stopping its processes and
+// task runs waits for their shutdown timeouts (a minute or more) and
+// happens after, so that other sites can be edited meanwhile. Nothing can
+// start or change the site in between: it is no longer found. It leaves
+// the database once its runs have ended, so none records anything after.
 func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) error {
 	c.sitesMu.Lock()
-	defer c.sitesMu.Unlock()
-	if _, err := c.Site(id); err != nil {
+	existing, err := c.Site(id)
+	if err != nil {
+		c.sitesMu.Unlock()
 		return err
 	}
 	for _, s := range c.Sites() {
 		for _, l := range s.Routing.Locations {
 			if l.Kind == "site" && l.SiteID == id {
+				c.sitesMu.Unlock()
 				return fmt.Errorf("site %q mounts this site at %s; remove that location first", s.Name, l.Path)
 			}
 		}
 	}
+	c.cacheMu.Lock()
+	delete(c.sites, id)
+	wasRunning := c.running[id]
+	delete(c.running, id)
+	c.cacheMu.Unlock()
+	c.sitesMu.Unlock()
+	c.reload()
+	c.Proxy.ForgetSite(id)
+
 	c.Tasks.Remove(id)
 	c.Procs.Remove(id)
 	c.Procs.ForgetLogs(id)
-	if err := c.Store.DeleteSite(ctx, id); err != nil {
+	// The site is gone from the running configuration already: a client
+	// that stopped waiting must not leave it in the database.
+	if err := c.Store.DeleteSite(context.WithoutCancel(ctx), id); err != nil {
+		// Still stored: put it back (a Node.js site stays stopped).
+		c.sitesMu.Lock()
+		c.cacheMu.Lock()
+		c.sites[id] = existing
+		c.running[id] = wasRunning
+		c.cacheMu.Unlock()
+		c.Procs.Apply(existing)
+		c.Tasks.Apply(existing)
+		c.sitesMu.Unlock()
+		c.reload()
 		return err
 	}
-	c.cacheMu.Lock()
-	delete(c.sites, id)
-	delete(c.running, id)
-	c.cacheMu.Unlock()
-	c.reload()
-	c.Proxy.ForgetSite(id)
 	if deleteFiles {
 		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
 		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))
