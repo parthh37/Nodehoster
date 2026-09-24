@@ -22,6 +22,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/deploy"
+	"github.com/parthh37/nodehoster/internal/deps"
 	"github.com/parthh37/nodehoster/internal/events"
 	"github.com/parthh37/nodehoster/internal/ipban"
 	"github.com/parthh37/nodehoster/internal/logship"
@@ -167,6 +168,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
 		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
+		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
 	})
 
 	sites, err := st.ListSites(ctx)

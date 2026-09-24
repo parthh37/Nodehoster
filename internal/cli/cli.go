@@ -45,6 +45,9 @@ type Env struct {
 	Ctx    context.Context
 	// Interactive reports whether Stdin is a terminal (confirmations).
 	Interactive bool
+	// DataDir is the service's data directory, for the commands that work
+	// on it directly (deps install git).
+	DataDir string
 }
 
 // Runner runs a command with its positional arguments.
@@ -143,6 +146,7 @@ func Main(args []string, dataDir string, jsonOut bool) int {
 		Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin, JSON: jsonOut,
 		Client: localapi.Connect(localapi.Admin, dataDir), Ctx: ctx,
 		Interactive: st != nil && st.Mode()&os.ModeCharDevice != 0,
+		DataDir:     dataDir,
 	}
 	return Run(e, args)
 }

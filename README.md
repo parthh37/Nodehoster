@@ -100,17 +100,38 @@ Upgrades install over the top; sites and data are kept. A first
 installation also asks whether NodeHoster may install its own updates (see
 [Updates](#updates)).
 
+Setup then checks what sites need besides NodeHoster and installs what is
+missing (the **Install what is missing** task, on by default):
+
+- **Node.js**: if the server has no default Node.js version and no `node` on
+  the PATH, the current LTS release is downloaded from nodejs.org (SHA-256
+  verified), installed like any version on the Node.js page, and made the
+  server default. A default version that was removed from disk is installed
+  again.
+- **Git** (for deployments from a repository): if there is no `git` on the
+  PATH or in `C:\Program Files\Git`, MinGit, Git for Windows' edition for
+  programs that run git, is downloaded from its GitHub release (SHA-256
+  verified) into `C:\ProgramData\NodeHoster\git`, for NodeHoster only.
+
+A server that already has them downloads nothing. If a download fails (no
+internet), NodeHoster is still installed and running and setup says so; run
+`nodehoster deps install` later from an elevated prompt. `nodehoster deps`
+shows what is installed.
+
 Unattended install:
 
 ```
-NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall"
+NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall,deps"
 ```
 
 Exit code `0` means installed and running, `1` installed but the service did
 not start (see `C:\ProgramData\NodeHoster\logs\nodehoster.log`), `7` not
 installed because a newer version is (add `/ALLOWDOWNGRADE` to install the
 older one anyway; interactive setups ask instead). Add `autoupdate` to
-`/TASKS` to turn automatic updates on.
+`/TASKS` to turn automatic updates on; leave `deps` out to install no
+Node.js or Git. A dependency that could not be installed does not change the
+exit code (the log says what failed; `nodehoster deps` exits with `1` while
+one is missing).
 
 Uninstall from **Settings → Apps**, or unattended (keeps the data):
 
@@ -226,6 +247,8 @@ nodehoster restore <file> [--yes] [--passphrase-file <file>]
 nodehoster update                            installed and newest version, automatic update settings
 nodehoster update check | update install [--yes]
 nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
+nodehoster deps                              Node.js and Git: installed or missing (exit code 1 if missing)
+nodehoster deps install [node] [git]         install what is missing (setup runs this)
 ```
 
 `backup run` and `backup history` are commands: to save a backup in a file
@@ -380,6 +403,7 @@ internal/proxy        listeners, binding match, request pipeline, load balancing
 internal/certs        ACME (lego), import/export, renewal
 internal/deploy       zip/git deployments and releases
 internal/nodeversions Node.js runtime installer
+internal/deps         Git lookup and MinGit installer (nodehoster deps)
 internal/api          REST API (docs/API.md) and embedded web UI
 internal/localapi     local pipes for the desktop programs (client; server in localserver)
 internal/desktop      desktop presentation logic: health, formatting, icons

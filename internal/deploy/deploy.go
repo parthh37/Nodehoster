@@ -49,6 +49,8 @@ type Options struct {
 	// its processes, such as a scheduled task run that started before a
 	// deployment: pruning keeps them. Optional.
 	InUse func(siteID string) []string
+	// FindGit locates git for git deployments; nil looks on PATH.
+	FindGit func() (string, error)
 }
 
 type Deployer struct {
@@ -228,9 +230,9 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 	if branch == "" {
 		branch = g.Branch
 	}
-	git, err := exec.LookPath("git")
+	git, err := d.findGit()
 	if err != nil {
-		return nil, errors.New("git is not installed on the server (install Git for Windows and restart NodeHoster)")
+		return nil, err
 	}
 	dep, l, err := d.begin(ctx, site, source, user)
 	if err != nil {
@@ -267,6 +269,16 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 		return nil
 	})
 	return &snapshot, nil
+}
+
+func (d *Deployer) findGit() (string, error) {
+	if d.opts.FindGit != nil {
+		return d.opts.FindGit()
+	}
+	if p, err := exec.LookPath("git"); err == nil {
+		return p, nil
+	}
+	return "", errors.New("git is not installed on the server; install it with: nodehoster deps install git")
 }
 
 func redact(repo string) string {
@@ -355,9 +367,13 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 }
 
 // commandEnv is the environment for install/build commands: the service's
-// environment, the site's node on PATH, and the site's variables.
+// environment, the site's node and git on PATH (npm fetches git
+// dependencies with it), and the site's variables.
 func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env := os.Environ()
+	if git, err := d.findGit(); err == nil {
+		env = prependPath(env, filepath.Dir(git))
+	}
 	version := ""
 	if site.RunsNode() {
 		version = site.Node.NodeVersion
