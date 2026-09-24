@@ -432,7 +432,9 @@ of `varyHeaders`) selects a separate variant. Entries are uncompressed:
 when the site compresses, the application is asked without
 `Accept-Encoding` and each client gets its own encoding from the one
 entry. Concurrent misses for a URL wait (up to 10 s) for the first one's
-response; URLs whose responses are not cacheable stop waiting for 30 s.
+response, until its headers show it will not be stored (an event stream,
+`no-store`, over `maxObjectKB`); URLs whose responses are not cacheable
+stop waiting for 30 s.
 Responses carry `X-Cache: HIT|MISS|BYPASS` and hits an `Age`; conditional
 requests on a hit get 304; a request with `Cache-Control: no-cache` (a
 browser reload) is fetched and refreshes the entry, one with `no-store`

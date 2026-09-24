@@ -546,3 +546,104 @@ func TestCacheAndCompression(t *testing.T) {
 		t.Fatal("a changed site kept the old cache")
 	}
 }
+
+// TestCacheVaryIsBounded: what a URL varies on is forgotten with its last
+// stored variant, so a flood of one-off URLs (random query strings) is
+// held to the memory budget like the entries themselves.
+func TestCacheVaryIsBounded(t *testing.T) {
+	o := &origin{handler: func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Vary", "Accept-Language")
+		w.Write(make([]byte, 1000))
+	}}
+	c := newResponseCache(cacheCfg(), false, "")
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	check := func(when string) {
+		t.Helper()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		variants := 0
+		for _, v := range c.vary {
+			variants += v.variants
+		}
+		if len(c.vary) > c.lru.Len() || variants != c.lru.Len() {
+			t.Fatalf("%s: %d vary records (%d variants) for %d entries", when, len(c.vary), variants, c.lru.Len())
+		}
+	}
+	for _, p := range []string{"/1", "/2", "/3"} {
+		c.do(t, o, cacheReq{target: p})
+	}
+	c.mu.Lock()
+	c.maxBytes = c.bytes // room for three entries
+	c.mu.Unlock()
+	for i := range 2000 {
+		c.do(t, o, cacheReq{target: fmt.Sprintf("/?r=%d", i), hdr: []string{"Accept-Language", "en"}})
+	}
+	check("after evictions")
+	if n := c.lru.Len(); n == 0 || n > 3 {
+		t.Fatalf("%d entries", n)
+	}
+
+	// Two variants of one URL: the record stays until both are gone.
+	c.do(t, o, cacheReq{target: "/v", hdr: []string{"Accept-Language", "de"}})
+	c.do(t, o, cacheReq{target: "/v", hdr: []string{"Accept-Language", "fr"}})
+	expectCache(t, c.do(t, o, cacheReq{target: "/v", hdr: []string{"Accept-Language", "de"}}), "HIT", "")
+	check("with two variants")
+
+	// Expired entries go when they are looked up.
+	now = now.Add(2 * time.Minute)
+	c.do(t, o, cacheReq{target: "/v", hdr: []string{"Accept-Language", "de"}})
+	c.do(t, o, cacheReq{target: "/v", hdr: []string{"Accept-Language", "fr"}})
+	check("after expiry")
+	c.purge("/v")
+	check("after a purge")
+}
+
+// TestCacheUnstorableReleasesWaiters: once a response is known not to be
+// stored (an event stream, or larger than the object limit), requests
+// waiting for it go to the application at once instead of waiting for the
+// end of a response that may never end.
+func TestCacheUnstorableReleasesWaiters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first func(w http.ResponseWriter)
+	}{
+		{"event stream", func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+		}},
+		{"large download", func(w http.ResponseWriter) {
+			w.Header().Set("Cache-Control", "max-age=60")
+			for range 100 { // 100 KB without a Content-Length, over the 64 KB limit
+				w.Write(make([]byte, 1024))
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			defer close(release)
+			var calls atomic.Int64
+			answered := make(chan struct{})
+			o := &origin{handler: func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					tc.first(w)
+					close(answered)
+					<-release // the response goes on
+					return
+				}
+				io.WriteString(w, "ok")
+			}}
+			c := newResponseCache(cacheCfg(), false, "")
+			c.wait = 5 * time.Second
+			go c.do(t, o, cacheReq{target: "/s"})
+			<-answered
+			start := time.Now()
+			rec := c.do(t, o, cacheReq{target: "/s"})
+			if rec.Body.String() != "ok" || time.Since(start) > time.Second {
+				t.Fatalf("waiting request: %q after %s", rec.Body.String(), time.Since(start))
+			}
+		})
+	}
+}

@@ -54,13 +54,21 @@ type responseCache struct {
 
 	mu      sync.Mutex
 	entries map[string]*list.Element // full key -> *cacheEntry
-	vary    map[string][]string      // base key -> the response's Vary names
+	vary    map[string]*varySet      // base key -> the response's Vary names
 	lru     *list.List               // front = most recently used
 	bytes   int64
 	pass    map[string]time.Time
 	flights map[string]chan struct{}
 
 	hits, misses atomic.Int64
+}
+
+// varySet is what a URL's response varies on, kept while any variant of
+// it is stored: dropped with its last variant, so that one-off URLs (random
+// query strings) cannot grow it beyond the entries the budget allows.
+type varySet struct {
+	names    []string
+	variants int
 }
 
 type cacheEntry struct {
@@ -88,7 +96,7 @@ func newResponseCache(cfg model.CacheConfig, compression bool, affinityCookie st
 		now:         time.Now,
 		wait:        coalesceWait,
 		entries:     map[string]*list.Element{},
-		vary:        map[string][]string{},
+		vary:        map[string]*varySet{},
 		lru:         list.New(),
 		pass:        map[string]time.Time{},
 		flights:     map[string]chan struct{}{},
@@ -140,9 +148,10 @@ func (c *responseCache) handler(next http.Handler) http.Handler {
 		// a 304 that is not stored, so neither waits nor is waited for.
 		flightKey := c.variantBase(base, r.Header)
 		conditional := r.Header.Get("If-None-Match") != "" || r.Header.Get("If-Modified-Since") != ""
+		var flight chan struct{}
 		if !creds && !conditional && !c.passing(flightKey) {
 			if done, leader := c.join(flightKey); leader {
-				defer c.leave(flightKey, done)
+				flight = done
 			} else {
 				t := time.NewTimer(c.wait)
 				select {
@@ -161,7 +170,8 @@ func (c *responseCache) handler(next http.Handler) http.Handler {
 		// The request as it is now selects the variant: the site's handler
 		// may still change it (a location strips its prefix).
 		cw := &cacheWriter{ResponseWriter: w, c: c, r: r, reqHeader: r.Header.Clone(), path: r.URL.Path,
-			base: base, flightKey: flightKey, creds: creds}
+			base: base, flightKey: flightKey, creds: creds, flight: flight}
+		defer cw.land() // however the request ends, a panic included
 		if c.stripAE {
 			r.Header.Del("Accept-Encoding")
 		}
@@ -259,11 +269,11 @@ func (c *responseCache) lookup(base string, r *http.Request, creds bool) *cacheE
 	vb := c.variantBase(base, r.Header)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	names, ok := c.vary[vb]
+	v, ok := c.vary[vb]
 	if !ok {
 		return nil
 	}
-	el := c.entries[vb+c.headerValues(names, r.Header)]
+	el := c.entries[vb+c.headerValues(v.names, r.Header)]
 	if el == nil {
 		return nil
 	}
@@ -389,6 +399,7 @@ type cacheWriter struct {
 	base      string
 	flightKey string
 	creds     bool
+	flight    chan struct{} // the misses waiting on this one; nil if none
 
 	status   int
 	store    bool
@@ -409,8 +420,30 @@ func (w *cacheWriter) WriteHeader(code int) {
 		w.header = w.Header().Clone()
 		w.ttl, w.age, w.public, w.store, w.pass = w.c.storable(w.r, code, w.header, w.creds)
 		w.Header().Set("X-Cache", "MISS")
+		if !w.store {
+			w.giveUp()
+		}
 	}
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// giveUp is called as soon as the response is known not to be stored: the
+// misses waiting for it go to the application now rather than wait for the
+// end of a response that may never end (an event stream) or take long (a
+// large download).
+func (w *cacheWriter) giveUp() {
+	if w.pass && !w.creds {
+		w.c.markPass(w.flightKey)
+	}
+	w.land()
+}
+
+// land releases the misses waiting on this one.
+func (w *cacheWriter) land() {
+	if w.flight != nil {
+		w.c.leave(w.flightKey, w.flight)
+		w.flight = nil
+	}
 }
 
 func (w *cacheWriter) Write(b []byte) (int, error) {
@@ -421,6 +454,7 @@ func (w *cacheWriter) Write(b []byte) (int, error) {
 	if w.store {
 		if int64(len(w.body)+n) > w.c.maxObject {
 			w.store, w.pass, w.body = false, true, nil
+			w.giveUp()
 		} else {
 			w.body = append(w.body, b[:n]...)
 		}
@@ -437,6 +471,7 @@ func (w *cacheWriter) Flush() {
 
 func (w *cacheWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.store = false
+	w.land()
 	return http.NewResponseController(w.ResponseWriter).Hijack()
 }
 
@@ -473,7 +508,10 @@ func (w *cacheWriter) finish() {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if old, ok := c.vary[e.base]; ok && !slices.Equal(old, names) {
+	if el, ok := c.entries[e.key]; ok {
+		c.removeLocked(el)
+	}
+	if old, ok := c.vary[e.base]; ok && !slices.Equal(old.names, names) {
 		// The application changed what the response varies on: variants
 		// stored under the old names could never be found again.
 		for el := c.lru.Front(); el != nil; {
@@ -484,10 +522,12 @@ func (w *cacheWriter) finish() {
 			el = next
 		}
 	}
-	c.vary[e.base] = names
-	if el, ok := c.entries[e.key]; ok {
-		c.removeLocked(el)
+	v := c.vary[e.base]
+	if v == nil {
+		v = &varySet{names: names}
+		c.vary[e.base] = v
 	}
+	v.variants++
 	c.entries[e.key] = c.lru.PushFront(e)
 	c.bytes += e.size
 	delete(c.pass, w.flightKey)
@@ -597,6 +637,11 @@ func (c *responseCache) removeLocked(el *list.Element) {
 	e := c.lru.Remove(el).(*cacheEntry)
 	delete(c.entries, e.key)
 	c.bytes -= e.size
+	if v := c.vary[e.base]; v != nil {
+		if v.variants--; v.variants <= 0 {
+			delete(c.vary, e.base)
+		}
+	}
 }
 
 // purge removes entries whose path starts with prefix ("" = all).
@@ -613,7 +658,7 @@ func (c *responseCache) purge(prefix string) int {
 		el = next
 	}
 	if prefix == "" {
-		c.vary = map[string][]string{}
+		c.vary = map[string]*varySet{}
 	}
 	c.pass = map[string]time.Time{}
 	return n
