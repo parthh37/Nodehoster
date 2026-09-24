@@ -368,7 +368,7 @@ func (c *Core) recordServerHealth(s model.ServerConnection, h model.ServerHealth
 
 	switch {
 	case down:
-		c.Bus.Warn(events.RemoteDown, "", "Server %s (%s) is unreachable: %s", s.Name, s.URL, h.Error)
+		c.Bus.Warn(events.RemoteDown, "", "%s: %s", serverDownPrefix(s), h.Error)
 	case up:
 		c.Bus.Info(events.RemoteUp, "", "Server %s (%s) is reachable again", s.Name, s.URL)
 	}
@@ -385,6 +385,25 @@ func (c *Core) ServerRoleLimits(id string) (limits, known bool) {
 		return st.roleLimits, st.limitsKnown
 	}
 	return false, false
+}
+
+// serverDownPrefix begins the message of remote.down.
+func serverDownPrefix(s model.ServerConnection) string {
+	return fmt.Sprintf("Server %s (%s) is unreachable", s.Name, s.URL)
+}
+
+// ServerDownNotice shortens the message of remote.down to the server's
+// name, for the status pipe: every interactive user of the computer reads
+// it, not only administrators, so it tells neither the server's URL nor
+// why it cannot be reached (addresses, certificates), which the web
+// console shows those who may use the connection.
+func (c *Core) ServerDownNotice(msg string) string {
+	for _, s := range c.ServerConnections() {
+		if strings.HasPrefix(msg, serverDownPrefix(s)+":") {
+			return fmt.Sprintf("Server %s is unreachable", s.Name)
+		}
+	}
+	return "A connected server is unreachable"
 }
 
 // TestServer tries a connection being set up: the certificate the server

@@ -1438,3 +1438,10 @@ service is stopped.
 
 `adminError` is set when the web console could not start (its port is in
 use, or its certificate is missing): the server keeps running without it.
+
+What the status pipe tells every interactive user of the computer is what
+the icon shows: this server's sites and their state, its resource alerts,
+its web console's URL. A connected server going down (`remote.down`) is a
+notice naming the server only (`Server web02 is unreachable`), without its
+URL or the error, which the web console shows those who may use the
+connection. Nothing about the connections or their tokens travels there.
