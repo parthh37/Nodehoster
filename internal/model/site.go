@@ -78,6 +78,9 @@ type EnvVar struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 	Secret bool   `json:"secret,omitempty"` // encrypted at rest, masked in the API
+	// From takes the value from a secret store when a process starts
+	// (Value is then empty and Secret false).
+	From *SecretRef `json:"from,omitempty"`
 }
 
 type NodeConfig struct {
@@ -402,6 +405,9 @@ type GitSource struct {
 	Repo   string `json:"repo,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	Token  string `json:"token,omitempty"` // secret, used for HTTPS auth
+	// TokenFrom reads the token from a secret store at each deployment
+	// instead (Token is then empty).
+	TokenFrom *SecretRef `json:"tokenFrom,omitempty"`
 }
 
 type DeployConfig struct {

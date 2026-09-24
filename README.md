@@ -34,6 +34,7 @@ IIS Manager, with a status icon in the notification area.
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
+- **Secret stores** like Azure App Service's Key Vault references: a variable (or a git deploy token) can come from **HashiCorp Vault / OpenBao** (KV v1/v2, token or AppRole with automatic renewal, namespaces), **Infisical** (cloud or self-hosted, Universal Auth) or **Bitwarden Secrets Manager** (cloud US/EU or self-hosted; pure Go, no SDK to install). Read at every instance start, recycle, task run and build, cached in memory for a few minutes, never written anywhere; the last known value keeps sites starting while a store is down; optional zero-downtime recycle when a secret changes
 
 **Reverse proxy & request pipeline**
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
@@ -249,6 +250,9 @@ nodehoster update check | update install [--yes]
 nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
 nodehoster deps                              Node.js and Git: installed or missing (exit code 1 if missing)
 nodehoster deps install [node] [git]         install what is missing (setup runs this)
+nodehoster secrets list                      secret stores: references, values in memory, last read and error
+nodehoster secrets test <store> [--ref <secret>]  sign in (and read a reference) without showing any value
+nodehoster secrets check <site>              read every secret store reference of a site now
 ```
 
 `backup run` and `backup history` are commands: to save a backup in a file
@@ -269,7 +273,7 @@ objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
 `Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Start-NHBackup`, `Get-NHSecretStore [-Test]`, `Test-NHSecretReference`. They take site names from the pipeline:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
@@ -311,6 +315,53 @@ HTTPS bindings get Let's Encrypt certificates (IIS certificates stay in the
 Windows store; import the PFX to reuse one), and application pool passwords
 are never imported. PM2 ecosystem files are read, never run: if yours
 computes values, import `pm2 jlist > apps.json` instead.
+
+### Secret stores
+
+Instead of pasting a database password into a site, keep it in the secret
+manager you already run and give the variable a **reference**: in the
+variable editor choose **From secret store** (the vault icon), pick the
+store and name the secret; **Test** asks the server to read it and says
+whether it resolves, without ever showing the value. NodeHoster Manager and
+the command line show a reference as `secretref:<store>/<secret>`, and
+typing that as a variable's value (or pasting it in a `.env`) makes one. A
+git deploy token can be a reference too (**Deployment settings → Read the
+access token from a secret store**).
+
+Add stores in **Settings → Secret stores** (administrators). Credentials
+are encrypted at rest like other secrets and travel in passphrase-protected
+backups. Each store has a **cache time** (default 5 minutes: a recycle of
+eight instances asks the store once) and, optionally, a **watch interval**:
+every running site whose secret changed is recycled without downtime.
+Values live only in memory. If a store is unreachable when a process
+starts, the last value read is used and a `secret.stale` event says so; a
+secret never read (after a service restart, say) or deleted from the store
+fails the start with a `secret.failed` event naming the variable, and a
+recycle that fails keeps the running instances. Self-hosted servers with a
+private CA: paste the CA certificate in the store; certificate checks
+cannot be turned off.
+
+- **HashiCorp Vault / OpenBao**: the address, the KV mount (`secret`) and
+  version (2 unless it is a v1 engine), and either a token or AppRole
+  (role ID + secret ID; NodeHoster renews its token at half its TTL and
+  signs in again at the max TTL). A token given directly should be a
+  periodic token; NodeHoster renews it. The policy needs `read` on
+  `<mount>/data/<path>` (KV v2) or `<mount>/<path>` (v1). References are
+  `<path>#<key>`: `app/prod#DB_PASSWORD`. Enterprise and OpenBao
+  namespaces are supported.
+- **Infisical**: create a machine identity with **Universal Auth**, give it
+  (at least viewer) access to the project, and enter its client ID and
+  secret, the project ID and the environment slug (`prod`). Leave the URL
+  empty for Infisical Cloud (US), or enter `https://eu.infisical.com` or
+  your self-hosted server. References are a secret name, optionally in a
+  folder: `DB_PASSWORD`, `/backend/DB_PASSWORD`. Secret references and
+  imports inside Infisical are expanded.
+- **Bitwarden Secrets Manager**: create a machine account with read access
+  to the projects, and an access token for it; choose the US or EU cloud,
+  or enter the URL of your self-hosted Bitwarden server (NodeHoster uses
+  its `/api` and `/identity`). References are secret IDs (the UUID shown in
+  the web app). **Vaultwarden does not implement Secrets Manager**; it
+  cannot be used here.
 
 ## Data directory
 
@@ -410,6 +461,7 @@ internal/desktop      desktop presentation logic: health, formatting, icons
 internal/auth         users, sessions, tokens, TOTP
 internal/store        SQLite persistence
 internal/secrets      AES-GCM + DPAPI
+internal/secretstore  Vault/OpenBao, Infisical and Bitwarden Secrets Manager clients, value cache
 internal/service      Windows service integration
 web/                  React admin console
 installer/            Inno Setup script

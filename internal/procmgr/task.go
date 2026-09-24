@@ -53,12 +53,21 @@ func (m *Manager) StartTask(site *model.Site, task model.ScheduledTask, runID st
 	if err != nil {
 		return nil, err
 	}
+	if err := m.setSecretEnv(env, site, n.Env, task.Name); err != nil {
+		return nil, err
+	}
 	for _, e := range task.Env {
+		if e.From != nil {
+			continue
+		}
 		v := e.Value
 		if e.Secret {
 			v = m.opts.Unseal(v)
 		}
 		env.set(e.Name, v)
+	}
+	if err := m.setSecretEnv(env, site, task.Env, task.Name); err != nil {
+		return nil, err
 	}
 	env.set("NODEHOSTER_TASK", task.Name)
 	env.set("NODEHOSTER_TASK_RUN", runID)

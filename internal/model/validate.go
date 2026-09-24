@@ -189,6 +189,9 @@ func (s *Site) Validate() error {
 			return err
 		}
 	}
+	if err := s.validateSecretRefs(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for i, b := range s.Bindings {
 		f := fmt.Sprintf("bindings[%d]", i)

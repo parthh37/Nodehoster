@@ -1082,6 +1082,16 @@ func sameEntry(path string, x any, list []any) any {
 	if path == "settings.backup.destinations" {
 		keys = append(keys, destLocation)
 	}
+	if path == "settings.secretStores" {
+		// References name stores: one set up here under the same name
+		// with the same type is the same store.
+		keys = append(keys, func(m map[string]any) string {
+			if str(m["name"]) == "" {
+				return ""
+			}
+			return str(m["type"]) + "\x00" + str(m["name"])
+		})
+	}
 	for _, key := range keys {
 		k := key(m)
 		if k == "" {

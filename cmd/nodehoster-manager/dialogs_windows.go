@@ -444,6 +444,9 @@ func envDialog(m *manager, siteID string) {
 		if col != 0 || row >= len(s.Node.Env) {
 			return nil
 		}
+		if s.Node.Env[row].From != nil {
+			return img(desktop.IconKey)
+		}
 		if s.Node.Env[row].Secret {
 			return img(desktop.IconLock)
 		}
@@ -453,12 +456,9 @@ func envDialog(m *manager, siteID string) {
 		keys := make([]string, len(s.Node.Env))
 		rows := make([][]string, len(s.Node.Env))
 		for i, e := range s.Node.Env {
-			v := e.Value
-			if e.Secret {
-				v = "••••••••"
-			}
+			v, source := desktop.EnvText(e)
 			keys[i] = fmt.Sprint(i, e.Name)
-			rows[i] = []string{e.Name, v, yesNo(e.Secret)}
+			rows[i] = []string{e.Name, v, source}
 		}
 		t.set(keys, rows)
 	}
@@ -480,9 +480,9 @@ func envDialog(m *manager, siteID string) {
 	}
 	refresh()
 	ok := runDialogAs(&dlg, m.mw, "Environment variables — "+s.Name, Size{Width: 700, Height: 420}, []Widget{
-		intro(desktop.IconBraces, "Variables the site's processes see. Changes apply with a zero-downtime recycle; secret values are encrypted at rest."),
+		intro(desktop.IconBraces, "Variables the site's processes see. Changes apply with a zero-downtime recycle; secret values are encrypted at rest. A value secretref:<store>/<secret> is read from a secret store at each start."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-			t.viewWith(tableOpts{onActivate: edit, onDelete: remove}, col("Name", 200), col("Value", 300), col("Secret", 60)),
+			t.viewWith(tableOpts{onActivate: edit, onDelete: remove}, col("Name", 200), col("Value", 280), col("Source", 80)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
 				button("Add…", func() {
 					var e model.EnvVar
@@ -511,12 +511,15 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 	if stored {
 		shown = ""
 	}
+	if e.From != nil {
+		shown = e.From.String()
+	}
 	return runDialog(owner, title, Size{Width: 460}, []Widget{
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Name:"},
 			LineEdit{AssignTo: &name, Text: e.Name, CueBanner: "DATABASE_URL"},
 			Label{Text: "Value:"},
-			LineEdit{AssignTo: &value, Text: shown, PasswordMode: e.Secret, CueBanner: map[bool]string{true: "unchanged"}[stored]},
+			LineEdit{AssignTo: &value, Text: shown, PasswordMode: e.Secret, CueBanner: map[bool]string{true: "unchanged", false: "value, or secretref:<store>/<secret>"}[stored]},
 			Label{},
 			CheckBox{AssignTo: &secret, Text: "Secret (encrypted, never shown again)", Checked: e.Secret,
 				OnCheckedChanged: func() {
@@ -530,20 +533,11 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 		if n == "" || strings.ContainsAny(n, "= \t") {
 			return invalid(dlg, "Enter a variable name without spaces or '='.")
 		}
-		v := value.Text()
-		if stored && v == "" && n != e.Name {
-			// The server finds a stored secret by its name.
-			return invalid(dlg, "Enter the value again: a secret's stored value cannot move to a new name.")
+		next := *e
+		if err := desktop.EnvFromText(&next, n, value.Text(), secret.Checked()); err != nil {
+			return invalid(dlg, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
 		}
-		if stored && v == "" && !secret.Checked() {
-			return invalid(dlg, "Enter the value: a secret's stored value is never shown, so it cannot become a plain variable as it is.")
-		}
-		e.Name, e.Secret = n, secret.Checked()
-		if stored && v == "" {
-			e.Value = secrets.Mask // keep the stored secret
-		} else {
-			e.Value = v
-		}
+		*e = next
 		return true
 	})
 }

@@ -1,6 +1,7 @@
 // Typed functions for every endpoint in docs/API.md.
 
 import { http, qs } from './client';
+import type { SecretRef, SecretRefCheck, SecretStore, SecretStoreStatus, SecretTestResult } from './types';
 import type {
   ACMEOptions,
   AdminSettings,
@@ -273,4 +274,12 @@ export const importApi = {
   /** This server's applicationHost.config (Windows with IIS only). */
   previewLocalIIS: () => http.post<ImportPreview>('/api/import/preview', { source: 'local-iis' }),
   apply: (req: ImportApplyRequest) => http.post<ImportApplyResult>('/api/import/apply', req),
+};
+
+/** Secret stores (Settings → Secret stores). No endpoint returns a value. */
+export const secretStoresApi = {
+  status: () => http.get<SecretStoreStatus[]>('/api/secret-stores'),
+  test: (store: SecretStore, ref?: string) => http.post<SecretTestResult>('/api/secret-stores/test', { store, ref: ref || undefined }),
+  resolve: (r: SecretRef) => http.post<SecretTestResult>('/api/secret-stores/resolve', r),
+  checkSite: (siteId: string) => http.post<SecretRefCheck[]>(`/api/sites/${enc(siteId)}/secrets/check`),
 };

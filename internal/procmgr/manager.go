@@ -45,6 +45,9 @@ type Options struct {
 	// OnLog, optional, sees every line a site's log sink writes (log
 	// shipping). It must not block.
 	OnLog func(siteID string, l model.LogLine)
+	// ResolveEnv, optional, reads the variables of vars that come from
+	// secret stores (by name); task is "" for an instance of the site.
+	ResolveEnv func(site *model.Site, vars []model.EnvVar, task string) (map[string]string, error)
 }
 
 type Manager struct {

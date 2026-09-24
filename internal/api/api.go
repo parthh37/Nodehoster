@@ -144,6 +144,7 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/cache/purge", a.siteCachePurge)
 		r.Post("/sites/{id}/tasks/{task}/run", a.runTask)
 		r.Post("/sites/{id}/runs/{run}/cancel", a.cancelRun)
+		r.Post("/sites/{id}/secrets/check", a.checkSiteSecrets)
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant
@@ -210,6 +211,9 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/backups/destinations/{dest}/restore", a.backupRestoreFrom)
 		r.Get("/logshipping/status", a.logShippingStatus)
 		r.Post("/logshipping/test", a.logShippingTest)
+		r.Get("/secret-stores", a.listSecretStores)
+		r.Post("/secret-stores/test", a.testSecretStore)
+		r.Post("/secret-stores/resolve", a.resolveSecretRef)
 		r.Get("/server/logs/search", a.serverLogSearch)
 		r.Get("/updates", a.updateStatus)
 		r.Put("/updates", a.putUpdates)
