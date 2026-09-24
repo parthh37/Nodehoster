@@ -62,7 +62,7 @@ func importIISDialog(m *manager) {
 		return
 	}
 	if len(pv.Items) == 0 {
-		walk.MsgBox(m.mw, "Import from IIS", "IIS has no sites to import.", walk.MsgBoxIconInformation)
+		notify(m.mw, "Import from IIS", "IIS has no sites to import.", "", "", walk.TaskDialogSystemIconInformation)
 		return
 	}
 	list := &importList{items: pv.Items, checked: make([]bool, len(pv.Items))}
@@ -90,16 +90,16 @@ func importIISDialog(m *manager) {
 		}
 		details.SetText(b.String())
 	}
-	intro := "These sites were found in this server's IIS configuration. The checked ones are created in NodeHoster, " +
+	introText := "These sites were found in this server's IIS configuration. The checked ones are created in NodeHoster, " +
 		"stopped unless you choose otherwise; IIS is not changed. Select a site to see what was converted. " +
 		"To change more than this (names, bindings, another way of importing), use Import sites in the web console."
 	for _, w := range pv.Warnings {
-		intro += "\r\n\r\n" + w
+		introText += "\r\n\r\n" + w
 	}
 
 	var result model.ImportApplyResult
 	ok := runDialog(m.mw, "Import from IIS", Size{Width: 860, Height: 560}, []Widget{
-		Label{Text: intro},
+		intro(desktop.IconImport, introText),
 		TableView{
 			AssignTo: &tv, Model: list, CheckBoxes: true, AlternatingRowBG: true, LastColumnStretched: true,
 			MinSize: Size{Height: 220},
@@ -146,10 +146,10 @@ func importIISDialog(m *manager) {
 			fmt.Fprintf(&b, "\n%s: %s", f.Name, f.Error)
 		}
 	}
-	icon := walk.MsgBoxIconInformation
+	icon := walk.TaskDialogSystemIconInformation
 	if len(result.Failed) > 0 {
-		icon = walk.MsgBoxIconWarning
+		icon = walk.TaskDialogSystemIconWarning
 	}
-	walk.MsgBox(m.mw, "Import from IIS", b.String(), icon)
+	notify(m.mw, "Import from IIS", plural(len(result.Created), "site")+" imported", strings.TrimPrefix(b.String(), fmt.Sprintf("%d imported.", len(result.Created))), "", icon)
 	m.refresh(true)
 }

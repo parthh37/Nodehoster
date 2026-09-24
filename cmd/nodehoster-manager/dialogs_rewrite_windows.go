@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -174,17 +175,19 @@ func rewriteDialog(m *manager, siteID string) {
 		}
 		msg := fmt.Sprintf("Imported %d inbound rules, %d outbound rules and %d rewrite maps. Review them, then choose OK to save.",
 			len(res.Rules), len(res.OutboundRules), len(res.RewriteMaps))
-		icon := walk.MsgBoxIconInformation
+		icon, details := walk.TaskDialogSystemIconInformation, ""
 		if len(res.Warnings) > 0 {
-			msg += "\n\nSome of the input could not be converted:\n\n• " + strings.Join(res.Warnings, "\n• ")
-			icon = walk.MsgBoxIconWarning
+			msg += "\n\nSome of the input could not be converted: see the details."
+			details = "• " + strings.Join(res.Warnings, "\n• ")
+			icon = walk.TaskDialogSystemIconWarning
 		}
-		walk.MsgBox(dlg, "Import rules", msg, icon)
+		notify(dlg, "Import rules", "The rules are imported", msg, details, icon)
 	}
 
-	runDialogAs(&dlg, m.mw, "URL Rewrite — "+site.Name, Size{Width: 820, Height: 460}, []Widget{
+	runDialogAs(&dlg, m.mw, "URL Rewrite — "+site.Name, Size{Width: 860, Height: 520}, []Widget{
+		intro(desktop.IconRoute, "Rewrite, redirect or block requests with ordered rules, and rewrite responses, like the IIS URL Rewrite module. Nothing is saved until you choose OK."),
 		TabWidget{Pages: []TabPage{
-			{Title: "Inbound rules", Layout: VBox{}, Children: []Widget{
+			{Title: "Inbound rules", Image: img(desktop.IconImport), Layout: VBox{}, Children: []Widget{
 				in.view(editIn, []TableViewColumn{col("#", 30), col("Name", 150), col("Match", 170), col("Action", 110), col("Target", 200), col("Enabled", 60)},
 					button("Add…", func() {
 						r := model.RewriteRule{Enabled: true, Match: "^(.*)$", IgnoreCase: true, Action: "rewrite"}
@@ -206,9 +209,9 @@ func rewriteDialog(m *manager, siteID string) {
 					VSpacer{Size: 8},
 					button("Import…", importRules),
 				),
-				Label{Text: "Rules run in this order. Targets may use {R:1} (or $1), {C:1}, server variables such as {HTTP_HOST}, and maps as {MapName:key}. A rewrite to an absolute URL proxies the request there.", TextColor: colorMuted},
+				hint("Rules run in this order. Targets may use {R:1} (or $1), {C:1}, server variables such as {HTTP_HOST}, and maps as {MapName:key}. A rewrite to an absolute URL proxies the request there."),
 			}},
-			{Title: "Outbound rules", Layout: VBox{}, Children: []Widget{
+			{Title: "Outbound rules", Image: img(desktop.IconSend), Layout: VBox{}, Children: []Widget{
 				out.view(editOut, []TableViewColumn{col("#", 30), col("Name", 150), col("Scope", 160), col("Match", 160), col("Value", 170), col("Enabled", 60)},
 					button("Add…", func() {
 						o := model.OutboundRule{Enabled: true, Scope: "tags", Tags: []string{"a", "form", "img"}, IgnoreCase: true, Action: "rewrite"}
@@ -228,9 +231,9 @@ func rewriteDialog(m *manager, siteID string) {
 						}
 					}},
 				),
-				Label{Text: "Outbound rules rewrite responses: a header such as Location, URLs in HTML, or text in the body.", TextColor: colorMuted},
+				hint("Outbound rules rewrite responses: a header such as Location, URLs in HTML, or text in the body."),
 			}},
-			{Title: "Rewrite maps", Layout: VBox{}, Children: []Widget{
+			{Title: "Rewrite maps", Image: img(desktop.IconTag), Layout: VBox{}, Children: []Widget{
 				mp.view(editMap, []TableViewColumn{col("Name", 180), col("Default value", 260), col("Entries", 70)},
 					button("Add…", func() {
 						x := model.RewriteMap{Entries: map[string]string{}}
@@ -241,7 +244,7 @@ func rewriteDialog(m *manager, siteID string) {
 					button("Edit…", editMap),
 					button("Remove", mp.remove),
 				),
-				Label{Text: "Use a map in a target or condition as {MapName:{R:1}}. Keys match without regard to case.", TextColor: colorMuted},
+				hint("Use a map in a target or condition as {MapName:{R:1}}. Keys match without regard to case."),
 			}},
 		}},
 	}, func(dlg *walk.Dialog) bool {
@@ -336,7 +339,7 @@ func conditionDialog(owner walk.Form, title string, c *model.RewriteCondition) b
 			Label{}, CheckBox{AssignTo: &ignoreCase, Text: "Ignore case", Checked: c.IgnoreCase, Enabled: isPattern},
 			Label{}, CheckBox{AssignTo: &negate, Text: "Negate (the condition holds when this does not match)", Checked: c.Negate},
 		}},
-		Label{Text: "The input may combine text and server variables, e.g. {HTTP_HOST}{REQUEST_URI}.", TextColor: colorMuted},
+		hint("The input may combine text and server variables, e.g. {HTTP_HOST}{REQUEST_URI}."),
 	}, func(dlg *walk.Dialog) bool {
 		inp := strings.TrimSpace(input.Text())
 		if inp == "" {
@@ -407,7 +410,7 @@ func ruleEditDialog(owner walk.Form, title string, r *model.RewriteRule) bool {
 			Label{}, CheckBox{AssignTo: &preserveHost, Text: "Preserve the original Host header (rewrite to an absolute URL)", Checked: r.PreserveHost, Enabled: p0},
 			Label{Text: "Status code:"}, Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 				NumberEdit{AssignTo: &status, Value: float64(r.StatusCode), MinValue: 0, MaxValue: 599, Enabled: s0, MaxSize: Size{Width: 80}},
-				Label{Text: "0 = default. Redirect: 301, 302, 303, 307, 308. Abort: 400–599.", TextColor: colorMuted},
+				hint("0 = default. Redirect: 301, 302, 303, 307, 308. Abort: 400–599."),
 			}},
 			Label{Text: "Content type:"}, LineEdit{AssignTo: &contentType, Text: r.ContentType, Enabled: r0, CueBanner: "text/plain"},
 			Label{Text: "Response body:"}, TextEdit{AssignTo: &body, Text: strings.ReplaceAll(r.Body, "\n", "\r\n"), Enabled: r0, VScroll: true, MinSize: Size{Height: 50}},
@@ -633,7 +636,7 @@ func rewriteImportDialog(m *manager, owner walk.Form) (model.RewriteImport, bool
 		}},
 		Label{Text: "Paste the rules to convert:"},
 		TextEdit{AssignTo: &text, VScroll: true, HScroll: true, Font: Font{Family: "Consolas", PointSize: 9}},
-		Label{Text: "The converted rules are added to the lists; nothing is saved until you choose OK in URL Rewrite.", TextColor: colorMuted},
+		hint("The converted rules are added to the lists; nothing is saved until you choose OK in URL Rewrite."),
 	}, func(dlg *walk.Dialog) bool {
 		src := strings.ReplaceAll(text.Text(), "\r\n", "\n")
 		if strings.TrimSpace(src) == "" {

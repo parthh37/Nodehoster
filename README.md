@@ -137,20 +137,31 @@ nodehoster service start
 
 **Start → NodeHoster Manager** opens the desktop console (it asks for
 administrator rights, like IIS Manager). The left pane lists the server,
-its sites, certificates, Node.js versions, web console users and the event
-and audit logs; the right pane has the actions for what is selected:
-start/stop/restart/recycle a site, edit its bindings, environment and basic
-settings, browse it, follow its log live, roll back a release, reset a web
-console user's password or two-factor authentication, change where the web
-console listens, back up to a file, run a scheduled backup now and see its
-history, restore from a backup, and start or stop the service.
+its sites (with their state on their icons), certificates, SMTP e-mail,
+Node.js versions, web console users, banned addresses, the event and audit
+logs and backups; the middle pane shows the selected one (the server's
+home is a dashboard of the service, CPU, memory and disk); the right pane
+has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
+edit its bindings, environment, URL Rewrite rules, MIME types and basic
+settings, browse it, follow its log live (pause, filter, save), see a
+deployment's output and roll back a release, run or cancel a scheduled
+task, purge its response cache, install Node.js versions, reset a web
+console user's password or two-factor authentication, ban and unban
+addresses, manage the mail queue, change where the web console listens,
+back up to a file, run a scheduled backup now and see its history, restore
+from a backup, and start or stop the service.
+
+Every list can be searched (Ctrl+F) and sorted by clicking a column, and
+has the actions of its rows on a right-click; Delete removes, Enter opens,
+F5 refreshes, Ctrl+N adds a site, Ctrl+1…9 go to a section. The window
+remembers its size, its panes and its lists' columns.
 
 It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
 opens to elevated Administrators: there is no NodeHoster login, and nothing
 about the web console (its port, certificate or accounts) can lock you out.
 If the web console cannot start (for example its port is taken), the
 service now keeps hosting sites and reports the problem; fix it from the
-manager (Server → Web console → Settings) and restart the service.
+manager (Tools → Web console settings) and restart the service.
 
 The **status icon** (`nodehoster-manager.exe --tray`) starts at sign-in for
 every user (installer task; each user can turn it off from its menu). It
@@ -311,9 +322,12 @@ The Go code builds without the web build too (the console is then a page
 saying how to build it). The UI dev server (`cd web && npm run dev`) proxies API calls to
 `https://localhost:8484`. NodeHoster Manager is Windows-only
 (`GOOS=windows go build ./cmd/nodehoster-manager` cross-compiles it); its
-manifest and icon are committed `.syso` files, regenerated with
+manifest and icons are committed `.syso` files, regenerated with
 `go generate ./cmd/nodehoster-manager` (which also writes the installer's
-`installer/nodehoster.ico`); `nodehoster.exe`'s icon and version resources
+`installer/nodehoster.ico`). Its icons are drawn in Go
+(`internal/desktop/icons.go`) and stored as icon resources in every size a
+display's scaling needs; `go run ./internal/mkicon -sheet icons.png` (in
+`cmd/nodehoster-manager`) draws them all on one page for review; `nodehoster.exe`'s icon and version resources
 are regenerated with `go generate ./cmd/nodehoster`. The server builds and runs on macOS and Linux too
 (no job objects or DPAPI there), which is convenient for development.
 

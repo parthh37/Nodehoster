@@ -73,6 +73,22 @@ func Overall(service string, sum *localapi.Summary) Health {
 	return h
 }
 
+// SummaryOf summarizes a site as the status endpoint does
+// (localserver.summary), so the manager flags the same sites as needing
+// attention as the notification-area icon.
+func SummaryOf(s localapi.Site) localapi.SiteSummary {
+	ss := localapi.SiteSummary{ID: s.ID, Name: s.Name, Type: s.Type, AutoStart: s.AutoStart, State: s.Status.State, Message: s.Status.Message}
+	if s.Node != nil {
+		ss.Instances = s.Node.Instances
+	}
+	for _, in := range s.Status.Instances {
+		if in.State == "ready" {
+			ss.Ready++
+		}
+	}
+	return ss
+}
+
 // SiteNeedsAttention decides whether a site turns the icon amber and
 // appears under "needs attention" in its menu (a notification is shown when
 // a site starts needing attention).

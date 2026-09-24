@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/tailscale/walk"
@@ -113,22 +114,23 @@ func mailPropertiesDialog(m *manager) {
 	}
 
 	var saved model.MailSettings
-	ok := runDialogAs(&dlg, m.mw, "SMTP E-mail properties", Size{Width: 620, Height: 500}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, "SMTP E-mail properties", Size{Width: 660, Height: 540}, []Widget{
+		intro(desktop.IconMail, "NodeHoster's own send-only SMTP server: applications send through it, and it delivers to the recipients' mail servers or through a smart host."),
 		TabWidget{Pages: []TabPage{
-			{Title: "General", Layout: VBox{}, Children: []Widget{
+			{Title: "General", Image: img(desktop.IconSettings), Layout: VBox{}, Children: []Widget{
 				CheckBox{AssignTo: &enabled, Text: "Enable the SMTP server", Checked: ms.Enabled},
 				Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 					Label{Text: "IP address:"}, LineEdit{AssignTo: &listenIP, Text: ms.ListenIP, CueBanner: "(All unassigned)"},
 					Label{Text: "TCP port:"}, NumberEdit{AssignTo: &port, Value: float64(ms.Port), MinValue: 1, MaxValue: 65535},
 					Label{Text: "Fully-qualified domain name:"}, LineEdit{AssignTo: &hostname, Text: ms.Hostname, CueBanner: "(this computer's name) e.g. mail.example.com"},
 					Label{Text: "Public IP address:"}, LineEdit{AssignTo: &publicIP, Text: ms.PublicIP, CueBanner: "(detect)"},
-					Label{}, Label{Text: "Needed when the server is behind NAT: the address receivers see mail coming from.", TextColor: colorMuted},
+					Label{}, hint("Needed when the server is behind NAT: the address receivers see mail coming from."),
 				}},
-				Label{Text: "The name is used in the SMTP greeting and in Received headers. Use one that resolves to this server, and whose reverse DNS matches, or mail may be treated as spam.", TextColor: colorMuted},
+				hint("The name is used in the SMTP greeting and in Received headers. Use one that resolves to this server, and whose reverse DNS matches, or mail may be treated as spam."),
 				VSpacer{},
 			}},
-			{Title: "Access", Layout: VBox{}, Children: []Widget{
-				Label{Text: "Only these computers may connect and relay (IP addresses or ranges such as 10.0.0.0/8, one per line):"},
+			{Title: "Access", Image: img(desktop.IconLock), Layout: VBox{}, Children: []Widget{
+				TextLabel{Text: "Only these computers may connect and relay (IP addresses or ranges such as 10.0.0.0/8, one per line):"},
 				TextEdit{AssignTo: &allowIPs, Text: joinLines(ms.AllowIPs), VScroll: true, MinSize: Size{Height: 60}},
 				CheckBox{AssignTo: &requireAuth, Text: "Require authentication (clients sign in as one of these users)", Checked: ms.RequireAuth},
 				userList.view(editUser, []TableViewColumn{col("User name", 200), col("Password", 180)},
@@ -145,18 +147,18 @@ func mailPropertiesDialog(m *manager) {
 					Label{Text: "STARTTLS certificate:"},
 					ComboBox{AssignTo: &cert, Model: certNames, CurrentIndex: max(slices.Index(certIDs, ms.CertificateID), 0)},
 				}},
-				Label{Text: "Passwords are only accepted over TLS or from this computer.", TextColor: colorMuted},
+				hint("Passwords are only accepted over TLS or from this computer."),
 			}},
-			{Title: "Messages", Layout: VBox{}, Children: []Widget{
+			{Title: "Messages", Image: img(desktop.IconMail), Layout: VBox{}, Children: []Widget{
 				Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 					Label{Text: "Maximum message size (MB):"}, NumberEdit{AssignTo: &maxMB, Value: float64(ms.MaxMessageMB), MinValue: 1, MaxValue: 150},
 					Label{Text: "Maximum recipients per message:"}, NumberEdit{AssignTo: &maxRcpt, Value: float64(ms.MaxRecipients), MinValue: 1, MaxValue: 100000},
 				}},
-				Label{Text: "Accept mail only from these sender domains (one per line; empty = any):"},
+				TextLabel{Text: "Accept mail only from these sender domains (one per line; empty = any):"},
 				TextEdit{AssignTo: &senderDomains, Text: joinLines(ms.AllowedSenderDomains), VScroll: true, MinSize: Size{Height: 80}},
 				VSpacer{},
 			}},
-			{Title: "Delivery", Layout: VBox{}, Children: []Widget{
+			{Title: "Delivery", Image: img(desktop.IconSend), Layout: VBox{}, Children: []Widget{
 				Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 					Label{Text: "Deliver mail:"},
 					ComboBox{AssignTo: &delivery, Model: deliveryNames, CurrentIndex: max(slices.Index(deliveries, ms.Delivery), 0),
@@ -182,8 +184,8 @@ func mailPropertiesDialog(m *manager) {
 				CheckBox{AssignTo: &pickup, Text: `Send .eml files dropped in the pickup folder (data\mail\pickup)`, Checked: ms.PickupDirectory},
 				VSpacer{},
 			}},
-			{Title: "DKIM", Layout: VBox{}, Children: []Widget{
-				Label{Text: "Sign outgoing mail with DKIM, so receivers can verify it came from this server:"},
+			{Title: "DKIM", Image: img(desktop.IconKey), Layout: VBox{}, Children: []Widget{
+				TextLabel{Text: "Sign outgoing mail with DKIM, so receivers can verify it came from this server:"},
 				dkimList.view(nil, []TableViewColumn{col("Domain", 150), col("Selector", 100), col("Enabled", 60), col("DNS name", 220)},
 					button("Add…", func() {
 						// Signing starts off: turn it on once the record is published.
@@ -200,9 +202,9 @@ func mailPropertiesDialog(m *manager) {
 						}
 					}),
 					button("Remove", func() {
-						if k := dkimList.current(); k != nil && walk.MsgBox(dlg, "Remove DKIM key",
-							"Remove the key of "+k.Domain+"? Its private key is deleted when the settings are saved; mail from "+k.Domain+" is no longer signed.",
-							walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes {
+						if k := dkimList.current(); k != nil && ask(dlg, "Remove DKIM key", "Remove the key of "+k.Domain+"?",
+							"Its private key is deleted when the settings are saved; mail from "+k.Domain+" is no longer signed.",
+							walk.TaskDialogSystemIconWarning, [2]string{"Remove", ""}) == 0 {
 							dkimList.remove()
 							showRecord()
 						}
@@ -302,7 +304,8 @@ func mailUserDialog(owner walk.Form, title string, u *model.MailUser) bool {
 	var name, pw, confirm *walk.LineEdit
 	stored := u.PasswordHash != "" && u.Password == ""
 	cue := map[bool]string{true: "unchanged"}[stored]
-	return runDialog(owner, title, Size{Width: 400}, []Widget{
+	return runDialog(owner, title, Size{Width: 440}, []Widget{
+		intro(desktop.IconUser, "Applications sign in as this user to send mail through the server."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "User name:"}, LineEdit{AssignTo: &name, Text: u.Username},
 			Label{Text: "Password:"}, LineEdit{AssignTo: &pw, PasswordMode: true, Text: u.Password, CueBanner: cue},
@@ -332,13 +335,14 @@ func mailUserDialog(owner walk.Form, title string, u *model.MailUser) bool {
 func dkimKeyDialog(owner walk.Form, k *model.DKIMKey) bool {
 	var domain, selector *walk.LineEdit
 	var enabled *walk.CheckBox
-	return runDialog(owner, "Add DKIM key", Size{Width: 420}, []Widget{
+	return runDialog(owner, "Add DKIM key", Size{Width: 460}, []Widget{
+		intro(desktop.IconKey, "Sign the mail of a domain with DKIM, so receivers can verify it came from this server."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Domain:"}, LineEdit{AssignTo: &domain, Text: k.Domain, CueBanner: "example.com"},
 			Label{Text: "Selector:"}, LineEdit{AssignTo: &selector, Text: k.Selector},
 			Label{}, CheckBox{AssignTo: &enabled, Text: "Sign mail from this domain", Checked: k.Enabled},
 		}},
-		Label{Text: "A new RSA-2048 key is generated when the settings are saved.", TextColor: colorMuted},
+		hint("A new RSA-2048 key is generated when the settings are saved."),
 	}, func(dlg *walk.Dialog) bool {
 		d := strings.ToLower(strings.TrimSpace(domain.Text()))
 		sel := strings.ToLower(strings.TrimSpace(selector.Text()))
@@ -356,12 +360,12 @@ func dkimKeyDialog(owner walk.Form, k *model.DKIMKey) bool {
 // dkimRecordsDialog shows the DNS records of newly generated DKIM keys.
 func dkimRecordsDialog(owner walk.Form, text string) {
 	runDialog(owner, "Publish the DKIM records", Size{Width: 560, Height: 300}, []Widget{
-		Label{Text: "New DKIM keys were generated. Publish these TXT records in DNS; receivers verify signatures once they resolve:"},
+		intro(desktop.IconKey, "New DKIM keys were generated. Publish these TXT records in DNS; receivers verify signatures once they resolve:"),
 		TextEdit{Text: text, ReadOnly: true, VScroll: true, Font: Font{Family: "Consolas", PointSize: 9}},
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 			HSpacer{},
 			button("Copy all", func() { walk.Clipboard().SetText(strings.ReplaceAll(text, "\r\n", "\n")) }),
 		}},
-		Label{Text: "They are also shown in Properties → DKIM.", TextColor: colorMuted},
+		hint("They are also shown in Properties → DKIM."),
 	}, nil)
 }

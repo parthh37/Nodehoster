@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,23 +35,28 @@ func runDialogAs(self **walk.Dialog, owner walk.Form, title string, size Size, c
 		self = &dlg
 	}
 	var ok, cancel *walk.PushButton
+	var icon Property
+	if ic := appIcon(); ic != nil {
+		icon = ic
+	}
 	err := Dialog{
 		AssignTo:      self,
 		Title:         title,
+		Icon:          icon,
 		MinSize:       size,
 		DefaultButton: &ok,
 		CancelButton:  &cancel,
-		Layout:        VBox{},
+		Layout:        VBox{Margins: Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}, Spacing: 8},
 		Children: append(children,
 			VSpacer{Size: 4},
 			Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 				HSpacer{},
-				PushButton{AssignTo: &ok, Text: "OK", OnClicked: func() {
+				PushButton{AssignTo: &ok, Text: "OK", MinSize: Size{Width: 84}, OnClicked: func() {
 					if onOK == nil || onOK(*self) {
 						(*self).Accept()
 					}
 				}},
-				PushButton{AssignTo: &cancel, Text: "Cancel", OnClicked: func() { (*self).Cancel() }},
+				PushButton{AssignTo: &cancel, Text: "Cancel", MinSize: Size{Width: 84}, OnClicked: func() { (*self).Cancel() }},
 			}},
 		),
 	}.Create(owner)
@@ -61,16 +67,28 @@ func runDialogAs(self **walk.Dialog, owner walk.Form, title string, size Size, c
 	return (*self).Run() == walk.DlgCmdOK
 }
 
+// intro heads a dialog: its tile and what it is for.
+func intro(icon, text string) Composite {
+	var iv *walk.ImageView
+	return Composite{
+		Layout: HBox{MarginsZero: true, Spacing: 12, Alignment: AlignHNearVCenter},
+		Children: []Widget{
+			ImageView{AssignTo: &iv, Image: asImage(tileIcon(icon)), MinSize: Size{Width: 32, Height: 32}, MaxSize: Size{Width: 32, Height: 32}},
+			TextLabel{Text: text, StretchFactor: 1},
+		},
+	}
+}
+
 func invalid(owner walk.Form, msg string) bool {
-	walk.MsgBox(owner, "Check the input", msg, walk.MsgBoxIconWarning)
+	notify(owner, "Check the input", "Check the input", msg, "", walk.TaskDialogSystemIconWarning)
 	return false
 }
 
-func inputDialog(owner walk.Form, title, prompt, initial string, password bool) (string, bool) {
+func inputDialog(owner walk.Form, title, icon, prompt, initial string, password bool) (string, bool) {
 	var le *walk.LineEdit
 	var value string
-	ok := runDialog(owner, title, Size{Width: 380}, []Widget{
-		Label{Text: prompt},
+	ok := runDialog(owner, title, Size{Width: 420}, []Widget{
+		intro(icon, prompt),
 		LineEdit{AssignTo: &le, Text: initial, PasswordMode: password},
 	}, func(*walk.Dialog) bool {
 		value = le.Text()
@@ -79,34 +97,52 @@ func inputDialog(owner walk.Form, title, prompt, initial string, password bool) 
 	return value, ok
 }
 
-func choiceDialog(owner walk.Form, title, prompt string, options []string, current int) (string, bool) {
-	var cb *walk.ComboBox
-	choice := -1
-	ok := runDialog(owner, title, Size{Width: 320}, []Widget{
-		Label{Text: prompt},
-		ComboBox{AssignTo: &cb, Model: options, CurrentIndex: current},
-	}, func(dlg *walk.Dialog) bool {
-		if choice = cb.CurrentIndex(); choice < 0 {
-			return invalid(dlg, "Pick one of the options.")
-		}
-		return true
-	})
-	if !ok {
-		return "", false
-	}
-	return options[choice], true
-}
-
 // showSecretDialog shows a generated secret once, with a copy button.
 func showSecretDialog(owner walk.Form, title, prompt, secret string) {
-	runDialog(owner, title, Size{Width: 420}, []Widget{
-		Label{Text: prompt},
+	runDialog(owner, title, Size{Width: 460}, []Widget{
+		intro(desktop.IconKey, prompt),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 			LineEdit{Text: secret, ReadOnly: true, Font: Font{Family: "Consolas", PointSize: 11}},
-			PushButton{Text: "Copy", OnClicked: func() { walk.Clipboard().SetText(secret) }},
+			button("Copy", func() { walk.Clipboard().SetText(secret) }),
 		}},
-		Label{Text: "It is not shown again.", TextColor: colorMuted},
+		hint("It is not shown again."),
 	}, nil)
+}
+
+// textDialog shows read-only text, such as a deployment's output.
+func textDialog(owner walk.Form, title, icon, text string) {
+	var dlg *walk.Dialog
+	var closeBtn *walk.PushButton
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+	if strings.TrimSpace(text) == "" {
+		text = "(no output)"
+	}
+	var iconProp Property
+	if ic := tileIcon(icon); ic != nil {
+		iconProp = ic
+	}
+	err := Dialog{
+		AssignTo:     &dlg,
+		Title:        title,
+		Icon:         iconProp,
+		MinSize:      Size{Width: 560, Height: 360},
+		Size:         Size{Width: 860, Height: 560},
+		CancelButton: &closeBtn,
+		Layout:       VBox{Margins: Margins{Left: 12, Top: 12, Right: 12, Bottom: 12}},
+		Children: []Widget{
+			TextEdit{Text: text, ReadOnly: true, VScroll: true, HScroll: true, Font: fontMono},
+			Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
+				button("Copy all", func() { walk.Clipboard().SetText(text) }),
+				HSpacer{},
+				PushButton{AssignTo: &closeBtn, Text: "Close", MinSize: Size{Width: 84}, OnClicked: func() { dlg.Cancel() }},
+			}},
+		},
+	}.Create(owner)
+	if err != nil {
+		walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError)
+		return
+	}
+	dlg.Run()
 }
 
 // browseFolder lets the user pick a folder into le.
@@ -142,6 +178,71 @@ func (m *manager) certificates() []certView {
 	return list
 }
 
+// ---- installing Node.js
+
+// nodeRelease is a release in nodejs.org's index.
+type nodeRelease struct {
+	Version  string `json:"version"`
+	LTS      any    `json:"lts"` // the codename, or false
+	Date     string `json:"date"`
+	Security bool   `json:"security"`
+}
+
+var versionRe = regexp.MustCompile(`^v?(\d+\.\d+\.\d+)`)
+
+// installNodeDialog asks which version to install, offering the recent
+// releases of each line (the LTS ones marked) and taking any typed one.
+func installNodeDialog(m *manager) (string, bool) {
+	var list []nodeRelease
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	listErr := m.cl.Get(ctx, "/api/node/available", &list)
+	cancel()
+
+	// The newest release of each major version, newest majors first.
+	var items []string
+	seen := map[string]bool{}
+	for _, r := range list {
+		major, _, _ := strings.Cut(strings.TrimPrefix(r.Version, "v"), ".")
+		if seen[major] || len(items) >= 16 {
+			continue
+		}
+		seen[major] = true
+		label := strings.TrimPrefix(r.Version, "v")
+		if lts, ok := r.LTS.(string); ok && lts != "" {
+			label += "  — LTS (" + lts + ")"
+		} else {
+			label += "  — Current"
+		}
+		if r.Date != "" {
+			label += ", " + r.Date
+		}
+		items = append(items, label)
+	}
+	note := "Pick a release, or type any version, such as 20.18.1. It is downloaded from nodejs.org and verified by SHA-256."
+	if listErr != nil {
+		note = "The list of releases could not be read (" + listErr.Error() + "). Type a version, such as 22.12.0."
+	}
+
+	var cb *walk.ComboBox
+	var version string
+	ok := runDialog(m.mw, "Install Node.js", Size{Width: 480}, []Widget{
+		intro(desktop.IconNode, "Install a version of Node.js for the sites to run on."),
+		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
+			Label{Text: "Version:"},
+			ComboBox{AssignTo: &cb, Editable: true, Model: items, CurrentIndex: map[bool]int{true: 0, false: -1}[len(items) > 0]},
+		}},
+		hint(note),
+	}, func(dlg *walk.Dialog) bool {
+		v := versionRe.FindStringSubmatch(strings.TrimSpace(cb.Text()))
+		if v == nil {
+			return invalid(dlg, "Enter a version number, such as 22.12.0.")
+		}
+		version = v[1]
+		return true
+	})
+	return version, ok
+}
+
 // ---- bindings, as IIS Manager's "Site Bindings"
 
 func bindingsDialog(m *manager, siteID string) {
@@ -151,6 +252,15 @@ func bindingsDialog(m *manager, siteID string) {
 	}
 	certs := m.certificates()
 	var t table
+	t.icon = func(row, col int) walk.Image {
+		if col != 0 || row >= len(s.Bindings) {
+			return nil
+		}
+		if s.Bindings[row].Protocol == "https" {
+			return img(desktop.IconHTTPS)
+		}
+		return img(desktop.IconHTTP)
+	}
 	refresh := func() {
 		keys := make([]string, len(s.Bindings))
 		rows := make([][]string, len(s.Bindings))
@@ -160,16 +270,9 @@ func bindingsDialog(m *manager, siteID string) {
 		}
 		t.set(keys, rows)
 	}
-	index := func() int {
-		i := t.tv.CurrentIndex()
-		if i < 0 || i >= len(s.Bindings) {
-			return -1
-		}
-		return i
-	}
 	var dlg *walk.Dialog
 	edit := func() {
-		if i := index(); i >= 0 {
+		if i := t.current(); i >= 0 {
 			b := s.Bindings[i]
 			if bindingEditDialog(dlg, "Edit site binding", &b, certs) {
 				s.Bindings[i] = b
@@ -177,30 +280,34 @@ func bindingsDialog(m *manager, siteID string) {
 			}
 		}
 	}
+	remove := func() {
+		if i := t.current(); i >= 0 {
+			s.Bindings = slices.Delete(s.Bindings, i, i+1)
+			refresh()
+		}
+	}
 	refresh()
-	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 720, Height: 360}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 760, Height: 380}, []Widget{
+		intro(desktop.IconLink, "The addresses the site answers on: protocol, IP address, port and host name. HTTPS bindings use a certificate from this server, or get one automatically."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-			t.view(edit, col("Type", 60), col("IP address", 120), col("Port", 60), col("Host name", 200), col("Certificate", 180)),
+			t.viewWith(tableOpts{onActivate: edit, onDelete: remove},
+				col("Type", 70), col("IP address", 120), colR("Port", 60), col("Host name", 200), col("Certificate", 180)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
-				PushButton{Text: "Add…", OnClicked: func() {
+				button("Add…", func() {
 					b := model.Binding{Protocol: "http", IP: "*", Port: 80}
 					if bindingEditDialog(dlg, "Add site binding", &b, certs) {
 						s.Bindings = append(s.Bindings, b)
 						refresh()
+						t.selectModel(len(s.Bindings) - 1)
 					}
-				}},
-				PushButton{Text: "Edit…", OnClicked: edit},
-				PushButton{Text: "Remove", OnClicked: func() {
-					if i := index(); i >= 0 {
-						s.Bindings = slices.Delete(s.Bindings, i, i+1)
-						refresh()
-					}
-				}},
-				PushButton{Text: "Browse", OnClicked: func() {
-					if i := index(); i >= 0 {
+				}),
+				button("Edit…", edit),
+				button("Remove", remove),
+				button("Browse", func() {
+					if i := t.current(); i >= 0 {
 						shellOpen(desktop.BrowseURL(s.Bindings[i]))
 					}
-				}},
+				}),
 				VSpacer{},
 			}},
 		}},
@@ -259,7 +366,7 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 			port.SetValue(80)
 		}
 	}
-	return runDialog(owner, title, Size{Width: 460}, []Widget{
+	return runDialog(owner, title, Size{Width: 500}, []Widget{
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Type:"},
 			ComboBox{AssignTo: &typ, Model: protos, CurrentIndex: slices.Index(protos, b.Protocol), OnCurrentIndexChanged: onType},
@@ -305,10 +412,19 @@ func envDialog(m *manager, siteID string) {
 		return
 	}
 	if s.Node == nil {
-		walk.MsgBox(m.mw, "Environment", "Environment variables apply to Node.js sites only.", walk.MsgBoxIconInformation)
+		notify(m.mw, "Environment", "Environment variables apply to Node.js sites only.", "", "", walk.TaskDialogSystemIconInformation)
 		return
 	}
 	var t table
+	t.icon = func(row, col int) walk.Image {
+		if col != 0 || row >= len(s.Node.Env) {
+			return nil
+		}
+		if s.Node.Env[row].Secret {
+			return img(desktop.IconLock)
+		}
+		return img(desktop.IconBraces)
+	}
 	refresh := func() {
 		keys := make([]string, len(s.Node.Env))
 		rows := make([][]string, len(s.Node.Env))
@@ -322,15 +438,9 @@ func envDialog(m *manager, siteID string) {
 		}
 		t.set(keys, rows)
 	}
-	index := func() int {
-		if i := t.tv.CurrentIndex(); i >= 0 && i < len(s.Node.Env) {
-			return i
-		}
-		return -1
-	}
 	var dlg *walk.Dialog
 	edit := func() {
-		if i := index(); i >= 0 {
+		if i := t.current(); i >= 0 {
 			e := s.Node.Env[i]
 			if envEditDialog(dlg, "Edit variable", &e) {
 				s.Node.Env[i] = e
@@ -338,29 +448,31 @@ func envDialog(m *manager, siteID string) {
 			}
 		}
 	}
+	remove := func() {
+		if i := t.current(); i >= 0 {
+			s.Node.Env = slices.Delete(s.Node.Env, i, i+1)
+			refresh()
+		}
+	}
 	refresh()
-	ok := runDialogAs(&dlg, m.mw, "Environment variables — "+s.Name, Size{Width: 640, Height: 380}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, "Environment variables — "+s.Name, Size{Width: 700, Height: 420}, []Widget{
+		intro(desktop.IconBraces, "Variables the site's processes see. Changes apply with a zero-downtime recycle; secret values are encrypted at rest."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-			t.view(edit, col("Name", 200), col("Value", 280), col("Secret", 60)),
+			t.viewWith(tableOpts{onActivate: edit, onDelete: remove}, col("Name", 200), col("Value", 300), col("Secret", 60)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
-				PushButton{Text: "Add…", OnClicked: func() {
+				button("Add…", func() {
 					var e model.EnvVar
 					if envEditDialog(dlg, "Add variable", &e) {
 						s.Node.Env = append(s.Node.Env, e)
 						refresh()
+						t.selectModel(len(s.Node.Env) - 1)
 					}
-				}},
-				PushButton{Text: "Edit…", OnClicked: edit},
-				PushButton{Text: "Remove", OnClicked: func() {
-					if i := index(); i >= 0 {
-						s.Node.Env = slices.Delete(s.Node.Env, i, i+1)
-						refresh()
-					}
-				}},
+				}),
+				button("Edit…", edit),
+				button("Remove", remove),
 				VSpacer{},
 			}},
 		}},
-		Label{Text: "Changes apply with a zero-downtime recycle. Secret values are encrypted at rest.", TextColor: colorMuted},
 	}, nil)
 	if ok {
 		m.saveSite(s, nil)
@@ -375,14 +487,19 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 	if stored {
 		shown = ""
 	}
-	return runDialog(owner, title, Size{Width: 440}, []Widget{
+	return runDialog(owner, title, Size{Width: 460}, []Widget{
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Name:"},
-			LineEdit{AssignTo: &name, Text: e.Name},
+			LineEdit{AssignTo: &name, Text: e.Name, CueBanner: "DATABASE_URL"},
 			Label{Text: "Value:"},
 			LineEdit{AssignTo: &value, Text: shown, PasswordMode: e.Secret, CueBanner: map[bool]string{true: "unchanged"}[stored]},
 			Label{},
-			CheckBox{AssignTo: &secret, Text: "Secret (encrypted, never shown again)", Checked: e.Secret},
+			CheckBox{AssignTo: &secret, Text: "Secret (encrypted, never shown again)", Checked: e.Secret,
+				OnCheckedChanged: func() {
+					if value != nil {
+						value.SetPasswordMode(secret.Checked())
+					}
+				}},
 		}},
 	}, func(dlg *walk.Dialog) bool {
 		n := strings.TrimSpace(name.Text())
@@ -428,7 +545,7 @@ func basicSettingsDialog(m *manager, siteID string) {
 	folder := func(value string) Widget {
 		return Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 			LineEdit{AssignTo: &path, Text: value},
-			PushButton{Text: "…", MaxSize: Size{Width: 30}, OnClicked: func() { browseFolder(m.mw, path, "Folder of "+s.Name) }},
+			PushButton{Text: "Browse…", Image: img(desktop.IconFolder), OnClicked: func() { browseFolder(m.mw, path, "Folder of "+s.Name) }},
 		}}
 	}
 	switch {
@@ -456,11 +573,14 @@ func basicSettingsDialog(m *manager, siteID string) {
 			Label{}, CheckBox{AssignTo: &preserve, Text: "Keep the requested path", Checked: s.Redirect.PreservePath},
 		)
 	}
-	ok := runDialog(m.mw, "Basic settings — "+s.Name, Size{Width: 520}, []Widget{
+	ok := runDialog(m.mw, "Basic settings — "+s.Name, Size{Width: 560}, []Widget{
+		intro(desktop.SiteTypeIcon(string(s.Type)), desktop.SiteTypeText(s.Type)+". Other settings (routing, recycling, limits, health checks) are in the web console."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: fields},
-		Label{Text: "Other settings (routing, recycling, limits, health checks) are in the web console.", TextColor: colorMuted},
 	}, func(dlg *walk.Dialog) bool {
 		s.Name, s.AutoStart = strings.TrimSpace(name.Text()), auto.Checked()
+		if s.Name == "" {
+			return invalid(dlg, "Enter a site name.")
+		}
 		switch {
 		case s.Node != nil:
 			s.Node.AppRoot, s.Node.Script, s.Node.NpmScript = path.Text(), strings.TrimSpace(entry.Text()), strings.TrimSpace(npm.Text())
@@ -503,19 +623,31 @@ func weightOf(ups []model.Upstream, u string) int {
 func addSiteDialog(m *manager) {
 	types := []model.SiteType{model.SiteNode, model.SiteWorker, model.SiteStatic, model.SiteProxy, model.SiteRedirect}
 	typeNames := []string{"Node.js application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
+	typeNotes := []string{
+		"Runs a Node.js app (server.js or an npm script) behind the reverse proxy, with process management and zero-downtime recycling.",
+		"Runs a Node.js process that serves no HTTP: a queue consumer, a bot, a long-running script. It has no binding.",
+		"Serves the files of a folder, with compression, caching and MIME types.",
+		"Forwards requests to one or more servers, with load balancing and health checks.",
+		"Answers every request with a redirect to another URL.",
+	}
 	var name, path, entry, target, ip, host *walk.LineEdit
 	var typ, proto *walk.ComboBox
 	var port *walk.NumberEdit
 	var start *walk.CheckBox
 	var pathBox *walk.Composite
 	var bindingBox *walk.GroupBox
-	var pathLabel, entryLabel, targetLabel, httpsNote *walk.Label
+	var pathLabel, entryLabel, targetLabel *walk.Label
+	var note, httpsNote *walk.TextLabel
+	var typeIcon *walk.ImageView
 
 	onType := func() {
-		if target == nil { // still being created
+		if target == nil || note == nil { // still being created
 			return
 		}
-		t := types[max(typ.CurrentIndex(), 0)]
+		i := max(typ.CurrentIndex(), 0)
+		t := types[i]
+		note.SetText(typeNotes[i])
+		typeIcon.SetImage(asImage(tileIcon(desktop.SiteTypeIcon(string(t)))))
 		node := t == model.SiteNode || t == model.SiteWorker
 		hasPath := node || t == model.SiteStatic
 		pathLabel.SetVisible(hasPath)
@@ -538,14 +670,18 @@ func addSiteDialog(m *manager) {
 
 	var created *localapi.Site
 	var startNow bool
-	ok := runDialog(m.mw, "Add site", Size{Width: 560}, []Widget{
+	ok := runDialog(m.mw, "Add site", Size{Width: 600}, []Widget{
+		Composite{Layout: HBox{MarginsZero: true, Spacing: 12, Alignment: AlignHNearVCenter}, Children: []Widget{
+			ImageView{AssignTo: &typeIcon, Image: asImage(tileIcon(desktop.IconNode)), MinSize: Size{Width: 32, Height: 32}, MaxSize: Size{Width: 32, Height: 32}},
+			TextLabel{AssignTo: &note, Text: typeNotes[0], StretchFactor: 1},
+		}},
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
-			Label{Text: "Site name:"}, LineEdit{AssignTo: &name},
+			Label{Text: "Site name:"}, LineEdit{AssignTo: &name, CueBanner: "shop"},
 			Label{Text: "Type:"}, ComboBox{AssignTo: &typ, Model: typeNames, CurrentIndex: 0, OnCurrentIndexChanged: onType},
 			Label{AssignTo: &pathLabel, Text: "Physical path:"},
 			Composite{AssignTo: &pathBox, Layout: HBox{MarginsZero: true}, Children: []Widget{
 				LineEdit{AssignTo: &path, CueBanner: `C:\apps\my-app`},
-				PushButton{Text: "…", MaxSize: Size{Width: 30}, OnClicked: func() { browseFolder(m.mw, path, "Folder of the site") }},
+				PushButton{Text: "Browse…", Image: img(desktop.IconFolder), OnClicked: func() { browseFolder(m.mw, path, "Folder of the site") }},
 			}},
 			Label{AssignTo: &entryLabel, Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: "server.js"},
 			Label{AssignTo: &targetLabel, Text: "Upstream URL:", Visible: false}, LineEdit{AssignTo: &target, Visible: false},
@@ -565,7 +701,7 @@ func addSiteDialog(m *manager) {
 			Label{Text: "Port:"}, NumberEdit{AssignTo: &port, Value: 80.0, MinValue: 1, MaxValue: 65535},
 			Label{Text: "Host name:"}, LineEdit{AssignTo: &host, CueBanner: "www.example.com"},
 		}},
-		Label{AssignTo: &httpsNote, Text: "HTTPS bindings get an automatic certificate for the host name.", TextColor: colorMuted},
+		TextLabel{AssignTo: &httpsNote, Text: "HTTPS bindings get an automatic certificate for the host name.", TextColor: colorMuted},
 		CheckBox{AssignTo: &start, Text: "Start the site now", Checked: true},
 	}, func(dlg *walk.Dialog) bool {
 		t := types[max(typ.CurrentIndex(), 0)]
@@ -604,7 +740,7 @@ func addSiteDialog(m *manager) {
 		defer cancel()
 		var out localapi.Site
 		if err := m.cl.Post(ctx, "/api/sites", s, &out); err != nil {
-			m.errorBox("Add site", err)
+			m.errorBoxFor(dlg, "Add site", err)
 			return false
 		}
 		created, startNow = &out, start.Checked()
@@ -614,11 +750,12 @@ func addSiteDialog(m *manager) {
 		return
 	}
 	id := created.ID
+	m.flashStatus("Added the site "+created.Name, false)
 	if startNow {
 		m.siteAction(id, "start")
 	}
 	// Show the new site once a refresh has put it in the tree.
-	m.pendingSite = id
+	m.openWhenListed(id)
 	m.refresh(true)
 }
 
@@ -652,7 +789,8 @@ func adminConsoleDialog(m *manager) {
 	}
 	var listen *walk.LineEdit
 	var mode, cert *walk.ComboBox
-	ok := runDialog(m.mw, "Web console settings", Size{Width: 520}, []Widget{
+	ok := runDialog(m.mw, "Web console settings", Size{Width: 560}, []Widget{
+		intro(desktop.IconConsole, "Where the web console listens, and how it is secured. The change applies when the service restarts."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Listen on:"}, LineEdit{AssignTo: &listen, Text: cur.Listen, CueBanner: "0.0.0.0:8484"},
 			Label{Text: "Security:"}, ComboBox{AssignTo: &mode, Model: modeNames, CurrentIndex: max(slices.Index(modes, cur.TLS), 0),
@@ -663,7 +801,7 @@ func adminConsoleDialog(m *manager) {
 				}},
 			Label{Text: "Certificate:"}, ComboBox{AssignTo: &cert, Model: certNames, CurrentIndex: certIdx, Enabled: cur.TLS == "certificate"},
 		}},
-		Label{Text: "Use 127.0.0.1:8484 to reach the console from this machine only. The change applies when the service restarts.", TextColor: colorMuted},
+		hint("Use 127.0.0.1:8484 to reach the console from this machine only."),
 	}, func(dlg *walk.Dialog) bool {
 		in := adminSettings{Listen: strings.TrimSpace(listen.Text()), TLS: modes[max(mode.CurrentIndex(), 0)]}
 		host, _, err := net.SplitHostPort(in.Listen)
@@ -677,20 +815,24 @@ func adminConsoleDialog(m *manager) {
 			in.CertificateID = certs[cert.CurrentIndex()].ID
 		}
 		if in.TLS == "none" && host != "127.0.0.1" && host != "localhost" && host != "::1" &&
-			!m.confirm("Web console settings", "Without encryption, passwords cross the network in clear text. Serve the console over plain HTTP on "+in.Listen+" anyway?") {
+			ask(dlg, "Web console settings", "Serve the console without encryption?",
+				"Passwords would cross the network in clear text on "+in.Listen+".",
+				walk.TaskDialogSystemIconWarning, [2]string{"Use plain HTTP anyway", ""}) != 0 {
 			return false
 		}
 		var out adminSettings
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := m.cl.Put(ctx, "/api/settings/admin", in, &out); err != nil {
-			m.errorBox("Web console settings", err)
+			m.errorBoxFor(dlg, "Web console settings", err)
 			return false
 		}
 		cur = out
 		return true
 	})
-	if ok && cur.RestartRequired && m.confirm("Web console settings", "Restart the NodeHoster service now to apply the change? Sites go offline for a few seconds.") {
+	if ok && cur.RestartRequired && ask(m.mw, "Web console settings", "Restart the NodeHoster service now?",
+		"The web console's new settings apply when the service restarts. Sites go offline for a few seconds.",
+		walk.TaskDialogSystemIconInformation, [2]string{"Restart now", ""}, [2]string{"Later", ""}) == 0 {
 		m.do("Restarting the service", func(context.Context) error { return controlService("restart") })
 	}
 }

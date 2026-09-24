@@ -25,37 +25,46 @@ import (
 
 type backupsPage struct {
 	page
-	props, history table
-	status         *model.BackupStatus
-	loading        bool
+	history table
+	status  *model.BackupStatus
+	loading bool
+	bar     infoBar
 
-	run, toFile, restore, details *walk.LinkLabel
+	state, next, last, encryption statCard
+
+	run, schedule, refresh, details *command
 }
 
 func (s *backupsPage) init(m *manager) *page {
+	s.icon = desktop.IconBackups
 	s.title = func() string { return "Backups" }
+	s.subtitle = func() string {
+		return "The configuration, and as configured the certificates and the sites' shared folders"
+	}
 	s.update = func() { s.reload(m) }
 	s.load = func() { s.reload(m) }
+	s.run = newCommand("Back up now", desktop.IconStart, func() { s.runNow(m) })
+	s.schedule = newCommand("Schedule and destinations…", desktop.IconConsole, func() { m.openConsolePath("/settings/backup") })
+	s.refresh = newCommand("Refresh", desktop.IconRefresh, func() { m.refresh(true) })
+	s.details = newCommand("Details…", desktop.IconEye, func() { s.showDetails(m) })
 	s.history.onSelect = func() { s.enable(m) }
-	s.props.color = func(row, col int) (walk.Color, bool) {
-		if col != 1 || s.status == nil {
-			return 0, false
-		}
-		switch {
-		case row == 0 && s.status.Running:
-			return colorOK, true
-		case row == 2 && len(s.status.History) > 0:
-			return runColor(s.status.History[0].Status)
-		case row == 3 && !s.status.Encrypted:
-			return colorWarning, true
-		}
-		return 0, false
-	}
 	s.history.color = func(row, col int) (walk.Color, bool) {
 		if s.status == nil || row >= len(s.status.History) || col != 1 {
 			return 0, false
 		}
 		return runColor(s.status.History[row].Status)
+	}
+	s.history.icon = func(row, col int) walk.Image {
+		if s.status == nil || row >= len(s.status.History) {
+			return nil
+		}
+		switch col {
+		case 0:
+			return img(desktop.IconBackups)
+		case 1:
+			return img(runIcon(s.status.History[row].Status))
+		}
+		return nil
 	}
 	return &s.page
 }
@@ -73,31 +82,22 @@ func runColor(status string) (walk.Color, bool) {
 }
 
 func (s *backupsPage) content(m *manager) []Widget {
-	props := properties(&s.props)
-	props.MaxSize = Size{Height: 140}
-	props.MinSize = Size{Height: 120}
-	hist := s.history.view(func() { s.showDetails(m) },
-		col("Started", 130), col("Result", 70), col("Trigger", 70), col("Archive", 300), col("Size", 70), col("Destinations", 300))
-	hist.StretchFactor = 3
 	return []Widget{
-		props,
-		Label{Text: "History", Font: Font{Bold: true}},
-		hist,
-		Label{Text: "Archives hold the configuration, and as configured the certificates and the sites' shared folders. Set the schedule, destinations and passphrase in the web console (Settings → Backups).", TextColor: colorMuted},
+		s.bar.widget(),
+		cards(s.state.widget(desktop.IconBackups, "State", false), s.next.widget(desktop.IconClock, "Next backup", false),
+			s.last.widget(desktop.IconHistory, "Last backup", false), s.encryption.widget(desktop.IconLock, "Encryption", false)),
+		heading("History"),
+		s.history.viewWith(tableOpts{name: "backupHistory", sortable: true, onActivate: s.details.trigger, menu: menu(s.details)},
+			col("Started", 150), col("Result", 90), col("Trigger", 80), col("Archive", 300), colR("Size", 80), col("Destinations", 300)),
+		hint("Set the schedule, destinations (folders, SFTP, S3, Azure) and passphrase in the web console (Settings → Backups)."),
 	}
 }
 
 func (s *backupsPage) actionsPane(m *manager) []Widget {
-	return []Widget{
-		heading("Backups"),
-		link(&s.run, "Back up now", func() { s.runNow(m) }),
-		link(&s.toFile, "Back up to a file…", m.backupConfig),
-		link(&s.restore, "Restore from a file…", func() { restoreFromFile(m) }),
-		link(nil, "Schedule and destinations…", func() { m.openConsolePath("/settings/backup") }),
-		link(nil, "Refresh", func() { m.refresh(true) }),
-		heading("Selected backup"),
-		link(&s.details, "Details…", func() { s.showDetails(m) }),
-	}
+	return pane(
+		"Backups", s.run, m.cmdBackup, m.cmdRestore, s.schedule, s.refresh,
+		"Selected backup", s.details,
+	)
 }
 
 // reload reads the status off the UI thread, one read at a time.
@@ -116,7 +116,7 @@ func (s *backupsPage) reload(m *manager) {
 			s.loading = false
 			if err != nil {
 				s.status = nil
-				s.props.setProperties([2]string{"State", "Unknown: " + err.Error()})
+				s.bar.show(barError, "The backups' state could not be read: "+err.Error(), "Retry", func() { s.reload(m) })
 				s.history.set(nil, nil)
 				s.enable(m)
 				return
@@ -129,39 +129,43 @@ func (s *backupsPage) reload(m *manager) {
 
 func (s *backupsPage) redraw(m *manager) {
 	st := s.status
-	state := "Not scheduled"
 	switch {
 	case st.Running && st.RunningWhat == "restore":
-		state = "Restoring since " + st.RunningSince.Local().Format("15:04:05")
+		s.state.set("Restoring", "since "+st.RunningSince.Local().Format("15:04:05"), colorWarning)
 	case st.Running:
-		state = "Backing up since " + st.RunningSince.Local().Format("15:04:05")
+		s.state.set("Backing up", "since "+st.RunningSince.Local().Format("15:04:05"), colorWarning)
 	case st.Enabled:
-		state = "Scheduled"
+		s.state.set("Scheduled", "", colorOK)
+	default:
+		s.state.set("Not scheduled", "back up by hand, or set a schedule", colorMuted)
 	}
-	next := "—"
 	if st.NextRun != nil {
-		next = st.NextRun.Local().Format("2006-01-02 15:04") + " (in " + desktop.Uptime(time.Now(), *st.NextRun) + ")"
+		s.next.set(st.NextRun.Local().Format("Mon 15:04"), "in "+desktop.Uptime(time.Now(), *st.NextRun), 0)
+	} else {
+		s.next.set("—", "", 0)
 	}
-	last := "Never"
+	s.bar.hide()
 	if len(st.History) > 0 {
 		r := st.History[0]
-		last = r.Status + ", " + r.StartedAt.Local().Format("2006-01-02 15:04")
-		if r.Error != "" {
-			last += ": " + r.Error
-		} else if r.Status != model.BackupSuccess {
-			last += ": " + failedDestinations(r)
+		c, _ := runColor(r.Status)
+		s.last.set(desktop.StateText(model.SiteState(r.Status)), r.StartedAt.Local().Format("2006-01-02 15:04"), c)
+		switch {
+		case r.Error != "":
+			s.bar.show(barError, "The last backup failed: "+r.Error, "Details…", func() { s.showRun(m, r) })
+		case r.Status != model.BackupSuccess:
+			s.bar.show(barWarning, "The last backup did not reach every destination: "+failedDestinations(r), "Details…", func() { s.showRun(m, r) })
 		}
+	} else {
+		s.last.set("Never", "", colorMuted)
 	}
-	enc := "Passphrase set: archives restore on any server"
-	if !st.Encrypted {
-		enc = "No passphrase: archives only restore on this server"
+	if st.Encrypted {
+		s.encryption.set("Passphrase set", "archives restore on any server", colorOK)
+		s.encryption.setIcon(desktop.IconLock)
+	} else {
+		s.encryption.set("No passphrase", "archives only restore on this server", colorWarning)
+		s.encryption.setIcon(desktop.IconUnlock)
 	}
-	s.props.setProperties(
-		[2]string{"State", state},
-		[2]string{"Next backup", next},
-		[2]string{"Last backup", last},
-		[2]string{"Encryption", enc},
-	)
+
 	keys := make([]string, len(st.History))
 	rows := make([][]string, len(st.History))
 	for i, r := range st.History {
@@ -199,43 +203,42 @@ func (s *backupsPage) enable(m *manager) {
 		return
 	}
 	idle := m.connected() && s.status != nil && !s.status.Running
-	setEnabled(idle, s.run, s.toFile, s.restore)
-	setEnabled(s.history.selected() != "", s.details)
+	setEnabled(idle, s.run)
+	setEnabled(s.selectedRun() != nil, s.details)
 }
 
 func (s *backupsPage) selectedRun() *model.BackupRun {
 	if s.status == nil {
 		return nil
 	}
-	id := s.history.selected()
-	for i := range s.status.History {
-		if s.status.History[i].ID == id {
-			return &s.status.History[i]
-		}
+	if i := s.history.current(); i >= 0 && i < len(s.status.History) {
+		return &s.status.History[i]
 	}
 	return nil
 }
 
 func (s *backupsPage) showDetails(m *manager) {
-	r := s.selectedRun()
-	if r == nil {
-		return
+	if r := s.selectedRun(); r != nil {
+		s.showRun(m, *r)
 	}
+}
+
+func (s *backupsPage) showRun(m *manager, r model.BackupRun) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Started: %s (%s)\r\nFinished: %s\r\nResult: %s\r\n", r.StartedAt.Local().Format("2006-01-02 15:04:05"), r.Trigger,
-		r.FinishedAt.Local().Format("2006-01-02 15:04:05"), r.Status)
-	if r.Error != "" {
-		fmt.Fprintf(&b, "Error: %s\r\n", r.Error)
+	finished := "—"
+	if !r.FinishedAt.IsZero() {
+		finished = r.FinishedAt.Local().Format("2006-01-02 15:04:05")
 	}
+	fmt.Fprintf(&b, "Started: %s (%s)\nFinished: %s\n", r.StartedAt.Local().Format("2006-01-02 15:04:05"), r.Trigger, finished)
 	if r.File != "" {
 		enc := "not encrypted"
 		if r.Encrypted {
 			enc = "encrypted"
 		}
-		fmt.Fprintf(&b, "Archive: %s (%s, %s)\r\nContents: %s\r\n", r.File, desktop.Bytes(uint64(r.Size)), enc, strings.Join(r.Contents, ", "))
+		fmt.Fprintf(&b, "Archive: %s (%s, %s)\nContents: %s\n", r.File, desktop.Bytes(uint64(r.Size)), enc, strings.Join(r.Contents, ", "))
 	}
 	for _, d := range r.Destinations {
-		fmt.Fprintf(&b, "\r\n%s: ", d.Name)
+		fmt.Fprintf(&b, "\n%s: ", d.Name)
 		if d.OK {
 			b.WriteString("copied")
 			if d.Pruned > 0 {
@@ -248,11 +251,19 @@ func (s *backupsPage) showDetails(m *manager) {
 			b.WriteString(" — " + d.Error)
 		}
 	}
-	icon := walk.MsgBoxIconInformation
-	if r.Status != model.BackupSuccess {
-		icon = walk.MsgBoxIconWarning
+	icon := walk.TaskDialogSystemIconInformation
+	instruction := "The backup succeeded"
+	switch r.Status {
+	case model.BackupFailed:
+		icon, instruction = walk.TaskDialogSystemIconError, "The backup failed"
+	case model.BackupPartial:
+		icon, instruction = walk.TaskDialogSystemIconWarning, "The backup did not reach every destination"
 	}
-	walk.MsgBox(m.mw, "Backup", b.String(), icon)
+	content := r.Error
+	if content == "" {
+		content = "Started " + r.StartedAt.Local().Format("2006-01-02 15:04") + "."
+	}
+	notify(m.mw, "Backup", instruction, content, b.String(), icon)
 }
 
 func (s *backupsPage) runNow(m *manager) {
@@ -316,12 +327,15 @@ func restoreFromFile(m *manager) {
 		return
 	}
 	path := dlg.FilePath
-	if !m.confirm("Restore from backup", "Restore "+filepath.Base(path)+"?\r\n\r\nThe server settings are replaced and sites with the same ID as in the backup are overwritten; other sites are kept. Sites whose shared folder is restored are stopped meanwhile.") {
+	if ask(m.mw, "Restore from backup", "Restore "+filepath.Base(path)+"?",
+		"The server settings are replaced and sites with the same ID as in the backup are overwritten; other sites are kept. "+
+			"Sites whose shared folder is restored are stopped meanwhile.",
+		walk.TaskDialogSystemIconWarning, [2]string{"Restore", ""}) != 0 {
 		return
 	}
 	var attempt func(passphrase string)
 	attempt = func(passphrase string) {
-		m.setActivity("Restoring " + filepath.Base(path) + "…")
+		done := m.begin("Restoring " + filepath.Base(path))
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 			defer cancel()
@@ -339,23 +353,29 @@ func restoreFromFile(m *manager) {
 				return m.cl.Upload(ctx, "/api/restore", "application/octet-stream", f, h, &res)
 			}()
 			m.mw.Synchronize(func() {
-				m.setActivity("")
+				done()
 				var apiErr *localapi.Error
 				if errors.As(err, &apiErr) && apiErr.Field == "passphrase" {
-					prompt := "The backup is encrypted. Passphrase:"
+					prompt := "The backup is encrypted. Its passphrase:"
 					if passphrase != "" {
 						prompt = apiErr.Message + ". Passphrase:"
 					}
-					if p, ok := inputDialog(m.mw, "Restore from backup", prompt, "", true); ok && p != "" {
+					if p, ok := inputDialog(m.mw, "Restore from backup", desktop.IconKey, prompt, "", true); ok && p != "" {
 						attempt(p)
 					}
 					return
 				}
 				if err != nil {
+					m.flashStatus("The restore failed", true)
 					m.errorBox("Restore from backup", err)
 					return
 				}
-				walk.MsgBox(m.mw, "Restore from backup", restoreSummary(res), walk.MsgBoxIconInformation)
+				m.flashStatus("Restored "+filepath.Base(path), false)
+				icon := walk.TaskDialogSystemIconInformation
+				if len(res.Warnings) > 0 {
+					icon = walk.TaskDialogSystemIconWarning
+				}
+				notify(m.mw, "Restore from backup", "The backup is restored", restoreSummary(res), "", icon)
 				m.refresh(true)
 			})
 		}()
@@ -365,7 +385,7 @@ func restoreFromFile(m *manager) {
 
 func restoreSummary(r model.RestoreResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Restored %d site(s)", r.Sites)
+	fmt.Fprintf(&b, "Restored %s", plural(r.Sites, "site"))
 	if r.Hostname != "" {
 		fmt.Fprintf(&b, " from %s", r.Hostname)
 	}
@@ -374,39 +394,13 @@ func restoreSummary(r model.RestoreResult) string {
 	}
 	b.WriteString(".")
 	if r.Certificates > 0 {
-		fmt.Fprintf(&b, "\r\n%d certificate(s) restored with their keys.", r.Certificates)
+		fmt.Fprintf(&b, "\n%s restored with their keys.", plural(r.Certificates, "certificate"))
 	}
 	if len(r.SharedSites) > 0 {
-		fmt.Fprintf(&b, "\r\nShared folders restored: %s.", strings.Join(r.SharedSites, ", "))
+		fmt.Fprintf(&b, "\nShared folders restored: %s.", strings.Join(r.SharedSites, ", "))
 	}
 	for _, w := range r.Warnings {
-		b.WriteString("\r\n\r\n" + w)
+		b.WriteString("\n\n" + w)
 	}
 	return b.String()
-}
-
-// long is do for transfers that may take much longer than a request.
-func (m *manager) long(what string, fn func(ctx context.Context) error) {
-	m.setActivity(what + "…")
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		err := fn(ctx)
-		cancel()
-		m.mw.Synchronize(func() {
-			m.setActivity("")
-			if err != nil {
-				m.errorBox(what, err)
-			}
-			m.refresh(true)
-		})
-	}()
-}
-
-// openConsolePath opens a page of the web console.
-func (m *manager) openConsolePath(p string) {
-	if m.info == nil || m.info.AdminURL == "" {
-		m.openConsole() // explains why it is unavailable
-		return
-	}
-	shellOpen(strings.TrimRight(desktop.ConsoleURL(m.info.AdminURL), "/") + p)
 }

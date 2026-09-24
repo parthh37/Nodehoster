@@ -1,7 +1,684 @@
 {
   "RT_GROUP_ICON": {
     "APP": {
-      "0000": ["icon256.png", "icon48.png", "icon32.png", "icon16.png"]
+      "0000": [
+        "icon256.png",
+        "icon48.png",
+        "icon32.png",
+        "icon16.png"
+      ]
+    },
+    "TILE_ACTIVITY": {
+      "0000": "icons/tile_activity.ico"
+    },
+    "TILE_BACKUPS": {
+      "0000": "icons/tile_backups.ico"
+    },
+    "TILE_BAN": {
+      "0000": "icons/tile_ban.ico"
+    },
+    "TILE_BANS": {
+      "0000": "icons/tile_bans.ico"
+    },
+    "TILE_BRACES": {
+      "0000": "icons/tile_braces.ico"
+    },
+    "TILE_CERTIFICATE": {
+      "0000": "icons/tile_certificate.ico"
+    },
+    "TILE_CHECK_LIST": {
+      "0000": "icons/tile_check_list.ico"
+    },
+    "TILE_CONSOLE": {
+      "0000": "icons/tile_console.ico"
+    },
+    "TILE_DEPLOY": {
+      "0000": "icons/tile_deploy.ico"
+    },
+    "TILE_DOWNLOAD": {
+      "0000": "icons/tile_download.ico"
+    },
+    "TILE_ERROR": {
+      "0000": "icons/tile_error.ico"
+    },
+    "TILE_FILE_CODE": {
+      "0000": "icons/tile_file_code.ico"
+    },
+    "TILE_HISTORY": {
+      "0000": "icons/tile_history.ico"
+    },
+    "TILE_IMPORT": {
+      "0000": "icons/tile_import.ico"
+    },
+    "TILE_INFO": {
+      "0000": "icons/tile_info.ico"
+    },
+    "TILE_KEY": {
+      "0000": "icons/tile_key.ico"
+    },
+    "TILE_LINK": {
+      "0000": "icons/tile_link.ico"
+    },
+    "TILE_MAIL": {
+      "0000": "icons/tile_mail.ico"
+    },
+    "TILE_NODE": {
+      "0000": "icons/tile_node.ico"
+    },
+    "TILE_NODE_VERSIONS": {
+      "0000": "icons/tile_node_versions.ico"
+    },
+    "TILE_PROXY": {
+      "0000": "icons/tile_proxy.ico"
+    },
+    "TILE_REDIRECT": {
+      "0000": "icons/tile_redirect.ico"
+    },
+    "TILE_ROUTE": {
+      "0000": "icons/tile_route.ico"
+    },
+    "TILE_SERVER": {
+      "0000": "icons/tile_server.ico"
+    },
+    "TILE_SETTINGS": {
+      "0000": "icons/tile_settings.ico"
+    },
+    "TILE_SITES": {
+      "0000": "icons/tile_sites.ico"
+    },
+    "TILE_STATIC": {
+      "0000": "icons/tile_static.ico"
+    },
+    "TILE_UPLOAD": {
+      "0000": "icons/tile_upload.ico"
+    },
+    "TILE_USER": {
+      "0000": "icons/tile_user.ico"
+    },
+    "TILE_USERS": {
+      "0000": "icons/tile_users.ico"
+    },
+    "TILE_WARNING": {
+      "0000": "icons/tile_warning.ico"
+    },
+    "TILE_WORKER": {
+      "0000": "icons/tile_worker.ico"
+    },
+    "TRAY_DOWN": {
+      "0000": "icons/tray_down.ico"
+    },
+    "TRAY_OFF": {
+      "0000": "icons/tray_off.ico"
+    },
+    "TRAY_OK": {
+      "0000": "icons/tray_ok.ico"
+    },
+    "TRAY_WARNING": {
+      "0000": "icons/tray_warning.ico"
+    },
+    "UI_ACTIVITY": {
+      "0000": "icons/ui_activity.ico"
+    },
+    "UI_ACTIVITY_DIS": {
+      "0000": "icons/ui_activity_dis.ico"
+    },
+    "UI_ADD": {
+      "0000": "icons/ui_add.ico"
+    },
+    "UI_ADD_DIS": {
+      "0000": "icons/ui_add_dis.ico"
+    },
+    "UI_BACKUPS": {
+      "0000": "icons/ui_backups.ico"
+    },
+    "UI_BACKUPS_DIS": {
+      "0000": "icons/ui_backups_dis.ico"
+    },
+    "UI_BAN": {
+      "0000": "icons/ui_ban.ico"
+    },
+    "UI_BANS": {
+      "0000": "icons/ui_bans.ico"
+    },
+    "UI_BANS_DIS": {
+      "0000": "icons/ui_bans_dis.ico"
+    },
+    "UI_BAN_DIS": {
+      "0000": "icons/ui_ban_dis.ico"
+    },
+    "UI_BRACES": {
+      "0000": "icons/ui_braces.ico"
+    },
+    "UI_BRACES_DIS": {
+      "0000": "icons/ui_braces_dis.ico"
+    },
+    "UI_BROWSE": {
+      "0000": "icons/ui_browse.ico"
+    },
+    "UI_BROWSE_DIS": {
+      "0000": "icons/ui_browse_dis.ico"
+    },
+    "UI_CANCEL": {
+      "0000": "icons/ui_cancel.ico"
+    },
+    "UI_CANCEL_DIS": {
+      "0000": "icons/ui_cancel_dis.ico"
+    },
+    "UI_CERTIFICATE": {
+      "0000": "icons/ui_certificate.ico"
+    },
+    "UI_CERTIFICATE_DIS": {
+      "0000": "icons/ui_certificate_dis.ico"
+    },
+    "UI_CHECK_LIST": {
+      "0000": "icons/ui_check_list.ico"
+    },
+    "UI_CHECK_LIST_DIS": {
+      "0000": "icons/ui_check_list_dis.ico"
+    },
+    "UI_CLOCK": {
+      "0000": "icons/ui_clock.ico"
+    },
+    "UI_CLOCK_DIS": {
+      "0000": "icons/ui_clock_dis.ico"
+    },
+    "UI_CONSOLE": {
+      "0000": "icons/ui_console.ico"
+    },
+    "UI_CONSOLE_DIS": {
+      "0000": "icons/ui_console_dis.ico"
+    },
+    "UI_COPY": {
+      "0000": "icons/ui_copy.ico"
+    },
+    "UI_COPY_DIS": {
+      "0000": "icons/ui_copy_dis.ico"
+    },
+    "UI_CPU": {
+      "0000": "icons/ui_cpu.ico"
+    },
+    "UI_CPU_DIS": {
+      "0000": "icons/ui_cpu_dis.ico"
+    },
+    "UI_DEPLOY": {
+      "0000": "icons/ui_deploy.ico"
+    },
+    "UI_DEPLOY_DIS": {
+      "0000": "icons/ui_deploy_dis.ico"
+    },
+    "UI_DISK": {
+      "0000": "icons/ui_disk.ico"
+    },
+    "UI_DISK_DIS": {
+      "0000": "icons/ui_disk_dis.ico"
+    },
+    "UI_DOT": {
+      "0000": "icons/ui_dot.ico"
+    },
+    "UI_DOT_DIS": {
+      "0000": "icons/ui_dot_dis.ico"
+    },
+    "UI_DOT_DOWN": {
+      "0000": "icons/ui_dot_down.ico"
+    },
+    "UI_DOT_OFF": {
+      "0000": "icons/ui_dot_off.ico"
+    },
+    "UI_DOT_OK": {
+      "0000": "icons/ui_dot_ok.ico"
+    },
+    "UI_DOT_WARNING": {
+      "0000": "icons/ui_dot_warning.ico"
+    },
+    "UI_DOWN": {
+      "0000": "icons/ui_down.ico"
+    },
+    "UI_DOWNLOAD": {
+      "0000": "icons/ui_download.ico"
+    },
+    "UI_DOWNLOAD_DIS": {
+      "0000": "icons/ui_download_dis.ico"
+    },
+    "UI_DOWN_DIS": {
+      "0000": "icons/ui_down_dis.ico"
+    },
+    "UI_EDIT": {
+      "0000": "icons/ui_edit.ico"
+    },
+    "UI_EDIT_DIS": {
+      "0000": "icons/ui_edit_dis.ico"
+    },
+    "UI_ERASER": {
+      "0000": "icons/ui_eraser.ico"
+    },
+    "UI_ERASER_DIS": {
+      "0000": "icons/ui_eraser_dis.ico"
+    },
+    "UI_ERROR": {
+      "0000": "icons/ui_error.ico"
+    },
+    "UI_ERROR_DIS": {
+      "0000": "icons/ui_error_dis.ico"
+    },
+    "UI_EXIT": {
+      "0000": "icons/ui_exit.ico"
+    },
+    "UI_EXIT_DIS": {
+      "0000": "icons/ui_exit_dis.ico"
+    },
+    "UI_EYE": {
+      "0000": "icons/ui_eye.ico"
+    },
+    "UI_EYE_DIS": {
+      "0000": "icons/ui_eye_dis.ico"
+    },
+    "UI_FILE_CODE": {
+      "0000": "icons/ui_file_code.ico"
+    },
+    "UI_FILE_CODE_DIS": {
+      "0000": "icons/ui_file_code_dis.ico"
+    },
+    "UI_FILTER": {
+      "0000": "icons/ui_filter.ico"
+    },
+    "UI_FILTER_DIS": {
+      "0000": "icons/ui_filter_dis.ico"
+    },
+    "UI_FOLDER": {
+      "0000": "icons/ui_folder.ico"
+    },
+    "UI_FOLDER_DIS": {
+      "0000": "icons/ui_folder_dis.ico"
+    },
+    "UI_GLOBE": {
+      "0000": "icons/ui_globe.ico"
+    },
+    "UI_GLOBE_DIS": {
+      "0000": "icons/ui_globe_dis.ico"
+    },
+    "UI_HELP": {
+      "0000": "icons/ui_help.ico"
+    },
+    "UI_HELP_DIS": {
+      "0000": "icons/ui_help_dis.ico"
+    },
+    "UI_HISTORY": {
+      "0000": "icons/ui_history.ico"
+    },
+    "UI_HISTORY_DIS": {
+      "0000": "icons/ui_history_dis.ico"
+    },
+    "UI_HTTP": {
+      "0000": "icons/ui_http.ico"
+    },
+    "UI_HTTPS": {
+      "0000": "icons/ui_https.ico"
+    },
+    "UI_HTTPS_DIS": {
+      "0000": "icons/ui_https_dis.ico"
+    },
+    "UI_HTTP_DIS": {
+      "0000": "icons/ui_http_dis.ico"
+    },
+    "UI_ID_CARD": {
+      "0000": "icons/ui_id_card.ico"
+    },
+    "UI_ID_CARD_DIS": {
+      "0000": "icons/ui_id_card_dis.ico"
+    },
+    "UI_IMPORT": {
+      "0000": "icons/ui_import.ico"
+    },
+    "UI_IMPORT_DIS": {
+      "0000": "icons/ui_import_dis.ico"
+    },
+    "UI_INFO": {
+      "0000": "icons/ui_info.ico"
+    },
+    "UI_INFO_DIS": {
+      "0000": "icons/ui_info_dis.ico"
+    },
+    "UI_KEY": {
+      "0000": "icons/ui_key.ico"
+    },
+    "UI_KEY_DIS": {
+      "0000": "icons/ui_key_dis.ico"
+    },
+    "UI_LINK": {
+      "0000": "icons/ui_link.ico"
+    },
+    "UI_LINK_DIS": {
+      "0000": "icons/ui_link_dis.ico"
+    },
+    "UI_LOCK": {
+      "0000": "icons/ui_lock.ico"
+    },
+    "UI_LOCK_DIS": {
+      "0000": "icons/ui_lock_dis.ico"
+    },
+    "UI_LOG": {
+      "0000": "icons/ui_log.ico"
+    },
+    "UI_LOG_DIS": {
+      "0000": "icons/ui_log_dis.ico"
+    },
+    "UI_MAIL": {
+      "0000": "icons/ui_mail.ico"
+    },
+    "UI_MAIL_DIS": {
+      "0000": "icons/ui_mail_dis.ico"
+    },
+    "UI_MAIL_QUEUE": {
+      "0000": "icons/ui_mail_queue.ico"
+    },
+    "UI_MAIL_QUEUE_DIS": {
+      "0000": "icons/ui_mail_queue_dis.ico"
+    },
+    "UI_MEMORY": {
+      "0000": "icons/ui_memory.ico"
+    },
+    "UI_MEMORY_DIS": {
+      "0000": "icons/ui_memory_dis.ico"
+    },
+    "UI_NODE": {
+      "0000": "icons/ui_node.ico"
+    },
+    "UI_NODE_DIS": {
+      "0000": "icons/ui_node_dis.ico"
+    },
+    "UI_NODE_DOWN": {
+      "0000": "icons/ui_node_down.ico"
+    },
+    "UI_NODE_OFF": {
+      "0000": "icons/ui_node_off.ico"
+    },
+    "UI_NODE_OK": {
+      "0000": "icons/ui_node_ok.ico"
+    },
+    "UI_NODE_VERSIONS": {
+      "0000": "icons/ui_node_versions.ico"
+    },
+    "UI_NODE_VERSIONS_DIS": {
+      "0000": "icons/ui_node_versions_dis.ico"
+    },
+    "UI_NODE_WARNING": {
+      "0000": "icons/ui_node_warning.ico"
+    },
+    "UI_OK": {
+      "0000": "icons/ui_ok.ico"
+    },
+    "UI_OK_DIS": {
+      "0000": "icons/ui_ok_dis.ico"
+    },
+    "UI_OPEN": {
+      "0000": "icons/ui_open.ico"
+    },
+    "UI_OPEN_DIS": {
+      "0000": "icons/ui_open_dis.ico"
+    },
+    "UI_PACKAGE": {
+      "0000": "icons/ui_package.ico"
+    },
+    "UI_PACKAGE_DIS": {
+      "0000": "icons/ui_package_dis.ico"
+    },
+    "UI_PAUSE": {
+      "0000": "icons/ui_pause.ico"
+    },
+    "UI_PAUSE_DIS": {
+      "0000": "icons/ui_pause_dis.ico"
+    },
+    "UI_PHONE": {
+      "0000": "icons/ui_phone.ico"
+    },
+    "UI_PHONE_DIS": {
+      "0000": "icons/ui_phone_dis.ico"
+    },
+    "UI_PLUG": {
+      "0000": "icons/ui_plug.ico"
+    },
+    "UI_PLUG_DIS": {
+      "0000": "icons/ui_plug_dis.ico"
+    },
+    "UI_POWER": {
+      "0000": "icons/ui_power.ico"
+    },
+    "UI_POWER_DIS": {
+      "0000": "icons/ui_power_dis.ico"
+    },
+    "UI_PROXY": {
+      "0000": "icons/ui_proxy.ico"
+    },
+    "UI_PROXY_DIS": {
+      "0000": "icons/ui_proxy_dis.ico"
+    },
+    "UI_PROXY_DOWN": {
+      "0000": "icons/ui_proxy_down.ico"
+    },
+    "UI_PROXY_OFF": {
+      "0000": "icons/ui_proxy_off.ico"
+    },
+    "UI_PROXY_OK": {
+      "0000": "icons/ui_proxy_ok.ico"
+    },
+    "UI_PROXY_WARNING": {
+      "0000": "icons/ui_proxy_warning.ico"
+    },
+    "UI_RECYCLE": {
+      "0000": "icons/ui_recycle.ico"
+    },
+    "UI_RECYCLE_DIS": {
+      "0000": "icons/ui_recycle_dis.ico"
+    },
+    "UI_REDIRECT": {
+      "0000": "icons/ui_redirect.ico"
+    },
+    "UI_REDIRECT_DIS": {
+      "0000": "icons/ui_redirect_dis.ico"
+    },
+    "UI_REDIRECT_DOWN": {
+      "0000": "icons/ui_redirect_down.ico"
+    },
+    "UI_REDIRECT_OFF": {
+      "0000": "icons/ui_redirect_off.ico"
+    },
+    "UI_REDIRECT_OK": {
+      "0000": "icons/ui_redirect_ok.ico"
+    },
+    "UI_REDIRECT_WARNING": {
+      "0000": "icons/ui_redirect_warning.ico"
+    },
+    "UI_REFRESH": {
+      "0000": "icons/ui_refresh.ico"
+    },
+    "UI_REFRESH_DIS": {
+      "0000": "icons/ui_refresh_dis.ico"
+    },
+    "UI_REMOVE": {
+      "0000": "icons/ui_remove.ico"
+    },
+    "UI_REMOVE_DIS": {
+      "0000": "icons/ui_remove_dis.ico"
+    },
+    "UI_RESTART": {
+      "0000": "icons/ui_restart.ico"
+    },
+    "UI_RESTART_DIS": {
+      "0000": "icons/ui_restart_dis.ico"
+    },
+    "UI_ROUTE": {
+      "0000": "icons/ui_route.ico"
+    },
+    "UI_ROUTE_DIS": {
+      "0000": "icons/ui_route_dis.ico"
+    },
+    "UI_RUN": {
+      "0000": "icons/ui_run.ico"
+    },
+    "UI_RUN_DIS": {
+      "0000": "icons/ui_run_dis.ico"
+    },
+    "UI_SAVE": {
+      "0000": "icons/ui_save.ico"
+    },
+    "UI_SAVE_DIS": {
+      "0000": "icons/ui_save_dis.ico"
+    },
+    "UI_SEARCH": {
+      "0000": "icons/ui_search.ico"
+    },
+    "UI_SEARCH_DIS": {
+      "0000": "icons/ui_search_dis.ico"
+    },
+    "UI_SEND": {
+      "0000": "icons/ui_send.ico"
+    },
+    "UI_SEND_DIS": {
+      "0000": "icons/ui_send_dis.ico"
+    },
+    "UI_SERVER": {
+      "0000": "icons/ui_server.ico"
+    },
+    "UI_SERVER_DIS": {
+      "0000": "icons/ui_server_dis.ico"
+    },
+    "UI_SETTINGS": {
+      "0000": "icons/ui_settings.ico"
+    },
+    "UI_SETTINGS_DIS": {
+      "0000": "icons/ui_settings_dis.ico"
+    },
+    "UI_SHIELD": {
+      "0000": "icons/ui_shield.ico"
+    },
+    "UI_SHIELD_DIS": {
+      "0000": "icons/ui_shield_dis.ico"
+    },
+    "UI_SITES": {
+      "0000": "icons/ui_sites.ico"
+    },
+    "UI_SITES_DIS": {
+      "0000": "icons/ui_sites_dis.ico"
+    },
+    "UI_STAR": {
+      "0000": "icons/ui_star.ico"
+    },
+    "UI_START": {
+      "0000": "icons/ui_start.ico"
+    },
+    "UI_START_DIS": {
+      "0000": "icons/ui_start_dis.ico"
+    },
+    "UI_STAR_DIS": {
+      "0000": "icons/ui_star_dis.ico"
+    },
+    "UI_STATIC": {
+      "0000": "icons/ui_static.ico"
+    },
+    "UI_STATIC_DIS": {
+      "0000": "icons/ui_static_dis.ico"
+    },
+    "UI_STATIC_DOWN": {
+      "0000": "icons/ui_static_down.ico"
+    },
+    "UI_STATIC_OFF": {
+      "0000": "icons/ui_static_off.ico"
+    },
+    "UI_STATIC_OK": {
+      "0000": "icons/ui_static_ok.ico"
+    },
+    "UI_STATIC_WARNING": {
+      "0000": "icons/ui_static_warning.ico"
+    },
+    "UI_STOP": {
+      "0000": "icons/ui_stop.ico"
+    },
+    "UI_STOP_DIS": {
+      "0000": "icons/ui_stop_dis.ico"
+    },
+    "UI_TAG": {
+      "0000": "icons/ui_tag.ico"
+    },
+    "UI_TAG_DIS": {
+      "0000": "icons/ui_tag_dis.ico"
+    },
+    "UI_TASKS": {
+      "0000": "icons/ui_tasks.ico"
+    },
+    "UI_TASKS_DIS": {
+      "0000": "icons/ui_tasks_dis.ico"
+    },
+    "UI_TERMINAL": {
+      "0000": "icons/ui_terminal.ico"
+    },
+    "UI_TERMINAL_DIS": {
+      "0000": "icons/ui_terminal_dis.ico"
+    },
+    "UI_TOGGLE": {
+      "0000": "icons/ui_toggle.ico"
+    },
+    "UI_TOGGLE_DIS": {
+      "0000": "icons/ui_toggle_dis.ico"
+    },
+    "UI_UNLOCK": {
+      "0000": "icons/ui_unlock.ico"
+    },
+    "UI_UNLOCK_DIS": {
+      "0000": "icons/ui_unlock_dis.ico"
+    },
+    "UI_UP": {
+      "0000": "icons/ui_up.ico"
+    },
+    "UI_UPLOAD": {
+      "0000": "icons/ui_upload.ico"
+    },
+    "UI_UPLOAD_DIS": {
+      "0000": "icons/ui_upload_dis.ico"
+    },
+    "UI_UP_DIS": {
+      "0000": "icons/ui_up_dis.ico"
+    },
+    "UI_USER": {
+      "0000": "icons/ui_user.ico"
+    },
+    "UI_USERS": {
+      "0000": "icons/ui_users.ico"
+    },
+    "UI_USERS_DIS": {
+      "0000": "icons/ui_users_dis.ico"
+    },
+    "UI_USER_DIS": {
+      "0000": "icons/ui_user_dis.ico"
+    },
+    "UI_WARNING": {
+      "0000": "icons/ui_warning.ico"
+    },
+    "UI_WARNING_DIS": {
+      "0000": "icons/ui_warning_dis.ico"
+    },
+    "UI_WINDOWS": {
+      "0000": "icons/ui_windows.ico"
+    },
+    "UI_WINDOWS_DIS": {
+      "0000": "icons/ui_windows_dis.ico"
+    },
+    "UI_WORKER": {
+      "0000": "icons/ui_worker.ico"
+    },
+    "UI_WORKER_DIS": {
+      "0000": "icons/ui_worker_dis.ico"
+    },
+    "UI_WORKER_DOWN": {
+      "0000": "icons/ui_worker_down.ico"
+    },
+    "UI_WORKER_OFF": {
+      "0000": "icons/ui_worker_off.ico"
+    },
+    "UI_WORKER_OK": {
+      "0000": "icons/ui_worker_ok.ico"
+    },
+    "UI_WORKER_WARNING": {
+      "0000": "icons/ui_worker_warning.ico"
     }
   },
   "RT_MANIFEST": {

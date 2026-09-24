@@ -5,6 +5,7 @@ package desktop
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -196,4 +197,165 @@ func ScheduleText(t model.ScheduledTask) string {
 		return t.Schedule + " (disabled)"
 	}
 	return t.Schedule
+}
+
+// SiteTypeText names a site type for display.
+func SiteTypeText(t model.SiteType) string {
+	switch t {
+	case model.SiteNode:
+		return "Node.js application"
+	case model.SiteWorker:
+		return "Background worker"
+	case model.SiteStatic:
+		return "Static site"
+	case model.SiteProxy:
+		return "Reverse proxy"
+	case model.SiteRedirect:
+		return "Redirect"
+	}
+	return string(t)
+}
+
+// ExpiryText says when a certificate expires, relative to now, in whole
+// days: "in 42 days", "in less than a day", "expired 3 days ago".
+func ExpiryText(notAfter, now time.Time) string {
+	if notAfter.Before(now) {
+		switch ago := int(now.Sub(notAfter).Hours() / 24); ago {
+		case 0:
+			return "expired less than a day ago"
+		case 1:
+			return "expired 1 day ago"
+		default:
+			return fmt.Sprintf("expired %d days ago", ago)
+		}
+	}
+	switch left := int(notAfter.Sub(now).Hours() / 24); left {
+	case 0:
+		return "in less than a day"
+	case 1:
+		return "in 1 day"
+	default:
+		return fmt.Sprintf("in %d days", left)
+	}
+}
+
+// Percent is used of total as a whole percentage, 0 when total is 0.
+func Percent(used, total uint64) int {
+	if total == 0 {
+		return 0
+	}
+	return int(math.Round(float64(used) * 100 / float64(total)))
+}
+
+// CompareCells orders two cells of a list for sorting it by a column:
+// sizes by their value ("612 MB" after "1.5 KB"), numbers and percentages
+// numerically, other text naturally ("site10" after "site9") without regard
+// to case. Empty cells and placeholders ("–") come first.
+func CompareCells(a, b string) int {
+	ea, eb := isBlank(a), isBlank(b)
+	switch {
+	case ea && eb:
+		return 0
+	case ea:
+		return -1
+	case eb:
+		return 1
+	}
+	if x, ok := parseSize(a); ok {
+		if y, ok := parseSize(b); ok {
+			return cmpFloat(x, y)
+		}
+	}
+	if x, ok := parseNumber(a); ok {
+		if y, ok := parseNumber(b); ok {
+			return cmpFloat(x, y)
+		}
+	}
+	return naturalCompare(strings.ToLower(a), strings.ToLower(b))
+}
+
+func isBlank(s string) bool {
+	s = strings.TrimSpace(s)
+	return s == "" || s == "–" || s == "—" || s == "-"
+}
+
+func cmpFloat(x, y float64) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
+}
+
+// parseSize reads what Bytes writes.
+func parseSize(s string) (float64, bool) {
+	num, unit, ok := strings.Cut(strings.TrimSpace(s), " ")
+	if !ok {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, false
+	}
+	if unit == "B" {
+		return v, true
+	}
+	if len(unit) != 2 || unit[1] != 'B' {
+		return 0, false
+	}
+	exp := strings.IndexByte("KMGTPE", unit[0])
+	if exp < 0 {
+		return 0, false
+	}
+	return v * math.Pow(1024, float64(exp+1)), true
+}
+
+// parseNumber reads "12", "3.5", "12%" and "1,234".
+func parseNumber(s string) (float64, bool) {
+	s = strings.TrimSuffix(strings.ReplaceAll(strings.TrimSpace(s), ",", ""), "%")
+	v, err := strconv.ParseFloat(s, 64)
+	return v, err == nil
+}
+
+// naturalCompare compares strings with runs of digits compared as numbers.
+func naturalCompare(a, b string) int {
+	for a != "" && b != "" {
+		da, db := digits(a), digits(b)
+		if da > 0 && db > 0 {
+			na, nb := strings.TrimLeft(a[:da], "0"), strings.TrimLeft(b[:db], "0")
+			if len(na) != len(nb) {
+				return cmpInt(len(na), len(nb))
+			}
+			if c := strings.Compare(na, nb); c != 0 {
+				return c
+			}
+			a, b = a[da:], b[db:]
+			continue
+		}
+		if a[0] != b[0] {
+			return cmpInt(int(a[0]), int(b[0]))
+		}
+		a, b = a[1:], b[1:]
+	}
+	return cmpInt(len(a), len(b))
+}
+
+func digits(s string) int {
+	n := 0
+	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	return n
+}
+
+func cmpInt(x, y int) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
 }

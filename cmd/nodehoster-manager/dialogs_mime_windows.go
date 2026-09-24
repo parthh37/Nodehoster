@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/nodehoster/internal/desktop"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/tailscale/walk"
 	. "github.com/tailscale/walk/declarative"
@@ -96,22 +97,23 @@ func serverMimeDialog(m *manager) {
 
 	var dlg *walk.Dialog
 	var unknown *walk.ComboBox
-	runDialogAs(&dlg, m.mw, "MIME types", Size{Width: 600, Height: 440}, []Widget{
+	runDialogAs(&dlg, m.mw, "MIME types", Size{Width: 640, Height: 480}, []Widget{
+		intro(desktop.IconFileCode, "The content type files are served with, by extension. The built-in table never consults the Windows registry, so .js is never served as text/plain."),
 		TabWidget{Pages: []TabPage{
-			{Title: "Custom", Layout: VBox{}, Children: []Widget{
+			{Title: "Custom", Image: img(desktop.IconEdit), Layout: VBox{}, Children: []Widget{
 				Label{Text: "Mappings added to, or overriding, the built-in types for every site:"},
 				mimeList(&dlg, &types),
 			}},
-			{Title: "Built-in", Layout: VBox{}, Children: []Widget{
+			{Title: "Built-in", Image: img(desktop.IconFileCode), Layout: VBox{}, Children: []Widget{
 				builtin.view(nil, col("Extension", 130), col("MIME type", 300)),
-				Label{Text: builtinNote, TextColor: colorMuted},
+				hint(builtinNote),
 			}},
 		}},
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Unknown extensions:"},
 			ComboBox{AssignTo: &unknown, Model: unknownServerNames, CurrentIndex: max(slices.Index(unknownServer, ms.UnknownTypes), 0)},
 		}},
-		Label{Text: "Applies to files served by static sites and static-folder locations. Sites can add their own types.", TextColor: colorMuted},
+		hint("Applies to files served by static sites and static-folder locations. Sites can add their own types."),
 	}, func(dlg *walk.Dialog) bool {
 		in := model.MimeSettings{Types: types, UnknownTypes: unknownServer[max(unknown.CurrentIndex(), 0)]}
 		if in.Types == nil {
@@ -139,13 +141,13 @@ func siteMimeDialog(m *manager, siteID string) {
 	var dlg *walk.Dialog
 	var unknown *walk.ComboBox
 	runDialogAs(&dlg, m.mw, "MIME types — "+s.Name, Size{Width: 560, Height: 380}, []Widget{
-		Label{Text: "Mappings for this site, on top of the server's MIME types:"},
+		intro(desktop.IconFileCode, "Mappings for this site, on top of the server's MIME types."),
 		mimeList(&dlg, &types),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Unknown extensions:"},
 			ComboBox{AssignTo: &unknown, Model: modeNames, CurrentIndex: max(slices.Index(modes, s.Routing.UnknownMimeTypes), 0)},
 		}},
-		Label{Text: "Applies to files the site serves itself: a static site, or static-folder locations.", TextColor: colorMuted},
+		hint("Applies to files the site serves itself: a static site, or static-folder locations."),
 	}, func(dlg *walk.Dialog) bool {
 		mode := modes[max(unknown.CurrentIndex(), 0)]
 		return m.updateSiteNow(dlg, siteID, "MIME types", func(s *model.Site) {

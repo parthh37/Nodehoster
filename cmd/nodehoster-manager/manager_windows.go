@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/parthh37/nodehoster/internal/config"
@@ -20,19 +22,22 @@ import (
 
 // manager is the main window, laid out like IIS Manager: connections on
 // the left, the selected node's page in the middle, its actions on the
-// right, and the connection's state in the status bar.
+// right, and the connection's state in the status bar; a tool bar with the
+// commands used most sits on top.
 type manager struct {
-	mw     *walk.MainWindow
-	cl     *localapi.Client
-	nav    *navModel
-	tree   *walk.TreeView
-	header *walk.Label
-	pages  map[navKind]*page
-	cur    *page
-	site   string // the site shown by the site page
+	mw         *walk.MainWindow
+	cl         *localapi.Client
+	nav        *navModel
+	tree       *walk.TreeView
+	headerIcon *walk.ImageView
+	header     *walk.Label
+	subheader  *walk.Label
+	banner     infoBar // the connection's problems, above every page
+	pages      map[navKind]*page
+	cur        *page
+	site       string // the site shown by the site page
 
 	sbService, sbConn, sbActivity *walk.StatusBarItem
-	dots                          map[desktop.Level]*walk.Icon
 	refreshNow                    chan bool // true: also reload server information
 
 	// The latest state, touched on the UI thread only.
@@ -42,8 +47,23 @@ type manager struct {
 	sites   []localapi.Site
 	connErr error
 
-	pendingSite string // shown as soon as a refresh lists it
-	rebuilding  bool   // the tree is being rebuilt: ignore its selection changes
+	pendingSite  string // shown as soon as a refresh lists it
+	pendingTries int    // refreshes that did not list it
+	rebuilding   bool   // the tree is being rebuilt: ignore its selection changes
+
+	// What runs in the background, and the last outcome, for the status bar.
+	busy     map[int]string
+	busyIDs  []int
+	nextBusy int
+	flash    string
+	flashBad bool
+	flashAt  time.Time
+
+	// Commands of the menu bar and the tool bar.
+	cmdRefresh, cmdStart, cmdStop, cmdRestart      *command
+	cmdAddSite, cmdImport, cmdConsole, cmdSettings *command
+	cmdDataFolder, cmdServerLog, cmdBackup         *command
+	cmdRestore, cmdMime, cmdMail, cmdFind          *command
 
 	server   serverPage
 	sitesPg  sitesPage
@@ -60,10 +80,14 @@ type manager struct {
 // page is what the middle and right panes show for a node of the tree.
 type page struct {
 	content, actions *walk.Composite
-	title            func() string
-	update           func() // redraw from the manager's state (cheap, frequent)
-	load             func() // fetch what only this page needs (on show and refresh)
-	hide             func() // optional: the page is no longer shown
+	icon             string                // the header's tile
+	tile             func() string         // optional: the tile, when it depends on what is shown
+	title            func() string         // the header
+	subtitle         func() string         // optional: the line under it
+	update           func()                // redraw from the manager's state (cheap, frequent)
+	load             func()                // fetch what only this page needs (on show and refresh)
+	hide             func()                // optional: the page is no longer shown
+	search           func() *walk.LineEdit // optional: the field Ctrl+F focuses
 }
 
 func runManager(openSite string) {
@@ -71,19 +95,25 @@ func runManager(openSite string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Window size, pane widths and list columns are remembered in
+	// %APPDATA%\NodeHoster\Manager\manager.ini.
+	app.SetOrganizationName("NodeHoster")
+	app.SetProductName("Manager")
+	settings := walk.NewIniFileSettings("manager.ini")
+	settings.SetExpireDuration(180 * 24 * time.Hour)
+	if settings.Load() == nil {
+		app.SetSettings(settings)
+	}
+
 	m := &manager{
-		cl:          localapi.Connect(localapi.Admin, config.DefaultDataDir()),
-		refreshNow:  make(chan bool, 1),
-		dots:        map[desktop.Level]*walk.Icon{},
-		pendingSite: openSite,
+		cl:           localapi.Connect(localapi.Admin, config.DefaultDataDir()),
+		refreshNow:   make(chan bool, 1),
+		busy:         map[int]string{},
+		pendingSite:  openSite,
+		pendingTries: -10, // the first refreshes may come before the service answers
 	}
-	for _, l := range []desktop.Level{desktop.LevelOK, desktop.LevelWarning, desktop.LevelDown, desktop.LevelNotInstalled} {
-		if ic, err := walk.NewIconFromImage(desktop.StatusDot(l, 16)); err == nil {
-			m.dots[l] = ic
-		}
-	}
-	appIcon, _ := walk.NewIconFromImage(desktop.AppIcon(32))
-	m.nav = newNavModel(appIcon)
+	m.nav = newNavModel()
+	m.initCommands()
 
 	pages := []struct {
 		kind navKind
@@ -107,45 +137,47 @@ func runManager(openSite string) {
 	for _, pg := range pages {
 		p := pg.p
 		m.pages[pg.kind] = p
-		contents = append(contents, Composite{AssignTo: &p.content, Visible: false, Layout: VBox{MarginsZero: true}, Children: pg.w})
-		actions = append(actions, Composite{AssignTo: &p.actions, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 4}, Children: append(pg.a, VSpacer{})})
+		contents = append(contents, Composite{AssignTo: &p.content, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 8}, Children: pg.w})
+		actions = append(actions, Composite{AssignTo: &p.actions, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 5}, Children: pg.a})
 	}
 
 	host, _ := os.Hostname()
+	var icon Property
+	if ic := appIcon(); ic != nil {
+		icon = ic
+	}
 	err = MainWindow{
-		AssignTo: &m.mw,
-		Title:    "NodeHoster Manager — " + host,
-		Icon:     appIcon,
-		MinSize:  Size{Width: 900, Height: 560},
-		Size:     Size{Width: 1280, Height: 760},
-		Layout:   VBox{MarginsZero: true, SpacingZero: true},
-		MenuItems: []MenuItem{
-			Menu{Text: "&File", Items: []MenuItem{
-				Action{Text: "&Refresh", Shortcut: Shortcut{Key: walk.KeyF5}, OnTriggered: func() { m.refresh(true) }},
+		AssignTo:   &m.mw,
+		Name:       "manager",
+		Persistent: true,
+		Title:      "NodeHoster Manager — " + host,
+		Icon:       icon,
+		MinSize:    Size{Width: 980, Height: 600},
+		Size:       Size{Width: 1360, Height: 820},
+		Background: SolidColorBrush{Color: colorSurface},
+		Layout:     VBox{MarginsZero: true, SpacingZero: true},
+		MenuItems:  m.menuBar(),
+		ToolBar: ToolBar{
+			ButtonStyle: ToolBarButtonImageBeforeText,
+			Items: []MenuItem{
+				m.cmdRefresh.toolItem(),
 				Separator{},
-				Action{Text: "E&xit", OnTriggered: func() { m.mw.Close() }},
-			}},
-			Menu{Text: "&Service", Items: []MenuItem{
-				Action{Text: "&Start", OnTriggered: func() { m.serviceAction("start") }},
-				Action{Text: "S&top", OnTriggered: func() { m.serviceAction("stop") }},
-				Action{Text: "&Restart", OnTriggered: func() { m.serviceAction("restart") }},
-			}},
-			Menu{Text: "&View", Items: []MenuItem{
-				Action{Text: "Open &web console", OnTriggered: m.openConsole},
-				Action{Text: "Open &data folder", OnTriggered: func() { shellOpen(m.dataDir()) }},
-				Action{Text: "Open server &log", OnTriggered: func() { shellOpen(filepath.Join(m.dataDir(), "logs", "nodehoster.log")) }},
-			}},
-			Menu{Text: "&Help", Items: []MenuItem{
-				Action{Text: "&About NodeHoster Manager", OnTriggered: m.about},
-			}},
+				m.cmdStart.toolItem(), m.cmdStop.toolItem(), m.cmdRestart.toolItem(),
+				Separator{},
+				m.cmdAddSite.toolItem(), m.cmdImport.toolItem(),
+				Separator{},
+				m.cmdConsole.toolItem(), m.cmdDataFolder.toolItem(), m.cmdServerLog.toolItem(),
+			},
 		},
 		Children: []Widget{
 			HSplitter{
-				HandleWidth: 4,
+				Name:        "panes",
+				Persistent:  true,
+				HandleWidth: 6,
 				Children: []Widget{
 					Composite{
 						StretchFactor: 1,
-						Layout:        VBox{Margins: Margins{Left: 6, Top: 6, Right: 2, Bottom: 6}},
+						Layout:        VBox{Margins: Margins{Left: 8, Top: 8, Right: 2, Bottom: 8}, Spacing: 6},
 						Children: []Widget{
 							heading("Connections"),
 							TreeView{
@@ -157,33 +189,121 @@ func runManager(openSite string) {
 					},
 					Composite{
 						StretchFactor: 5,
-						Layout:        VBox{Margins: Margins{Left: 8, Top: 6, Right: 8, Bottom: 6}},
+						Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 8}, Spacing: 10},
 						Children: append([]Widget{
-							Label{AssignTo: &m.header, Font: Font{PointSize: 14}},
+							Composite{
+								Layout: HBox{MarginsZero: true, Spacing: 12, Alignment: AlignHNearVCenter},
+								Children: []Widget{
+									ImageView{AssignTo: &m.headerIcon, MinSize: Size{Width: 32, Height: 32}, MaxSize: Size{Width: 32, Height: 32}},
+									Composite{Layout: VBox{MarginsZero: true, SpacingZero: true}, Children: []Widget{
+										Label{AssignTo: &m.header, Font: fontTitle, EllipsisMode: EllipsisEnd},
+										Label{AssignTo: &m.subheader, TextColor: colorMuted, EllipsisMode: EllipsisEnd},
+									}},
+								},
+							},
+							m.banner.widget(),
 						}, contents...),
 					},
-					Composite{
-						StretchFactor: 1,
-						Layout:        VBox{Margins: Margins{Left: 6, Top: 6, Right: 6, Bottom: 6}},
-						Children:      append([]Widget{Label{Text: "Actions", Font: Font{PointSize: 11, Bold: true}}}, actions...),
+					ScrollView{
+						StretchFactor:   1,
+						HorizontalFixed: true,
+						Background:      SolidColorBrush{Color: colorSurface},
+						Layout:          VBox{Margins: Margins{Left: 6, Top: 10, Right: 10, Bottom: 8}, Spacing: 6},
+						Children: append([]Widget{
+							Label{Text: "Actions", Font: Font{Family: "Segoe UI Semibold", PointSize: 11}},
+						}, append(actions, VSpacer{})...),
 					},
 				},
 			},
 		},
 		StatusBarItems: []StatusBarItem{
-			{AssignTo: &m.sbService, Width: 180},
-			{AssignTo: &m.sbConn, Width: 360},
-			{AssignTo: &m.sbActivity, Width: 300},
+			{AssignTo: &m.sbService, Width: 190, OnClicked: func() { m.showKind(navServer) }},
+			{AssignTo: &m.sbConn, Width: 400},
+			{AssignTo: &m.sbActivity, Width: 360},
 		},
 	}.Create()
 	if err != nil {
 		fatal(err)
 	}
+	armSortables()
 
 	m.tree.SetExpanded(m.nav.root, true)
 	m.tree.SetCurrentItem(m.nav.root)
+	m.updateActivity()
 	go m.poll()
 	app.Run()
+	if app.Settings() != nil {
+		settings.Save()
+	}
+}
+
+// initCommands makes the commands of the menu bar and the tool bar; the
+// server page shows some of them too.
+func (m *manager) initCommands() {
+	m.cmdRefresh = newCommand("Refresh", desktop.IconRefresh, func() { m.refresh(true) }).withShortcut(0, walk.KeyF5)
+	m.cmdStart = newCommand("Start service", desktop.IconStart, func() { m.serviceAction("start") }).withShort("Start")
+	m.cmdStop = newCommand("Stop service", desktop.IconStop, func() { m.serviceAction("stop") }).withShort("Stop")
+	m.cmdRestart = newCommand("Restart service", desktop.IconRestart, func() { m.serviceAction("restart") }).withShort("Restart")
+	m.cmdAddSite = newCommand("Add site…", desktop.IconAdd, func() { addSiteDialog(m) }).withShortcut(walk.ModControl, walk.KeyN)
+	m.cmdImport = newCommand("Import from IIS…", desktop.IconImport, func() { importIISDialog(m) }).withShort("Import")
+	m.cmdConsole = newCommand("Open web console", desktop.IconConsole, m.openConsole).withShort("Web console")
+	m.cmdSettings = newCommand("Web console settings…", desktop.IconSettings, func() { adminConsoleDialog(m) })
+	m.cmdDataFolder = newCommand("Open data folder", desktop.IconFolder, func() { shellOpen(m.dataDir()) }).withShort("Data folder")
+	m.cmdServerLog = newCommand("Open server log", desktop.IconLog, func() { shellOpen(filepath.Join(m.dataDir(), "logs", "nodehoster.log")) }).withShort("Server log")
+	m.cmdBackup = newCommand("Back up to a file…", desktop.IconDownload, m.backupConfig)
+	m.cmdRestore = newCommand("Restore from a file…", desktop.IconUpload, func() { restoreFromFile(m) })
+	m.cmdMime = newCommand("MIME types…", desktop.IconFileCode, func() { serverMimeDialog(m) })
+	m.cmdMail = newCommand("SMTP E-mail…", desktop.IconMail, func() { mailPropertiesDialog(m) })
+	m.cmdFind = newCommand("Find in list", desktop.IconSearch, m.focusSearch).withShortcut(walk.ModControl, walk.KeyF)
+}
+
+func (m *manager) menuBar() []MenuItem {
+	var view []MenuItem
+	for i, it := range m.nav.root.children {
+		kind := it.kind
+		a := Action{Text: it.text, Image: asImage(it.image), OnTriggered: func() { m.showKind(kind) }}
+		if i < 9 {
+			a.Shortcut = Shortcut{Modifiers: walk.ModControl, Key: walk.Key1 + walk.Key(i+1)}
+		}
+		view = append(view, a)
+	}
+	serverView := Action{Text: "Server home", Image: img(desktop.IconServer), OnTriggered: func() { m.showKind(navServer) },
+		Shortcut: Shortcut{Modifiers: walk.ModControl, Key: walk.Key1}}
+	view = append([]MenuItem{serverView}, view...)
+	view = append(view, Separator{}, m.cmdFind.barItem())
+
+	return []MenuItem{
+		Menu{Text: "&File", Items: []MenuItem{
+			m.cmdRefresh.barItem(),
+			Separator{},
+			m.cmdAddSite.barItem(),
+			m.cmdImport.barItem(),
+			Separator{},
+			m.cmdBackup.barItem(),
+			m.cmdRestore.barItem(),
+			Separator{},
+			Action{Text: "E&xit", Image: img(desktop.IconExit), OnTriggered: func() { m.mw.Close() }},
+		}},
+		Menu{Text: "&Service", Items: []MenuItem{
+			m.cmdStart.barItem(),
+			m.cmdStop.barItem(),
+			m.cmdRestart.barItem(),
+		}},
+		Menu{Text: "&View", Items: view},
+		Menu{Text: "&Tools", Items: []MenuItem{
+			m.cmdConsole.barItem(),
+			m.cmdSettings.barItem(),
+			Separator{},
+			m.cmdMime.barItem(),
+			m.cmdMail.barItem(),
+			Separator{},
+			m.cmdDataFolder.barItem(),
+			m.cmdServerLog.barItem(),
+		}},
+		Menu{Text: "&Help", Items: []MenuItem{
+			Action{Text: "&About NodeHoster Manager", Image: img(desktop.IconInfo), OnTriggered: m.about},
+		}},
+	}
 }
 
 // ---- refreshing
@@ -236,6 +356,11 @@ func (m *manager) refresh(full bool) {
 }
 
 func (m *manager) apply(svc string, sites []localapi.Site, info *model.ServerInfo, account string, err error) {
+	if err != nil && m.cur == m.pages[navSite] && m.site != "" && m.pendingSite == "" {
+		// The connection dropped (the service restarts, say): come back
+		// to this site once it answers again.
+		m.openWhenListed(m.site)
+	}
 	m.service, m.connErr = svc, err
 	if err == nil {
 		m.sites = sites
@@ -250,36 +375,160 @@ func (m *manager) apply(svc string, sites []localapi.Site, info *model.ServerInf
 	}
 	m.syncTree()
 	m.updateStatusBar()
+	m.updateBanner()
+	m.updateCommands()
 	if m.cur != nil {
-		m.header.SetText(m.cur.title())
+		m.updateHeader()
 		if m.cur.update != nil {
 			m.cur.update()
 		}
 	}
-	if m.pendingSite != "" && m.showSite(m.pendingSite) {
-		m.pendingSite = ""
+	if m.pendingSite != "" && err == nil {
+		if m.showSite(m.pendingSite) {
+			m.pendingSite = ""
+		} else if m.pendingTries++; m.pendingTries > 3 {
+			m.pendingSite = "" // removed meanwhile
+		}
 	}
+}
+
+// openWhenListed shows a site as soon as a refresh lists it.
+func (m *manager) openWhenListed(id string) {
+	m.pendingSite, m.pendingTries = id, 0
 }
 
 func (m *manager) connected() bool { return m.connErr == nil }
 
+// serviceLevel is the service state as a status color.
+func (m *manager) serviceLevel() desktop.Level {
+	switch m.service {
+	case "running":
+		if m.connected() {
+			return desktop.LevelOK
+		}
+		return desktop.LevelWarning
+	case "starting", "stopping":
+		return desktop.LevelWarning
+	case "stopped", "paused":
+		return desktop.LevelDown
+	}
+	return desktop.LevelNotInstalled
+}
+
 func (m *manager) updateStatusBar() {
-	m.sbService.SetText("Service: " + m.service)
+	m.sbService.SetIcon(dotIcon(m.serviceLevel()))
+	m.sbService.SetText("Service: " + desktop.StateText(model.SiteState(m.service)))
 	switch {
 	case m.connErr == nil:
 		who := m.account
 		if who == "" {
 			who = "administrator"
 		}
+		m.sbConn.SetIcon(ico(desktop.IconPlug))
 		m.sbConn.SetText("Connected over the local admin pipe as " + who)
 	case errors.Is(m.connErr, localapi.ErrNotRunning):
+		m.sbConn.SetIcon(icoOff(desktop.IconPlug))
 		m.sbConn.SetText("Not connected: the service is not running")
 	default:
+		m.sbConn.SetIcon(ico(desktop.IconError))
 		m.sbConn.SetText("Not connected: " + m.connErr.Error())
+	}
+	m.updateActivity()
+}
+
+// updateBanner explains, above every page, why the manager cannot manage
+// the server right now, with the fix at hand.
+func (m *manager) updateBanner() {
+	switch {
+	case m.service == "not installed":
+		m.banner.show(barError, "The NodeHoster service is not installed. Run the installer, or from an elevated prompt: nodehoster service install", "", nil)
+	case m.service == "stopped" || m.service == "paused":
+		m.banner.show(barError, "The NodeHoster service is "+m.service+". The sites it hosts are offline.", "Start the service", func() { m.serviceAction("start") })
+	case m.service == "starting":
+		m.banner.show(barInfo, "The NodeHoster service is starting…", "", nil)
+	case m.service == "stopping":
+		m.banner.show(barWarning, "The NodeHoster service is stopping. The sites it hosts go offline.", "", nil)
+	case errors.Is(m.connErr, localapi.ErrNotRunning):
+		m.banner.show(barWarning, "The service is running but does not answer on the local admin pipe yet.", "Retry", func() { m.refresh(true) })
+	case m.connErr != nil:
+		m.banner.show(barError, "Cannot connect to the service: "+m.connErr.Error(), "Retry", func() { m.refresh(true) })
+	default:
+		m.banner.hide()
 	}
 }
 
-func (m *manager) setActivity(s string) { m.sbActivity.SetText(s) }
+// updateCommands enables the menu bar's and tool bar's commands.
+func (m *manager) updateCommands() {
+	installed := m.service != "not installed" && m.service != "unknown" && m.service != ""
+	setEnabled(installed && (m.service == "stopped" || m.service == "paused"), m.cmdStart)
+	setEnabled(m.service == "running", m.cmdStop, m.cmdRestart)
+	setEnabled(m.connected(), m.cmdAddSite, m.cmdImport, m.cmdSettings, m.cmdBackup, m.cmdRestore, m.cmdMime, m.cmdMail)
+	setEnabled(m.connected() && m.info != nil && m.info.AdminURL != "" && m.info.AdminError == "", m.cmdConsole)
+	setEnabled(m.cur != nil && m.cur.search != nil, m.cmdFind)
+}
+
+// updateHeader shows the current page's title, subtitle and tile. It runs
+// on every refresh, so it only touches what changed: setting a label's
+// text or visibility lays the window out again, which flickers.
+func (m *manager) updateHeader() {
+	p := m.cur
+	setLabel(m.header, p.title())
+	sub := ""
+	if p.subtitle != nil {
+		sub = p.subtitle()
+	}
+	setLabel(m.subheader, sub)
+	setVisible(m.subheader, sub != "")
+	icon := p.icon
+	if p.tile != nil {
+		icon = p.tile()
+	}
+	m.headerIcon.SetImage(asImage(tileIcon(icon))) // a no-op for the same image
+}
+
+// ---- the status bar's activity: what runs, else how the last one went
+
+// begin shows that what runs, until the returned function is called.
+func (m *manager) begin(what string) (done func()) {
+	id := m.nextBusy
+	m.nextBusy++
+	m.busy[id] = what
+	m.busyIDs = append(m.busyIDs, id)
+	m.updateActivity()
+	return func() {
+		delete(m.busy, id)
+		m.busyIDs = slices.DeleteFunc(m.busyIDs, func(x int) bool { return x == id })
+		m.updateActivity()
+	}
+}
+
+// flashStatus shows an outcome in the status bar for a while.
+func (m *manager) flashStatus(text string, bad bool) {
+	m.flash, m.flashBad, m.flashAt = text, bad, time.Now()
+	m.updateActivity()
+}
+
+func (m *manager) updateActivity() {
+	switch {
+	case len(m.busyIDs) > 0:
+		text := m.busy[m.busyIDs[len(m.busyIDs)-1]] + "…"
+		if n := len(m.busyIDs); n > 1 {
+			text += fmt.Sprintf("  (%d tasks running)", n)
+		}
+		m.sbActivity.SetIcon(ico(desktop.IconClock))
+		m.sbActivity.SetText(text)
+	case m.flash != "" && time.Since(m.flashAt) < 30*time.Second:
+		if m.flashBad {
+			m.sbActivity.SetIcon(ico(desktop.IconError))
+		} else {
+			m.sbActivity.SetIcon(ico(desktop.IconOK))
+		}
+		m.sbActivity.SetText(m.flash)
+	default:
+		m.sbActivity.SetIcon(nil)
+		m.sbActivity.SetText("Ready")
+	}
+}
 
 // ---- navigation
 
@@ -308,12 +557,27 @@ func (m *manager) show(p *page) {
 		p.content.SetVisible(true)
 		p.actions.SetVisible(true)
 	}
-	m.header.SetText(p.title())
+	m.updateHeader()
+	m.updateCommands()
 	if p.update != nil {
 		p.update()
 	}
 	if p.load != nil {
 		p.load()
+	}
+}
+
+// showKind selects a node of the tree.
+func (m *manager) showKind(k navKind) {
+	if k == navServer {
+		m.tree.SetCurrentItem(m.nav.root)
+		return
+	}
+	for _, it := range m.nav.root.children {
+		if it.kind == k {
+			m.tree.SetCurrentItem(it)
+			return
+		}
 	}
 }
 
@@ -329,8 +593,18 @@ func (m *manager) showSite(idOrName string) bool {
 	return false
 }
 
+// focusSearch puts the cursor in the current page's search field.
+func (m *manager) focusSearch() {
+	if m.cur != nil && m.cur.search != nil {
+		if le := m.cur.search(); le != nil {
+			le.SetFocus()
+			le.SetTextSelection(0, -1)
+		}
+	}
+}
+
 // syncTree mirrors the sites under the Sites node. Renames, additions and
-// removals rebuild the node; state changes only swap the dots.
+// removals rebuild the node; state changes only swap the icons.
 func (m *manager) syncTree() {
 	n := m.nav.sites
 	same := len(n.children) == len(m.sites)
@@ -339,7 +613,7 @@ func (m *manager) syncTree() {
 	}
 	if same {
 		for i, s := range m.sites {
-			if ic := m.dots[desktop.SiteLevel(s.Status.State)]; n.children[i].image != ic {
+			if ic := siteIcon(string(s.Type), desktop.SiteLevel(s.Status.State)); n.children[i].image != ic {
 				n.children[i].image = ic
 				m.nav.PublishItemChanged(n.children[i])
 			}
@@ -353,7 +627,8 @@ func (m *manager) syncTree() {
 	m.rebuilding = true
 	n.children = n.children[:0]
 	for _, s := range m.sites {
-		n.children = append(n.children, &navItem{kind: navSite, text: s.Name, siteID: s.ID, parent: n, image: m.dots[desktop.SiteLevel(s.Status.State)]})
+		n.children = append(n.children, &navItem{kind: navSite, text: s.Name, siteID: s.ID, parent: n,
+			image: siteIcon(string(s.Type), desktop.SiteLevel(s.Status.State))})
 	}
 	m.nav.PublishItemsReset(n)
 	m.tree.SetExpanded(n, true)
@@ -372,17 +647,30 @@ func (m *manager) syncTree() {
 
 // ---- actions
 
-// do runs fn off the UI thread, reports its error, and refreshes.
+// do runs fn off the UI thread, shows it in the status bar, reports its
+// error, and refreshes.
 func (m *manager) do(what string, fn func(ctx context.Context) error) {
-	m.setActivity(what + "…")
+	m.run(what, 3*time.Minute, fn)
+}
+
+// long is do for transfers that may take much longer than a request.
+func (m *manager) long(what string, fn func(ctx context.Context) error) {
+	m.run(what, 2*time.Hour, fn)
+}
+
+func (m *manager) run(what string, timeout time.Duration, fn func(ctx context.Context) error) {
+	done := m.begin(what)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		err := fn(ctx)
 		cancel()
 		m.mw.Synchronize(func() {
-			m.setActivity("")
+			done()
 			if err != nil {
+				m.flashStatus(what+" failed", true)
 				m.errorBox(what, err)
+			} else {
+				m.flashStatus(what+" — done", false)
 			}
 			m.refresh(true)
 		})
@@ -398,7 +686,7 @@ func (m *manager) errorBoxFor(owner walk.Form, what string, err error) {
 	if errors.As(err, &apiErr) && apiErr.Field != "" {
 		msg = fmt.Sprintf("%s (%s)", apiErr.Message, apiErr.Field)
 	}
-	walk.MsgBox(owner, what, msg, walk.MsgBoxIconError)
+	notify(owner, "NodeHoster Manager", what, msg, "", walk.TaskDialogSystemIconError)
 }
 
 func (m *manager) confirm(title, msg string) bool {
@@ -406,8 +694,19 @@ func (m *manager) confirm(title, msg string) bool {
 }
 
 func (m *manager) serviceAction(cmd string) {
-	if cmd != "start" && !m.confirm("NodeHoster service", fmt.Sprintf("%s the NodeHoster service? Every site it hosts goes offline until it is running again.", map[string]string{"stop": "Stop", "restart": "Restart"}[cmd])) {
-		return
+	switch cmd {
+	case "stop":
+		if ask(m.mw, "NodeHoster service", "Stop the NodeHoster service?",
+			"Every site it hosts goes offline until the service is started again.",
+			walk.TaskDialogSystemIconWarning, [2]string{"Stop the service", ""}) != 0 {
+			return
+		}
+	case "restart":
+		if ask(m.mw, "NodeHoster service", "Restart the NodeHoster service?",
+			"Every site it hosts goes offline for a few seconds while the service restarts.",
+			walk.TaskDialogSystemIconWarning, [2]string{"Restart the service", ""}) != 0 {
+			return
+		}
 	}
 	m.do(map[string]string{"start": "Starting the service", "stop": "Stopping the service", "restart": "Restarting the service"}[cmd],
 		func(context.Context) error { return controlService(cmd) })
@@ -415,10 +714,20 @@ func (m *manager) serviceAction(cmd string) {
 
 func (m *manager) openConsole() {
 	if m.info == nil || m.info.AdminURL == "" {
-		walk.MsgBox(m.mw, "Web console", "The web console is not available. Use Server → Web console settings to change where it listens.", walk.MsgBoxIconInformation)
+		notify(m.mw, "Web console", "The web console is not available.",
+			"Use Tools → Web console settings to change where it listens.", "", walk.TaskDialogSystemIconInformation)
 		return
 	}
 	shellOpen(desktop.ConsoleURL(m.info.AdminURL))
+}
+
+// openConsolePath opens a page of the web console.
+func (m *manager) openConsolePath(p string) {
+	if m.info == nil || m.info.AdminURL == "" {
+		m.openConsole() // explains why it is unavailable
+		return
+	}
+	shellOpen(strings.TrimRight(desktop.ConsoleURL(m.info.AdminURL), "/") + p)
 }
 
 func (m *manager) dataDir() string {
@@ -431,11 +740,11 @@ func (m *manager) dataDir() string {
 func (m *manager) about() {
 	v := "unknown (not connected)"
 	if m.info != nil {
-		v = m.info.Version
+		v = m.info.Version + " (" + shortCommit(m.info.Commit) + ")"
 	}
-	walk.MsgBox(m.mw, "About NodeHoster Manager",
-		fmt.Sprintf("NodeHoster Manager %s\nServer %s\n\nManages this server over a local named pipe that only elevated Administrators can open, independent of the web console.", config.Version, v),
-		walk.MsgBoxIconInformation)
+	notify(m.mw, "About NodeHoster Manager", "NodeHoster Manager "+config.Version,
+		"Server "+v+"\n\nManages this server over a local named pipe that only elevated Administrators can open, independent of the web console.",
+		"Data folder: "+m.dataDir(), walk.TaskDialogSystemIconInformation)
 }
 
 // siteByID returns the site from the latest refresh.
@@ -484,6 +793,10 @@ func (n *navItem) Parent() walk.TreeItem {
 func (n *navItem) ChildCount() int             { return len(n.children) }
 func (n *navItem) ChildAt(i int) walk.TreeItem { return n.children[i] }
 func (n *navItem) HasChild() bool              { return len(n.children) > 0 }
+
+// Image is the item's icon. Every item has one: an item without an image
+// gets index -1 from walk, which the tree control takes as "ask me later"
+// and draws with some other item's icon.
 func (n *navItem) Image() interface{} {
 	if n.image == nil {
 		return nil
@@ -496,20 +809,20 @@ type navModel struct {
 	root, sites *navItem
 }
 
-func newNavModel(icon *walk.Icon) *navModel {
+func newNavModel() *navModel {
 	host, _ := os.Hostname()
-	root := &navItem{kind: navServer, text: host, image: icon}
+	root := &navItem{kind: navServer, text: host, image: ico(desktop.IconServer)}
 	m := &navModel{root: root}
-	m.sites = &navItem{kind: navSites, text: "Sites", parent: root}
+	m.sites = &navItem{kind: navSites, text: "Sites", parent: root, image: ico(desktop.IconSites)}
 	root.children = []*navItem{
 		m.sites,
-		{kind: navCerts, text: "Certificates", parent: root},
-		{kind: navMail, text: "SMTP E-mail", parent: root},
-		{kind: navNode, text: "Node.js versions", parent: root},
-		{kind: navUsers, text: "Web console users", parent: root},
-		{kind: navBans, text: "Banned IP addresses", parent: root},
-		{kind: navActivity, text: "Events and audit log", parent: root},
-		{kind: navBackups, text: "Backups", parent: root},
+		{kind: navCerts, text: "Certificates", parent: root, image: ico(desktop.IconCertificate)},
+		{kind: navMail, text: "SMTP E-mail", parent: root, image: ico(desktop.IconMail)},
+		{kind: navNode, text: "Node.js versions", parent: root, image: ico(desktop.IconNodeVersion)},
+		{kind: navUsers, text: "Web console users", parent: root, image: ico(desktop.IconUsers)},
+		{kind: navBans, text: "Banned IP addresses", parent: root, image: ico(desktop.IconBans)},
+		{kind: navActivity, text: "Events and audit log", parent: root, image: ico(desktop.IconActivity)},
+		{kind: navBackups, text: "Backups", parent: root, image: ico(desktop.IconBackups)},
 	}
 	return m
 }
