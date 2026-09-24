@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/nodeversions"
 )
 
@@ -21,14 +22,27 @@ func TestDeps(t *testing.T) {
 	// The harness's default version is not installed.
 	r := s.run("deps", "--json").expect(t, ExitError)
 	var list []Dependency
-	if err := json.Unmarshal([]byte(r.stdout), &list); err != nil || len(list) != 2 {
+	if err := json.Unmarshal([]byte(r.stdout), &list); err != nil || len(list) != 6 {
 		t.Fatalf("deps --json: %v\n%s", err, r.stdout)
 	}
 	if list[0].Name != "node" || list[0].Installed || list[0].Version != "99.0.0-test" || list[1].Name != "git" || list[1].Installed {
 		t.Fatalf("deps --json: %+v", list)
 	}
-	if !strings.Contains(r.stderr, "missing: node, git") {
+	// Runtimes no site uses are listed but optional.
+	for _, d := range list[2:] {
+		if !d.Optional {
+			t.Fatalf("unused runtime not optional: %+v", d)
+		}
+	}
+	if !strings.Contains(r.stderr, "missing: node, git") || strings.Contains(r.stderr, "bun") {
 		t.Fatalf("deps stderr: %s", r.stderr)
+	}
+	// One a site uses counts.
+	s.createSite(&model.Site{Name: "bunapp", Type: model.SiteNode,
+		Node: &model.NodeConfig{AppRoot: t.TempDir(), Runtime: model.RuntimeBun, Script: "index.ts"}})
+	r = s.run("deps").expect(t, ExitError)
+	if !strings.Contains(r.stderr, "missing: node, git, bun") || !strings.Contains(r.stdout, "used by 1 site(s)") {
+		t.Fatalf("deps with a bun site:\nstdout %s\nstderr %s", r.stdout, r.stderr)
 	}
 
 	// A missing default is installed again, not replaced: sites pin it.
@@ -70,6 +84,7 @@ func TestDeps(t *testing.T) {
 		t.Fatalf("deps install git: %s", r.stderr)
 	}
 	s.run("deps", "install", "python").expect(t, ExitUsage)
+	s.run("runtime", "install", "python").expect(t, ExitUsage)
 }
 
 func TestPickNodeVersion(t *testing.T) {

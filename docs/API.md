@@ -12,9 +12,9 @@ JSON in, JSON out. Types referenced below are the Go structs in `internal/model`
 - **Errors**: non-2xx responses have body `{ "error": "message", "field": "bindings[0].host" }`
   (`field` only for validation errors, 422).
 - **Secrets**: secret fields (env vars with `secret: true`, `runAs.password`, `deploy.git.token`,
-  `deploy.webhookSecret`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
-  backup destination credentials, the Seq API key and log-shipping headers marked
-  `secret`) are returned as
+  `deploy.webhookSecret`, `deploy.previews.statusToken`, DNS credentials, `acme.eabHmac`, `sso.clientSecret`, the backup passphrase,
+  backup destination credentials, the Seq API key, log-shipping headers marked
+  `secret` and the tokens of server connections) are returned as
   `"__SECRET__"` when set. Sending `"__SECRET__"` back leaves the stored value unchanged.
 - **Roles**: `viewer` read-only; `operator` may start/stop/restart/deploy; `admin` everything.
   403 when not permitted. A user is either server-wide (one of those roles, on
@@ -110,9 +110,13 @@ What a site-scoped caller gets:
 | `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
-| `GET /api/node/versions`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
-| everything else (certificates, Node.js install, settings, mail, users, audit, backup and backups, updates, log shipping, server log search, rewrite import, server metrics) | 403 |
+| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog`, `/api/waf/rules` | allowed: catalogs the site pages show, nothing server-specific that matters (`/api/runtimes` without any file system path, from what was last detected) |
+| `GET /api/alerts`, `/api/alerts/history` | only the granted sites' alerts; server alerts are left out, `?siteId=` of another site answers 404 and `?server=1` 403 |
+| `POST`/`DELETE /api/alerts/{alert}/silence` | `operator` on the alert's site (403 with `viewer`); server alerts and other sites' alerts answer 404 |
+| `GET /api/waf/events` | only the granted sites' events; `?siteId=` of another site returns none |
+| everything else (certificates, Node.js and runtime installs, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
+| `/api/servers/*` | 403: a connection is the whole of another server |
 
 **Restricted API tokens**: `POST /api/tokens` takes an optional `role` (the
 token's maximum role, not above the caller's) and `siteIds` (sites the caller
@@ -124,6 +128,11 @@ restriction and its owner's current access: downgrading the user, or removing
 a grant, downgrades the token too. A restricted token cannot use the account
 endpoints (`/api/auth/password`, `/api/auth/totp/*`, `/api/tokens`), nor
 `PUT /api/users/{id}` on its owner (an `admin`-restricted token): 403.
+
+A site's [preview deployments](#preview-deployments) come with it: a grant
+on a site (or a token restricted to it) gives the same role on each of its
+previews, which appear in `GET /api/sites` and answer `/api/sites/{previewId}/...`
+for that caller.
 
 The desktop manager's local pipe always acts as `admin`.
 
@@ -163,6 +172,11 @@ The desktop manager's local pipe always acts as `admin`.
 | POST | `/api/sites/{id}/logs/clear` | | 204 |
 | POST | `/api/sites/{id}/cache/purge` | `{path?}` | `{purged}` (operator; empties the response cache, or entries whose path starts with `path`) |
 
+`metrics`, `logs`, `logs/stream`, `logs/download` and `logs/search` take
+`?slot=production|<name>` for a [deployment slot](#deployment-slots): its
+metrics, its access log, or only the application lines its instances wrote
+(`LogLine.slot`; without `slot`, every slot's lines).
+
 ### Deployments
 
 | Method | Path | Body | Response |
@@ -176,11 +190,92 @@ The desktop manager's local pipe always acts as `admin`.
 
 Webhook (no session): `POST /hooks/deploy/{siteId}` — GitHub/Gitea style
 `X-Hub-Signature-256: sha256=<hmac of body with deploy.webhookSecret>`, or `?secret=`.
+A push to the site's branch (or to any branch when none is set) deploys it:
+202 `Deployment`; a push to another branch answers 200 `{status: "ignored",
+reason}`. Pull request (merge request) events and branch deletions are for
+[preview deployments](#preview-deployments) and never deploy the site itself.
+
+`?slot=<name>` on `deploy/zip`, `deploy/git` (or `slot` in its body),
+`deployments/{depId}/activate` and the webhook URL targets a
+[deployment slot](#deployment-slots) instead of production (422 `slot` for
+a slot the site does not have). `Deployment.slot` records it;
+`GET .../deployments?slot=production|<name>` lists one slot's history. Any
+successful release can be activated into any slot. A webhook URL with
+`?slot=` only deploys that slot on pushes to the production branch: pull
+request events answer 200 `{status: "ignored"}` and previews are left to
+the URL without `?slot=` (configuring both at the git host creates each
+preview once). The slot comes from the URL the administrator configured at
+the git host: the signature covers the body, not the query string.
+
+### Runtimes
+
+Node and worker sites run with the runtime in `node.runtime` (the object
+keeps its name whatever the runtime; absent on sites saved before runtimes
+existed, which are Node.js, and set to `"node"` on the next write):
+
+| Field | |
+|---|---|
+| `runtime` | `node` (default) \| `bun` \| `deno` \| `python` \| `dotnet` \| `custom` (422 `node.runtime` otherwise) |
+| `runtimeVersion` | `bun`, `deno`: an installed version (`1.1.30`); `python`: a version (`3.12`, the newest 3.12.x found) or the full path of `python.exe`; `dotnet`: the full path of `dotnet.exe`; `""` = the server default (`settings.runtimes`). Ignored for `node` (it has `nodeVersion`) and `custom` |
+| `script` | the entry: a script (node, bun, deno, python), the app's `.dll` (run by `dotnet`) or a self-contained `.exe` (dotnet), the program (custom: a full path, relative to the application folder, or on PATH) |
+| `npmScript` | a package script: `npm run` (node), `bun run` (bun), `deno task` (deno); refused for the others (422 `node.npmScript`, also `tasks[n].npmScript`) |
+| `nodeArgs` | the runtime's own arguments: node or bun flags, `deno run` flags (permissions: Deno grants nothing by default; the consoles start a Deno site with `--allow-net --allow-env --allow-read`, the API adds none), Python interpreter options, `dotnet` host options |
+| `python` | `{module?, server?: "uvicorn"\|"hypercorn"\|"waitress", app?: "main:app", venv}`: python sites set exactly one of `script`, `python.module` or `python.server` with `python.app` (422 `node.script`, `node.python.*`); a worker cannot run a server. `venv` (default `.venv`, relative to the application folder) is used when it exists |
+| `agentEnabled` | honored for `node` and `bun` entry scripts only |
+
+Every instance gets `PORT`; `dotnet` sites also `ASPNETCORE_URLS=http://127.0.0.1:<port>`
+(overriding the site's variables), and Python servers are started with
+`--host 127.0.0.1 --port` (uvicorn), `--bind 127.0.0.1:<port>` (Hypercorn)
+or `--listen=127.0.0.1:<port>` (Waitress). Python processes get
+`PYTHONUNBUFFERED=1` and `PYTHONUTF8=1` (and `VIRTUAL_ENV`), Deno processes
+the site's `DENO_DIR`. Processes without an agent are stopped with a console
+Ctrl+Break on Windows (SIGTERM elsewhere), then killed after
+`shutdownTimeoutSec`. `InstanceStatus` gains `runtime`, `runtimeVersion`
+(what started the process, every runtime) and `agent` (an agent reports
+`heapUsedBytes` / `eventLoopLagMs`: Node.js, Bun).
+
+Deployments default `deploy.installCommand` per runtime when it is empty
+(`npm ci --omit=dev`, `bun install --production`, `deno install`,
+`python -m pip install -r requirements.txt`, none for dotnet and custom); a
+python release gets its own virtual environment (`python -I -m venv`) before
+the install command, which runs with it first on `PATH`; the default python
+install command runs as `<venv>\Scripts\python.exe -I -X utf8 -m pip install
+-r requirements.txt` (isolated: modules in the release cannot stand in for
+`venv` or `pip`). The environment's creation and the install and build
+commands run as the site's `node.runAs` account when it is enabled (in a Job
+Object, `TEMP`/`TMP` = `sites\<id>\.tmp`; the deployment log says `commands
+run as <account>`), as the service otherwise.
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/runtimes` | any signed-in user (a catalog) | `{bun: Managed, deno: Managed, python: Interpreter[], dotnet: {host, runtimes: [{name, version, path}]} \| null, defaults: {bun?, deno?, python?, dotnet?}}`; `Managed` = `{system: {version, path} \| null, installed: [{version, path, status, progress, error?, isDefault}]}` like `/api/node/versions`; `Interpreter` = `{version, path, source: py\|registry\|path\|folder, isDefault}`. Detection runs every interpreter and host it finds, so only a server admin's request starts one (cached for a minute); anyone else gets what the last detection found, however old (nothing before the first). For a site-scoped caller every `path` and `host` is `""`, and a default that is a path is left out |
+| POST | `/api/runtimes/refresh` | admin | the same, detected again now |
+| GET | `/api/runtimes/{bun\|deno}/available` | viewer | `[{version, date}]` stable releases for this platform with a published SHA-256, newest first (GitHub; cached an hour) |
+| POST | `/api/runtimes/{bun\|deno}/versions` | admin | `{version}` → 202; downloaded and verified in the background (events `runtime.installed` / `runtime.failed`; audit `runtime.install`) |
+| DELETE | `/api/runtimes/{bun\|deno}/versions/{version}` | admin | 204; 409 if a site pins it or it is the server default (audit `runtime.remove`) |
+
+Python and .NET are found, never installed (404 for `/api/runtimes/python/...`).
+Server defaults are `settings.runtimes` (`PUT /api/settings`; 422
+`runtimes.<runtime>` for a value a site could not use).
+
+NodeHoster runs what it finds as SYSTEM (to ask its version, and for
+deployments), so it only uses programs that no account but SYSTEM,
+Administrators and TrustedInstaller can change: the program, the files and
+folders next to it (for Python also `Lib`, `Lib\site-packages` and `DLLs`),
+and nothing on the way to it that another account could rename or delete,
+or whose permissions or owner it could change. The others are left out of
+`/api/runtimes` (the server log says why, once), never run, and a
+`runtimeVersion` or server default naming one by path makes the site's
+start and deployments fail with that reason. Python in `C:\Python3xx`
+(which inherits from `C:\` that every signed-in user may change what it
+holds), or Bun/Deno/.NET/Python in a user's profile on the machine PATH, is
+refused; install for all users, into Program Files. Only a server admin can
+set `runtimeVersion` (site `POST`/`PUT`) or `settings.runtimes`.
 
 ### Background workers
 
-`type: "worker"` is a managed Node.js process without HTTP (queue consumer,
-bot, long-running script). It is configured by `node` like a node site
+`type: "worker"` is a managed process without HTTP (queue consumer,
+bot, long-running script), in any runtime. It is configured by `node` like a node site
 (script / npm script, instances, restart policy and rapid-fail protection,
 recycling on memory / schedule / interval / file change, limits, run-as,
 agent) and has deployments, releases and rollback, but:
@@ -217,7 +312,8 @@ Node and worker sites have `tasks: ScheduledTask[]`, edited with the site
 | `overlap` | when a run is due while one is still going: `skip` (default; a `skipped` run is recorded), `queue` (runs right after it; at most one waiting), `allow` (concurrently, at most 10) |
 | `env` | extra variables (`secret` supported, masked like the site's) |
 
-A run uses the site's Node.js version, environment and secrets, run-as
+A run uses the site's runtime and version (a python site's virtual
+environment; never its ASGI/WSGI server), environment and secrets, run-as
 identity and Job Object limits (on Windows each run has its own job), with
 `NODEHOSTER_TASK=<name>` and `NODEHOSTER_TASK_RUN=<run id>` and no `PORT`.
 Tasks run whether the site is started or stopped (disable a task to stop
@@ -244,9 +340,176 @@ finishedAt?, exitCode?, error?}`. Events: `task.failed` (error: non-zero
 exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 `task.cancel`.
 
+### Preview deployments
+
+A node or static site deployed from git can get a temporary site per pull
+request (GitLab: merge request) or per branch: `deploy.previews`
+(`PreviewConfig`), edited with the site (`PUT /api/sites/{id}`, admin):
+
+| Field | |
+|---|---|
+| `enabled` | needs `deploy.git.repo`, the production branch `deploy.git.branch` (never previewed) and `deploy.webhookSecret` (422 on that field otherwise) |
+| `hostPattern` | `pr-{number}.preview.example.com`, `{branch}.preview.example.com`: placeholders in the first label only. `{branch}` is the branch made DNS-safe (lower case, `-` for anything else, at most 63 characters with a hash of the full name when shortened); a name another site uses gets a hash of the preview's key appended. A branch preview under a pattern without `{branch}` takes the branch as its first label |
+| `pullRequests` | opened, reopened, pushed to (`synchronize`; GitLab `update` with new commits): deployed; closed or merged: deleted |
+| `branches` | globs of branches whose pushes get a preview (`*` within a path segment, `**` across, `?`); a push deleting the branch (or a `delete` event) deletes it |
+| `allowForks` | default false: pull requests from forks are ignored (their code would run on the server, with the service's privileges unless the site runs as a separate account). When allowed they wait for approval (below) and are fetched through the base repository's pull request ref (`refs/pull/N/head`, GitLab `refs/merge-requests/N/head`). Turning it off (or pull requests, or previews) deletes the fork previews at once (`preview.deleted`, reason `forks disabled`), and a redeploy the settings no longer allow is refused (`preview.failed`) |
+| `requireApproval` | `forks` (default) or `all`: which pull requests wait for an operator to approve their head commit before anything is fetched or built. Branch previews never wait |
+| `inheritSecrets` | default false: previews get the site's variables except secret ones, those with `from` (secret stores) and slot settings; `env` gives them their own. True keeps them for same-repository previews; previews of forks never get them |
+| `maxPreviews` | default 10, at most 100. A new preview beyond it **evicts** one that never deployed successfully first, then the preview pushed to least recently (`preview.deleted`, reason `evicted`). A pull request awaiting approval only evicts another one awaiting approval since it was opened; otherwise it is refused (`preview.failed`) |
+| `expireDays` | delete previews without a push for that many days (checked hourly); 0 = never |
+| `protocol`, `ip`, `port` | the preview's one binding (default http, port 80/443). An https binding gets the client certificate policy (mutual TLS) of the site's production https binding on the same address and port, else of the first one asking for a certificate. A site that requires client certificates (mode `require`, or `accept` with `requirePaths`) cannot have http previews unless `basicAuth` or `allowIps` is set (422 `deploy.previews.protocol`) |
+| `certMode` | https: `auto` (a Let's Encrypt certificate per preview host over HTTP-01, deleted with the preview; at most 20 new ones a week per preview domain, beyond which new previews are refused with `preview.failed`, since Let's Encrypt's 50 a week per registered domain are shared with the production sites), `certificate` + `certificateId` (a certificate from the store that covers `*.<suffix>`), `wildcard` + `dnsProviderId` (the store's certificate for `*.<suffix>`, else one requested through DNS-01 and kept for the next previews) |
+| `env` | the previews' own variables, over the site's (`secret` supported, masked like the site's); `PREVIEW=1`, `PREVIEW_BRANCH`, `PREVIEW_PR` (the number, empty for a branch) and `PREVIEW_URL` are always set and cannot be overridden |
+| `basicAuth`, `allowIps` | when enabled / not empty, replace the site's basic authentication / IP allow list in previews |
+| `reportStatus`, `statusToken` | set a commit status (`nodehoster/preview`: pending, then success with the preview's URL or failure) on GitHub (and Enterprise: `https://<host>/api/v3`), GitLab or Gitea (at the root of their host). The API address comes from `deploy.git.repo`, never from the webhook; the token is only sent over https (or to this machine), and redirects to another host are not followed. `statusToken` (secret) defaults to `deploy.git.token`, or the token `deploy.git.tokenFrom` reads from its secret store |
+
+A preview is a site with `previewOf: <parentId>` and `preview: PreviewInfo`
+(`{key, kind: pr|branch, number?, branch, ref, commit?, title?, author?,
+prUrl?, fork?, provider?, host, url, lastPush, ready?, awaitingApproval?,
+approvedCommit?, approvedBy?}`), both maintained by the server (ignored in
+`POST`/`PUT /api/sites`). Its configuration is the parent's, made again at
+every deployment, with: its binding, one instance on an automatic port, no
+load balancing, maintenance mode and HTTPS redirect off, `keepReleases` 1,
+no scheduled tasks, no deployment slots (422 `slots` on a preview), no
+webhook of its own, the parent's variables without its secrets (see
+`inheritSecrets`), the parent's firewall mode as in effect (`off` for a
+site from before the firewall; new-site defaults do not apply), and an
+absolute application path replaced by its release. The git token
+(`deploy.git.token` or `tokenFrom`) is used by NodeHoster to fetch, never
+given to the build or the application. Shared paths are its own
+(`sites\<previewId>\shared`), never the parent's. It starts after its first
+successful deployment (and cannot be started before: 400). Operations on one
+preview are serialised; pushes that arrive during a deployment collapse
+into one more deployment of the latest head. At most two preview
+deployments run at once on the server; the others wait (state
+`deploying`). Deleting a preview removes its site, releases, logs and
+automatic certificate; deleting the parent deletes its previews. Previews
+raise no alerts.
+
+**Approval.** A pull request that needs approval (from a fork, or any with
+`requireApproval: "all"`) is recorded with `awaitingApproval` and state
+`awaiting-approval`, and nothing of it is fetched; one that was never
+approved has no binding (and no certificate) yet. Approving deploys exactly
+`preview.commit`: the ref is checked after fetching and before anything
+runs, and a ref that moved meanwhile is not built (the new head then awaits
+approval). Every new push waits for approval again while the approved
+build keeps serving; redeploying the approved commit needs none.
+`preview.approval` events (on the parent) announce a pull request awaiting
+approval.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/sites/{id}/previews` | viewer | | `PreviewView[]`, pushed to most recently first: `{id, name, preview: PreviewInfo, state: pending\|awaiting-approval\|deploying\|ready\|failed\|deleting, siteState, lastDeployment?, createdAt}` |
+| POST | `/api/sites/{id}/previews` | operator | `{branch}` | 202 `{action, key, reason}`: deploys the branch as a preview (created if needed), whatever `branches` says; 422 for the production branch or an invalid name |
+| POST | `/api/sites/{id}/previews/{previewId}/redeploy` | operator | | 202 `PreviewView`; 409 while it awaits approval |
+| POST | `/api/sites/{id}/previews/{previewId}/approve` | operator | `{commit?}`: the commit reviewed | 202 `PreviewView`: the held commit is built and deployed; 422 `commit` when the pull request has moved to another commit since; 409 when nothing awaits approval |
+| DELETE | `/api/sites/{id}/previews/{previewId}` | operator | | 202 `PreviewView` (deleted in the background) |
+
+Webhook answers for these deliveries: 202 `{status: "accepted", action:
+deploy|delete, preview: <key>, reason}`, or 200 `{status: "ignored", reason}`
+(previews off, a fork, a pull request event that changes no code, closing
+one without a preview, an unacceptable branch name). The host is told by
+`X-GitHub-Event`, `X-Gitlab-Event` or `X-Gitea-Event` (also Gogs and
+Forgejo); a delivery without one is a push as before. Events on the parent
+site: `preview.created` (first deployment succeeded; message with the URL),
+`preview.updated`, `preview.deleted` (with the reason: closed, merged,
+branch deleted, expired, evicted, forks disabled, deleted by a user),
+`preview.failed`, `preview.approval`. Audit: `preview.deploy` /
+`preview.delete` by `webhook`, `preview.create`, `preview.redeploy`,
+`preview.approve` (with the pull request and commit), `preview.delete`.
+Deployments of previews have `source: "preview"`.
+
+### Deployment slots
+
+Like Azure App Service deployment slots: node and worker sites have
+`slots: DeploymentSlot[]` (at most 4 besides production, edited with the
+site, admin), each running its own release on its own instances, with its
+own bindings, so a release can be tested (staging.example.com) before it
+goes live, then swapped in without a cold start.
+
+| Field | |
+|---|---|
+| `name` | 1-32 lower-case letters, digits or `-`, not `production`, unique |
+| `env` | the slot's own variables (`secret` supported, masked like the site's): they replace production's of the same name, or are added |
+| `instances` | 0 (default) = as many as production |
+| `autoSwap` | after a successful deployment to the slot, swap it into production (audited as `auto-swap`) |
+| `warmup` | `{paths: ["/"], statuses: "200-399", timeoutSec: 120}`: `statuses` are ranges and codes (`200-299,401`), `timeoutSec` 5-1800 for the whole warm-up |
+| `activeRelease` | the release the slot runs; NodeHoster's to manage (ignored on write, like `activeRelease`) |
+
+Settings: a slot runs with production's configuration except its **slot
+settings**, which stay with the slot on a swap: its `env` and instance
+count, production's variables marked `slotSetting: true` (`node.env[n]`:
+they stay in production and slots do not get them — the database URL, say)
+and bindings: `Binding.slot` names the slot a binding routes to (`""` =
+production; 422 `bindings[n].slot` for a slot that does not exist). Bindings
+never move on a swap, like Azure's custom domains. Deployments to a slot
+are built with the slot's variables; shared paths (`deploy.sharedPaths`)
+are shared by every slot. A slot needs automatic ports (422
+`node.portMode` with a fixed port) and is only served by this server's
+instances, never load balanced to other servers. Scheduled tasks run in
+production only, from production's release. A slot starts when something
+is deployed to it (and with the service, for sites that start
+automatically); it is started, stopped and recycled on its own. Its
+events, logs (`LogLine.slot`, `[staging 0 stdout]` in `app.log`), access
+log (`logs\sites\<id>\<slot>-access.log`), metrics and traffic are its own;
+rapid-fail protection, recycling, health checks and file watching apply to
+each slot's instances separately.
+
+A **swap** exchanges a slot's release with production's:
+
+1. *preparing*: the slot's instances are restarted with production's
+   settings, sticky ones included (a rolling recycle, only if something
+   differs), and scaled to production's instance count — like Azure
+   applying the target slot's settings to the source slot first. A stopped
+   slot is started.
+2. *warming*: every warm-up path is requested on every instance (with
+   production's host name, `X-Forwarded-Proto` and
+   `User-Agent: NodeHoster-Warmup`, redirects not followed) until it answers
+   an accepted status, retrying every second; a worker site has nothing to
+   warm up.
+3. *swapping*: the releases change places in the stored configuration
+   (a restart comes back with the swap done), then production's traffic
+   moves onto the warm instances in one step. Requests in flight on the old
+   production instances finish there; those instances become the slot and
+   are recycled onto the slot's settings. The response caches of both are
+   emptied. Session affinity keeps clients on the same instance number;
+   what a process kept in memory does not survive, as with a recycle.
+
+A failure before step 3 (an instance that does not start, a warm-up that
+times out, the service stopping) changes nothing: the slot goes back to its
+own settings (and is stopped again if the swap started it). Swapping again
+is the rollback. While a swap runs, the site's configuration, deployments,
+rollbacks, start/stop/restart/recycle and deletion answer 409, and a
+deployment in progress makes a swap answer 409. Production must be running
+(or stopped by rapid-fail protection); the slot must have a release (or be
+running: a slot without one runs production's application folder, as after a
+swap from a site that had never been deployed).
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/sites/{id}/slots` | viewer | `SlotsView`: `{slots: SlotStatus[], swap?: SwapProgress, lastSwap?: SwapResult}`, production first |
+| GET | `/api/sites/{id}/slots/{slot}/swap` | viewer | `SwapPreview`: `{slot, productionRelease, slotRelease, warmup, changes: string[], warnings: string[], blockers: string[]}`. `changes` names the variables whose value or secret store reference differs between the slot and production; secret variables whose values differ are only named for an administrator of the site, and counted for everyone else |
+| POST | `/api/sites/{id}/slots/{slot}/swap` | operator | 202 `SwapProgress`; the swap goes on in the background. 422 `slot` with the first blocker, 409 while a deployment or swap runs |
+| POST | `/api/sites/{id}/slots/{slot}/start` | operator | `SlotsView` (a slot without a release runs production's application folder) |
+| POST | `/api/sites/{id}/slots/{slot}/stop` | operator | `SlotsView` |
+| POST | `/api/sites/{id}/slots/{slot}/recycle` | operator | `SlotsView` |
+
+`{slot}` = `production` acts on the site itself for start, stop and recycle.
+`SlotStatus`: `{name, release?, status: SiteStatus, bindings, autoSwap?}`.
+`SwapProgress`: `{slot, phase: preparing|warming|swapping, message?, user?,
+auto?, startedAt}`. `SwapResult` (the last swap, kept until the service
+restarts): `{slot, succeeded, message, user?, auto?, startedAt, finishedAt,
+productionRelease?, slotRelease?}` (releases after the swap). Events:
+`slot.swapped` (info) and `slot.swap_failed` (error), also on the status
+pipe; audit: `site.slot.swap`, `site.slot.start|stop|recycle`, and
+deployments and rollbacks to a slot as `site.deploy` / `site.rollback` with
+`to <slot>` in the detail.
+
 ## Certificates
 
-`CertificateView` = `Certificate` + `"usedBy": [{siteId, siteName, binding}]`.
+`CertificateView` = `Certificate` + `"usedBy": [{siteId, siteName, binding}]` +
+`"ocsp": OCSPStatus` (absent while the certificate is not issued; see
+[OCSP stapling](#ocsp-stapling)).
 
 | Method | Path | Body | Response |
 |---|---|---|---|
@@ -256,6 +519,7 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 | POST | `/api/certificates/import` | multipart: `file` (.pfx/.p12 or .pem/.crt), optional `keyFile`, `password`, `name` | `CertificateView` |
 | POST | `/api/certificates/selfsigned` | `{name, domains[], validDays}` | `CertificateView` |
 | POST | `/api/certificates/{id}/renew` | | `CertificateView` 202 |
+| POST | `/api/certificates/{id}/ocsp` | | `CertificateView` (operator; asks the OCSP responder now, audited `cert.ocsp`) |
 | PUT | `/api/certificates/{id}` | `{name, autoRenew}` | `CertificateView` |
 | DELETE | `/api/certificates/{id}` | | 204 (409 if in use) |
 | POST | `/api/certificates/{id}/export` | `{format: "pfx"\|"pem", password?}` | file download (pfx, or zip of PEMs) |
@@ -276,6 +540,8 @@ exit or could not start) and `task.timeout` (warning); audit: `task.run`,
 | GET | `/api/settings` | | `Settings` |
 | PUT | `/api/settings` | `Settings` | `Settings` |
 | GET | `/api/settings/dns-catalog` | | `[{code, name, fields: [{key, label, secret, optional}]}]` |
+| GET | `/api/tls` | | `{minVersion, http2, http3, http3Listeners: []}` (viewer; see [HTTP/3](#http3)) |
+| PUT | `/api/tls` | `{minVersion, http2, http3}` | same (admin; only the TLS settings change, audited `settings.tls`) |
 | POST | `/api/settings/webhooks/test` | `WebhookTarget` | 204 |
 | GET | `/api/settings/admin` | | `{listen, tls: "selfsigned"\|"certificate"\|"none", certificateId, restartRequired}` |
 | PUT | `/api/settings/admin` | same | same (takes effect after service restart) |
@@ -444,7 +710,9 @@ freshness from `s-maxage`, `max-age`, then `Expires` (minus `Age`), else
 `no-cache`, `Vary: *`, `text/event-stream`, responses with `Set-Cookie`,
 and answers to requests with `Authorization` or cookies — unless the
 response says `public` (a stored `Set-Cookie` is never replayed). The
-session affinity cookie counts as neither. Each `Vary` header (and each
+session affinity cookie counts as neither; a client certificate counts as
+credentials. Entries are kept per binding (protocol, address and port),
+host name, path and query. Each `Vary` header (and each
 of `varyHeaders`) selects a separate variant. Entries are uncompressed:
 when the site compresses, the application is asked without
 `Accept-Encoding` and each client gets its own encoding from the one
@@ -459,6 +727,134 @@ bypasses the cache. `SiteStatus.cache` = `{entries, bytes, hits,
 misses, hitRatio}` when enabled. The cache is emptied when the site's
 configuration changes, on recycles and restarts and on deployment
 activation. Purge paths match the request path after URL rewrite rules.
+
+## Client certificates (mutual TLS)
+
+Like IIS "SSL Settings" › Client certificates. An `https` binding may have
+`clientCert` = `{mode, caPem, allowedSubjects[], allowedFingerprints[],
+requirePaths[]}` (absent = ignore, as before):
+
+- `mode`: `ignore` (default) | `accept` (clients may present a certificate)
+  | `require` (the TLS handshake fails without a certificate issued by the
+  CAs; like IIS "Require").
+- `caPem`: the trusted issuing CAs, PEM (at least one certificate, nothing
+  else, at most 100 and 256 KB). CA certificates are public and stored as
+  they are. A self-signed client certificate may be listed to trust exactly
+  that certificate. Required unless `mode` is `ignore` (422
+  `bindings[i].clientCert.caPem`).
+- `allowedSubjects`, `allowedFingerprints` (optional): when either is set,
+  a verified certificate must also match one entry: the subject common name,
+  the whole subject DN (as in `X-Client-Cert-Subject`) or a DNS, email or
+  URI subject alternative name, ignoring case; or its SHA-256 fingerprint
+  (hex; colons and spaces are removed, stored upper-case).
+- `requirePaths` (with `accept`): path prefixes answered 403 without a
+  valid certificate. TLS 1.3 has no renegotiation, so a per-path
+  requirement is a certificate accepted at the TLS level and enforced per
+  request. Entries are plain paths starting with `/` (no `\ % ? # ; :`,
+  control characters, or `.`/`..` segments; 422
+  `bindings[i].clientCert.requirePaths[j]`) and cover whole segments:
+  `/admin` and `/admin/` both cover `/admin` and `/admin/...`, not
+  `/administrator`; `/` covers everything. Request paths are compared the
+  way the most lenient application or file system behind the proxy could
+  read them: decoded, ignoring case, without empty segments (`//admin`),
+  path parameters (`/admin;x`), what follows a `:` and trailing dots and
+  spaces of segments (Windows); both as sent and with dot segments
+  resolved, so `/x/../admin` and `/admin/../x` are both covered. A path
+  that cannot be compared safely gets `400` when a certificate is missing
+  or invalid: an encoded slash or backslash (`%2F`, `%5C`, passed on
+  encoded to applications that may decode them), a backslash, control
+  characters, a double-encoded path (`%2561`) or a segment of only dots and
+  spaces other than `.` and `..`. Paths are checked again after URL rewrite
+  rules (a rewrite from `/portal/...` to `/admin/...` is covered) and, for
+  a location that strips its prefix, on the path it passes on (a site
+  mounted at `/app` sees `/app/admin` as `/admin`); a rewrite to an
+  absolute URL is not a path of this site and is not checked again.
+
+Bindings sharing an IP address and port have their own policies: the
+handshake asks for a certificate as the binding its SNI name selects says
+(a binding without a host name is the default, also for clients that send
+no SNI). Each request is checked against the binding its Host header
+selects; if that is another policy (a connection reused for another host,
+or a Host unlike the SNI name), the answer is `421 Misdirected Request`,
+which browsers retry on a new connection. With `accept`, a certificate
+that does not verify never fails the handshake. Verification (chain to
+`caPem`, client-authentication usage, validity, allow lists) is cached per
+certificate for 5 minutes.
+
+The application receives, on every request of such a binding:
+
+| Header | Value |
+|---|---|
+| `X-Client-Verify` | `SUCCESS`, `NONE` (no certificate) or `FAILED:<reason>` (`unknown issuer`, `certificate expired or not yet valid`, `certificate not for client authentication`, `certificate not allowed`, `certificate invalid`) |
+| `X-Client-Cert` | the certificate, URL-escaped PEM (like nginx `$ssl_client_escaped_cert`; `decodeURIComponent` reads it) |
+| `X-Client-Cert-Subject` | subject DN, RFC 2253 (`CN=device-1,O=Example`) |
+| `X-Client-Cert-Fingerprint` | SHA-256, upper-case hex (as the certificate store shows fingerprints) |
+
+The last three only on `SUCCESS`. Copies of all four sent by clients are
+removed from every request, on every binding: also spelled with
+underscores (`X_Client_Verify`, which IIS server variables, WSGI/ASGI and
+other CGI-style servers read as the same variable), and their names are
+removed from a client's `Connection` header, so that no proxy drops
+NodeHoster's own headers as hop-by-hop ones. The headers are set again on
+every request forwarded to an application or URL (node instances, upstreams
+and load-balanced servers, `url` locations, rewrites to absolute URLs,
+WebSocket upgrades), over HTTP/1.1, HTTP/2 and HTTP/3. Responses to
+requests that presented a certificate, verified or not, are treated like
+responses to requests with credentials by the response cache (stored only
+when marked `public`), and the cache keeps entries per binding, so bindings
+on other ports never share them. Refusals: `403` ("A client certificate is
+required." / "... not accepted here (reason)", the site's custom 403 page
+if it has one), `400` for a path that cannot be checked (see
+`requirePaths`).
+
+Plain HTTP cannot carry a certificate. When a site also has `http`
+bindings, a request over one of them for a host name one of the site's
+`https` bindings with a policy covers is refused as that policy would
+refuse a request without a certificate: every path under `require`,
+`requirePaths` under `accept` (`403` "A client certificate is required,
+which needs HTTPS."). A site with `httpsRedirect` redirects such requests
+to HTTPS instead. ACME HTTP-01 challenges are answered before this check.
+
+## OCSP stapling
+
+Certificates whose leaf names an OCSP responder (and whose file includes
+the issuer's certificate) get their OCSP response fetched and stapled to
+TLS handshakes (HTTP/1.1, HTTP/2 and HTTP/3). Responses are verified
+(signed by the issuer or a responder it delegated to with the OCSP Signing
+usage, about this certificate, not dated in the future, not past
+`nextUpdate`), saved as `data/certs/<id>/ocsp.der` so that a restart
+staples at once without the responder, refreshed halfway to `nextUpdate`,
+retried after 1, 2, 4... minutes (at most an hour) on failure, and dropped
+two minutes before `nextUpdate` if no fresh one came. Only `good` answers
+are stapled. Let's Encrypt ended OCSP in 2025: its certificates name no
+responder and show `state: "none"` (nothing to staple), as do self-signed
+ones.
+
+`OCSPStatus` = `{state, responder?, mustStaple?, stapled, thisUpdate?,
+nextUpdate?, revokedAt?, revocationReason?, lastCheck?, nextCheck?,
+lastError?}`; `state`: `none` | `pending` | `good` | `revoked` | `unknown` |
+`error`. Events: `cert.revoked` (error; an ACME certificate with automatic renewal
+is requested again at once, with a new key) and `cert.stapling` (warning: a
+Must-Staple certificate has no valid response to staple). Both reach
+webhooks and the status icon.
+
+## HTTP/3
+
+`Settings.tls.http3` (off by default; also `PUT /api/tls`) opens a UDP
+(QUIC) listener on the same address and port as every HTTPS listener.
+HTTP/1.1 and HTTP/2 responses on those ports carry `Alt-Svc: h3=":443";
+ma=86400`; requests over HTTP/3 go through the same pipeline, with the same
+SNI certificate choice, client certificates and OCSP staples (QUIC always
+uses TLS 1.3; 0-RTT is off, because early data can be replayed). A binding
+to a specific address on a port whose listener takes all addresses is not
+advertised: over QUIC on Windows the address a request arrived on is not
+known, so another binding could answer. `http3Listeners` lists the open
+UDP listeners (`udp :443`) and failures (`FAILED udp :443: ...`, also a
+`server.listen` event); HTTPS keeps working when a UDP port cannot be
+opened. Access logs show the protocol (`HTTP/3.0`), log shipping has
+`access.protocol`, and Prometheus counts requests per protocol. Setup's
+Windows Firewall rule allows the program, UDP included; firewalls in front
+of the server must allow UDP on the HTTPS ports.
 
 ## Automatic IP banning
 
@@ -517,6 +913,128 @@ addresses, or a browser on the server itself).
 `Ban` = `{address, reason, manual, strikes, createdAt, expiresAt?,
 createdBy?}`. Server-wide only: site-scoped callers get 403. Manual bans and
 unbans are audited (`ban.add`, `ban.remove`).
+
+`ipBan.wafBlocks` (default 5 in 60 s) counts requests a site's web
+application firewall blocked (below); detections in detect mode never count,
+nor do requests a browser made for another site's page
+(`Sec-Fetch-Site: cross-site`: an image or link elsewhere whose URL carries
+an attack string would otherwise get that page's visitors banned). Anyone
+can send that header, which only spares the sender a ban: the request is
+still blocked.
+
+## Web application firewall
+
+Per site, `routing.waf` = `{mode, paranoiaLevel?, anomalyThreshold?,
+inspectBodyKB?, exclusions?[]}`:
+
+- `mode`: `off` | `detect` (log what would be blocked, block nothing) |
+  `block`. Absent (sites saved before the firewall existed) is off. A site
+  created without one gets the server's defaults, `Settings.waf` =
+  `{defaultMode, defaultParanoiaLevel, defaultAnomalyThreshold,
+  eventRetentionDays}` (defaults `detect`, 1, 5, 30), except redirect sites
+  and background workers, which start off (a worker cannot have it on).
+- Rules (IDs in the OWASP CRS ranges: 913 scanners, 920 protocol, 930 path
+  traversal/LFI, 931 RFI, 932 command injection, 933 PHP, 934 Node.js, 941
+  XSS, 942 SQL/NoSQL injection, 944 Java) each belong to a paranoia level
+  (1-3, default 1) and add their severity to the request's anomaly score:
+  critical 5, error 4, warning 3, notice 2. A request whose score reaches
+  `anomalyThreshold` (default 5: one critical match) is blocked (or
+  detected). Each rule counts once per request; inspection stops once the
+  threshold is reached.
+- Inspected, after decoding (repeated URL decoding, `%uXXXX`, HTML
+  entities, JavaScript escapes, overlong UTF-8, full-width forms,
+  lowercase, NUL removal; SQL comments for the SQL rules): the path, query
+  string arguments (names and values, parsed leniently), cookies,
+  `User-Agent` and `Referer` (injection rules on these from paranoia level
+  2), every other header but `Authorization` for Log4Shell, Shellshock and
+  OGNL, uploaded file names, and bodies up to `inspectBodyKB` (default 128,
+  at most 4096) that are `application/x-www-form-urlencoded`, JSON (keys
+  as argument names, dotted: `post.body`, cut at 256 characters; nested
+  more than 64 deep, rule 920205 fires and the body is inspected as
+  text), `multipart/form-data` (fields, whatever their `Content-Type`,
+  and file names; file contents are not inspected), text (`text/*`,
+  GraphQL) or, from paranoia level 2, XML. A `Content-Type` that does not
+  parse scores 920190 and the body is inspected as text. `gzip` and
+  `deflate` bodies (`Content-Encoding`, as Express's body-parser accepts
+  them) are inflated for inspection, up to `inspectBodyKB` of inflated
+  data and no further (a zip bomb costs no more than any body), and
+  passed on as sent. The rest of a body, and binary bodies, stream to the
+  site uninspected; what was read is replayed to it first, so it receives
+  every byte.
+- Inspection fails closed. A request that cannot be inspected completely
+  counts as reaching the threshold whatever its score (blocked in block
+  mode, a `detected` event in detect mode): more than 2048 argument names
+  and values (query string and body) or more than 1024 headers and
+  cookies (rule 920210), more work than the per-request budget (920220),
+  or a body in another content coding (Brotli, zstd, several codings:
+  920240). Excluding 920210 has every value inspected however many there
+  are; excluding 920240 lets such bodies through uninspected; 920220
+  cannot be excluded.
+- Bodies held for inspection share a server-wide budget of 64 MB. When it
+  is spent (many large bodies arriving slowly at once), a site in block
+  mode answers `503` with `Retry-After: 1` (no event, no strike towards a
+  ban) and one in detect mode passes the body on uninspected.
+- `exclusions[]` = `{path?, ruleIds?[], categories?[], args?[], cookies?[],
+  headers?[], comment?}`: under `path` (absent = the whole site), with
+  `args`/`cookies`/`headers` (names, case-insensitive, a trailing `*`
+  matches a prefix) those are not inspected by the listed rules and
+  categories (all rules if none); without names the listed rules and
+  categories are off; with nothing listed the firewall is off under
+  `path`. `path` is a prefix of whole segments (`/api` covers `/api` and
+  `/api/x`, not `/api-admin`; a trailing `/` makes no difference),
+  matched without regard to case against the request's path both as sent
+  (repeated slashes collapsed) and with its dot segments resolved:
+  `/hooks/../login` is not under `/hooks/`, nor is `/login/../hooks/x`.
+  Categories: `sqli`, `xss`, `lfi`, `rfi`, `rce`, `nodejs`, `php`,
+  `java`, `scanner`, `protocol`.
+
+It runs after IP restrictions, maintenance mode, rate limiting, basic
+authentication and the body size limit, and before URL rewriting (it sees
+what the client sent). A blocked request gets the site's 403 error page,
+or the built-in one showing the request ID, and an `X-Request-Id` header.
+Blocks count towards automatic IP banning (`ipBan.wafBlocks`) unless the
+site is exempt (`routing.banning.exempt`) or the request was a browser's
+cross-site one (above). A mounted site (a location of kind `site`) is
+covered by the firewall of the site it is mounted in and by its own: its
+mode and exclusions apply to the path it sees (after `stripPrefix`), its
+events and counters are its own. A deployment slot uses its site's
+firewall; its traffic is counted and its events saved as the site's, with
+`slot` set.
+
+Blocked and detected requests are saved as `WAFEvent` = `{seq, id, time,
+siteId, slot?, action: blocked|detected, clientIp, method, host, path,
+userAgent?, score, threshold, paranoiaLevel, matches[]}` with
+`WAFMatch` = `{ruleId, category, severity, score, message, in:
+path|arg|argName|cookie|header|file|body|request|query, name?, snippet?}`.
+`path` has no query string, and path segments that look like tokens (24
+or more base64 or hex characters, letters and digits mixed) read
+`[redacted]`. `snippet` is the matched text (decoded, at most 120 bytes,
+control characters escaped), `[redacted]` for arguments, cookies and
+headers whose names look like passwords, tokens or session IDs (`sid`,
+`*.sid` such as Express's `connect.sid`, `PHPSESSID`, `JSESSIONID`,
+`ASP.NET_SessionId`, anything with `session`...); in a body inspected as
+text, a match following such a field is `[redacted]` and such fields'
+values within the snippet are too. `path`, `host`, `userAgent` and
+`snippet` are the client's text: show them as text, never as markup or
+links. Events are kept
+`eventRetentionDays`, at most 100,000; at most 200 a second are saved (the
+rest are counted, `nodehoster_waf_events_dropped_total`). Blocks raise
+`security.waf` events (warning; at most 10 a minute, the rest summarized).
+
+| Method | Path | Role | Response |
+|---|---|---|---|
+| GET | `/api/waf/rules` | any signed-in user | `WAFRuleInfo[]` = `{id, category, severity, score, paranoiaLevel, message}` |
+| GET | `/api/waf/events?siteId=&action=&ip=&rule=&category=&requestId=&since=&before=&limit=` | viewer (site-scoped: their sites) | `WAFEvent[]`, newest first; `before` is a `seq` for the next page, `limit` ≤ 1000 (100) |
+| GET | `/api/sites/{id}/waf/events?…` | viewer on the site | the same, for one site |
+| GET | `/api/sites/{id}/waf` | viewer on the site | `{config: WAFConfig, stats: {inspected, blocked, detected, matches: {category: n}}}`; counters since the service started |
+| PUT | `/api/sites/{id}/waf` | admin | body `WAFConfig`; replaces the site's firewall, the rest of the site unchanged; audited `waf.update` |
+| POST | `/api/sites/{id}/waf/exclusions` | admin | body `WAFExclusion`; 201 `{config, stats}`, 409 if the site already has it; audited `waf.exclusion.add` |
+
+`/metrics` adds, for sites with the firewall on,
+`nodehoster_waf_inspected_total{site,type}`,
+`nodehoster_waf_requests_total{site,type,action="blocked|detected"}` and
+`nodehoster_waf_rule_matches_total{site,type,category}`, a site's
+deployment slots included.
 
 ## Mail (SMTP server)
 
@@ -695,6 +1213,102 @@ is added.
 | GET | `/api/logshipping/status` | | `[{id, name, type, enabled, queued, sent, dropped, failed, lastError?, lastErrorAt?, lastSuccess?}]` |
 | POST | `/api/logshipping/test` | `LogTarget` (masked secrets are taken from the saved target with the same `id`) | 204, or 502 `{error}` with the collector's answer |
 
+## Secret stores
+
+`Settings.secretStores[]` (`SecretStore`), admin only: external secret
+managers that environment variables and git tokens take their values from.
+`{id, name, type: vault|infisical|bitwarden, url, caCert?, cacheTtlSec,
+watchIntervalSec, vault | infisical | bitwarden}`:
+
+- `name` is what references use (letters, digits, `.`, `_`, `-`; unique,
+  not case-sensitive). A store that a site references cannot be removed or
+  renamed, and its type must understand the references (422 on
+  `secretStores`, naming the site and the variable).
+- `url`: Vault/OpenBao's address (required); for Infisical and Bitwarden
+  `""` is their cloud, else a self-hosted server's base URL. It (like
+  `apiUrl` and `identityUrl`) must be `https://`: NodeHoster sends the store
+  its credentials; `http://` is only accepted for `localhost`, `127.0.0.0/8`
+  and `::1`. A store's redirects are followed only to the same scheme, host
+  and port: a redirect to another server fails, since the request's
+  credentials (headers, and bodies that a 307/308 sends again) would go
+  along.
+- `caCert`: PEM certificates trusted for this store besides the system's.
+  TLS verification cannot be turned off.
+- `cacheTtlSec` (default 300, 10–86400): how long a value read is reused.
+  `watchIntervalSec` (0 = off, else 60–86400): how often the secrets that
+  running sites' and deployment slots' instances started with are read
+  again; a site or slot whose value changed is recycled (rolling, no
+  downtime) with a `secret.rotated` event. Production and each slot are
+  watched for their own variables (a slot's: production's shared ones and
+  its own) and recycled on their own.
+- `vault: {auth: token|approle, token, roleId, secretId, authMount
+  (default approle), namespace, mount (default secret), kvVersion: 1|2
+  (default 2)}` — `token` and `secretId` are secrets. AppRole tokens are
+  renewed at half their TTL and replaced by a new login when renewal is
+  capped by the max TTL or refused; a renewable token given directly is
+  renewed too.
+- `infisical: {clientId, clientSecret, projectId, environment}` — a
+  machine identity's Universal Auth credentials (`clientSecret` secret);
+  `environment` is the slug (`prod`).
+- `bitwarden: {accessToken, region: us|eu, apiUrl?, identityUrl?}` — a
+  Secrets Manager machine account's access token (secret; format
+  `0.<id>.<secret>:<key>`, checked when saved). Without `url`, `region`
+  picks `api.bitwarden.com`/`identity.bitwarden.com` or the `.eu` hosts;
+  with `url`, `<url>/api` and `<url>/identity`. Vaultwarden does not
+  implement Secrets Manager.
+
+Credentials are sealed with the master key, masked as `__SECRET__` in
+responses (send the mask back to keep them, as long as the store's server
+is unchanged: a store, or a connection test, whose `url` scheme, host or
+port, Bitwarden `region`, `apiUrl` or `identityUrl` differs from the saved
+store's needs its credentials entered again, 422 on `….url`; encrypted
+values are refused as credentials), carried by configuration
+backups like other secrets (portable with a passphrase; restoring onto a
+server that has a store of the same name and type keeps that store's
+credentials when the archive's cannot be read).
+
+References: `EnvVar.from: {store, ref}` (site, task and deployment slot
+variables, and the variables previews are given, `deploy.previews.env`;
+the variable then has no `value` and `secret` is false; variables
+NodeHoster sets itself cannot be one: `PORT`, `NODE_APP_INSTANCE`,
+`ASPNETCORE_URLS`, `NODE_OPTIONS` and `NODEHOSTER_*`) and
+`deploy.git.tokenFrom: {store, ref}` (then `deploy.git.token` must be
+empty). Text form, as NodeHoster Manager and the command line show
+it: `secretref:<store>/<ref>`. `ref` is, per store type:
+
+| Store | `ref` | Example |
+|---|---|---|
+| vault | `<path>#<key>`, path relative to the mount | `app/prod#DB_PASSWORD` |
+| infisical | secret name, optionally in a folder | `DB_PASSWORD`, `/backend/DB_PASSWORD` |
+| bitwarden | secret ID (UUID) | `3b3f5c1e-8f8a-4a3e-9c1e-2b7f0a6d4c10` |
+
+Saving a site checks that each store exists and each `ref` has its
+store's syntax (422 on `node.env[i].from.store`, `….from.ref`,
+`tasks[i].env[j].from.ref`, `slots[i].env[j].from.store`,
+`deploy.previews.env[j].from.ref`, `deploy.git.tokenFrom.ref`).
+
+Values are read when an instance starts (every start, restart and
+recycle), a task runs and a deployment builds (install and build commands,
+git clone), kept in memory only, and never returned by any endpoint. A
+value younger than the store's `cacheTtlSec` is reused. When the store
+cannot be read, the last value read is used (event `secret.stale`,
+warning, at most every 10 minutes per store) — except when the store
+refuses NodeHoster's credentials or access to the secret (HTTP 401/403,
+which can mean they were revoked): then the last value is used only for
+an hour after it was read (event `secret.failed`, error, at most every 10
+minutes per store), after which it is forgotten and starts fail. A secret
+the store says does not exist, or one never read, fails the start (event `secret.failed`,
+error, with the variable and the store's explanation; at most every 10
+minutes per site and kind of start). A recycle that fails this way keeps
+the running instances.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/secret-stores` | | `[{name, type, cached, references, lastSuccess?, lastError?, lastErrorAt?, tokenExpires?}]` (admin) |
+| POST | `/api/secret-stores/test` | `{store: SecretStore, ref?}` (masked credentials are the saved store's with the same `id`) | `{ok, detail?, error?}` (admin, audited `secretstore.test`): signs in (Vault: token lookup; Infisical: login and a value-less listing of the environment; Bitwarden: login and decryption of the organization key) and reads `ref` if given, reporting its length only |
+| POST | `/api/secret-stores/resolve` | `{store, ref}` | `{ok, detail?, error?}` (admin, audited `secretstore.resolve`): reads the reference from the saved store now; the value is never returned |
+| POST | `/api/sites/{id}/secrets/check` | | `[{field, variable?, task?, slot?, preview?, ref: {store, ref}, ok, error?}]` (operator on the site): reads every reference of the site now, its slots' and its preview settings' included |
+
 ## Log search
 
 Searches read the current file backwards, then the rotated copies
@@ -715,12 +1329,244 @@ now such as `15m`, `24h`), `limit` (default 200, at most 1000), `cursor`.
 | GET | `/api/sites/{id}/logs/search?source=app\|access&stream=…` | viewer on the site | `{lines: LogLine[], truncated, cursor?, scannedBytes}` |
 | GET | `/api/server/logs/search?level=warning` | admin | same; `LogLine.s` is the line's level, `m` the whole line |
 
+## Resource alerts
+
+Like Azure Monitor metric alerts (or a Prometheus rule with `for:`): a
+rule fires when a metric stays past its limit for `forMinutes`, and
+resolves once it has been back within the limit for the recovery period.
+Rules are evaluated every 15 s from the metrics NodeHoster already keeps;
+nothing is added to the request path but one counter per request (a
+response time histogram for the 95th percentile).
+
+**Rules.** `Settings.alerts` (admin) = `{enabled, siteRules[], serverRules[],
+recoveryMinutes, emailTo[]}`; off by default, with a starting set of rules
+(settings saved before alerts existed get it too). A rule is
+`{id, metric, threshold, forMinutes, severity: warning|critical,
+windowMinutes?, minRequests?, repeatHours?, disabled?}`; an `id` left out is
+made from the metric (`cpu`, `cpu-2`…; `site-cpu` on a site). Rule IDs are
+unique across both lists. `recoveryMinutes` (1–60, default 2) is the
+hysteresis that keeps a value hovering at the limit from firing again and
+again. `forMinutes` 0 fires on the first evaluation past the limit;
+`repeatHours` (0–168) sends a reminder while it fires.
+
+| Metric | Of | Value |
+|---|---|---|
+| `cpu` | site | CPU of all instances, % of one core (as the site's Overview shows it) |
+| `instanceCpu` | site | the busiest instance's CPU, % of one core |
+| `memory` | site | memory of all instances, MB |
+| `memoryPercent` | site | the largest instance, % of its memory limit (the lower of `limits.memoryLimitMB` and `recycle.memoryLimitMB`; sites with neither are skipped) |
+| `eventLoopLag` | site | the worst instance's event-loop lag, ms (sites with `agentEnabled`) |
+| `errorRate` | site | 5xx answers, % of the requests of the last `windowMinutes` (1–30, default 5) |
+| `latency` | site | average response time over the window, ms |
+| `latencyP95` | site | 95th percentile response time over the window, ms, estimated from a histogram (buckets 5, 10, 25, 50, 100, 250, 500, 750 ms, 1, 1.5, 2, 3, 5, 10, 30, 60 s) |
+| `instancesDown` | site | configured instances not ready and healthy (threshold 0: any) |
+| `serverCpu` | server | machine CPU, % |
+| `serverMemory` | server | machine memory in use, % |
+| `diskFree` | server | free space on the emptiest drive holding the data directory, the sites folder or a site's folder, % (fires **below** the threshold) |
+
+The rate metrics count a window with fewer than `minRequests` (default
+20) requests as within the limit: one failure out of one request is not a
+100% error rate. Node.js metrics apply to node and worker sites, request
+metrics to sites that answer HTTP (not workers); a server-wide rule a site
+cannot be measured on is skipped for it. Certificate expiry is not a rule:
+`certExpiryWarnDays` and `cert.expiring` cover it.
+
+**Per site.** `Site.alerts` = `{disabled?, rules[]?}`: `disabled` opts the
+site out of site alerts altogether; a rule with the `id` of a server-wide
+site rule replaces it for this site (`disabled: true` turns it off here);
+other rules are the site's own. Saved with the site (admin), validated
+against its type.
+
+**What counts as sustained.** Each evaluation finds a rule past its limit,
+within it, or with nothing to measure. A condition fires once every
+evaluation for `forMinutes` found it past the limit, except those with
+nothing to measure; a gap of more than a minute between evaluations (the
+service was stopped or stalled) starts the period over. A stopped (or
+stopping) site is within every limit, so its alerts resolve; a starting
+site has nothing to measure: a pending condition neither advances nor
+resets, a firing alert counts it as clear. A failed site (rapid-fail
+protection gave up) only has instances down.
+
+**Across a restart.** Firing alerts are stored and come back firing,
+without being notified again; they resolve (notified) once their condition
+has been clear for the recovery period, or at the first evaluation when
+their rule, their site or alerts as a whole are gone ("site deleted",
+"rule removed or turned off", "alerts turned off"). Pending conditions are
+not stored: their period starts over.
+
+**Notifications.** `alert.firing` (level `warning`, or `error` for critical
+alerts; reminders too) and `alert.resolved` (`info`) events, which reach the
+event log, webhooks (Slack, Teams, Discord, generic), log shipping and the
+status icon (critical alerts not silenced turn it amber). The message names
+the value, how long and the limit: `CPU 93% (instance 1) for 10 min (limit
+90%)`, `Resolved after 25 min: CPU 40% (instance 1) (limit 90%)`; the event's
+site gives the rest (`[api.example.com] …` in chat). An evaluation delivers
+at most 10 notifications, critical ones first; one more summarizes the
+others. With `emailTo`, each evaluation's notifications are also one
+e-mail, queued on the built-in SMTP server (delivered directly or through
+its smart host, whether or not it listens) from `nodehoster@<mail host
+name>`.
+
+**Silences.** A silenced alert sends no notification and no reminder, and
+its resolution is only notified if its firing was. Silencing for some
+minutes also covers the rule's next alerts on the same site until the time
+is up (a flapping condition stays quiet); `minutes: 0` acknowledges the
+alert: silent until it resolves. Lifting the silence of an alert that
+fired unnotified notifies it at the next evaluation.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/alerts?siteId=` | viewer (filtered) | | `{enabled, firing: Alert[], pending: Alert[]}` — critical first, then oldest |
+| GET | `/api/alerts/history?siteId=&server=1&limit=100` | viewer (filtered) | | `Alert[]` that fired, newest first (at most 1000; `server=1`: server alerts only) |
+| POST | `/api/alerts/{id}/silence` | operator on the alert's site (server alerts: server operator) | `{minutes, note?}` | `Alert` (0–43200 minutes; 409 when it has resolved) |
+| DELETE | `/api/alerts/{id}/silence` | same | | `Alert` |
+| GET | `/api/sites/{id}/alert-rules` | viewer on the site | | `{enabled, defaults: AlertRule[], recoveryMinutes}` — the server-wide site rules, for the site's Alerts tab |
+
+`Alert` = `{id, ruleId, siteId?, slot?, siteName?, metric, severity, threshold,
+forMinutes, state: pending|firing|resolved, value, peak, detail?, message,
+since, firedAt?, resolvedAt?, resolveNote?, notified, lastNotifiedAt?,
+silence?: {until?, by, at, note?}}`. Site-scoped callers see their sites'
+alerts only, never server alerts (`siteId` of a site they cannot see: 404).
+Each running [deployment slot](#deployment-slots) is watched by the site's
+rules as a subject of its own: its alerts carry `slot` and a `siteName`
+such as `shop (staging)`, and their events start with `slot staging:`. A
+stopped slot raises none; the slot a swap is preparing is not judged until
+the swap ends (what was pending or firing stays); removing the slot ends
+its alerts (`resolveNote` `slot removed`). Previews raise no alerts.
+History is kept as long as events (`logRetentionDays`), at most 5,000
+resolved alerts. Silences are audited (`alert.silence`, `alert.unsilence`).
+
 ## Prometheus
 
 `GET /metrics` on the admin listener (requires a bearer token) exposes
-`nodehoster_requests_total{site,code}`, `nodehoster_instance_memory_bytes`, etc.
-A site-scoped (or site-restricted) token sees only its sites and no
-certificate metrics.
+`nodehoster_requests_total{site,code}`,
+`nodehoster_requests_by_protocol_total{site,protocol}` (`HTTP/1.1`, `HTTP/2`,
+`HTTP/3`), `nodehoster_instance_memory_bytes`, etc.,
+and `nodehoster_alert_firing{rule,metric,severity,site,silenced} 1` for each
+resource alert firing (`site=""` for the server's).
+A site-scoped (or site-restricted) token sees only its sites (and their
+alerts) and no certificate metrics.
+
+## Server connections (multi-server)
+
+Like IIS Manager's "Connect to a Server": a server keeps connections to
+other NodeHoster servers, and the web console operates any of them through
+this one. A connection is `ServerConnection` = `{id, name, url, token,
+fingerprint?, minRole, createdAt, updatedAt}`:
+
+- `url`: the remote web console's base URL (`https://web02:8484`; a path
+  prefix is kept, a trailing `/api` dropped). `https://` is required, except
+  to this computer (`http://127.0.0.1…`, `localhost`).
+- `token`: an API token created on the remote server (secret: sealed,
+  read as `__SECRET__`, travels in configuration backups like every other
+  secret). Sending the mask back keeps it, unless the URL now points to
+  another host (scheme, host or port changed): then it must be entered
+  again (422 on `token`), so a stored token is never sent to a server it
+  was not made for. Use a dedicated token, restricted to the role (and
+  sites) this server's users need there.
+- `fingerprint`: pins the remote certificate (SHA-256 of the leaf, 64 hex
+  digits; colons, spaces and a `SHA256:` prefix are accepted). Without it
+  the certificate must verify against the trusted roots for the host name.
+  With it, that certificate and no other is accepted. Verification is
+  never simply switched off.
+- `minRole`: the least role a user of this server needs to see and use the
+  connection: `admin` (default), `operator` or `viewer`. Site-scoped users
+  and site-restricted tokens never can.
+
+| Method | Path | Role | Body | Response |
+|---|---|---|---|---|
+| GET | `/api/servers` | viewer | | `ServerView[]` (`ServerConnection` + `health`), only those the caller's role may use |
+| GET | `/api/servers/{id}` | viewer | | `ServerView`; 404 for one the caller may not use |
+| POST | `/api/servers/{id}/check` | viewer | | `ServerView` after checking it now |
+| POST | `/api/servers` | admin | `ServerConnection` | 201 `ServerView` (audited `server.add`) |
+| PUT | `/api/servers/{id}` | admin | `ServerConnection` | `ServerView` (audited `server.update`) |
+| DELETE | `/api/servers/{id}` | admin | | 204 (audited `server.remove`) |
+| POST | `/api/servers/test` | admin | `{id?, url, token, fingerprint?}` | `ServerTestResult` |
+| any | `/api/servers/{id}/proxy/<path>` | viewer (and `minRole`) | as the remote endpoint | the remote `/api/<path>`'s answer |
+
+`health` (`ServerHealth`) is refreshed every 30 s (8 servers at a time, 10 s
+each), and right after a connection is added or changed: `{reachable,
+error?, checkedAt?, latencyMs, since?, version?, commit?, hostname?, os?,
+cpuPercent, cpuCount, memTotal, memUsed, sites, running, degraded, failed,
+stopped, user?, role?, roleLimits}` (the sites the token can see, by state;
+who the token is there; whether the server applies
+`X-NodeHoster-Role-Limit`, known once `user` is set). `checkedAt` absent:
+not checked yet. A server that answers but refuses the token is not
+reachable. After two failed checks in a row a `remote.down` event (warning)
+is raised, and `remote.up` (info) when it answers again, once each.
+
+`POST /api/servers/test` is for setting a connection up (trust on first
+use): `ServerTestResult` = `{certificate?: {fingerprint, subject, issuer,
+dnsNames, notBefore, notAfter, verified, verifyError?}, trusted, health}`.
+The certificate is read without trusting it; the token is only sent when
+the connection is `trusted` as configured (the certificate verifies, or
+matches `fingerprint`), and `health` is then what a check found. With `id`
+and a masked token, the stored token is used (same host only).
+
+**The proxy.** `/api/servers/{id}/proxy/<path>?<query>` is forwarded to
+`<url>/api/<path>?<query>` with the connection's token, streaming both
+ways: event streams (`/stream`, log tails) stay open, and uploads (a zip
+deployment, a restore) are passed through, up to 8 GiB. Only these request
+headers travel: `Accept`, `Accept-Language`, `Content-Type`,
+`Last-Event-ID`, `Range`, `If-None-Match`, `If-Modified-Since`,
+`X-Backup-Passphrase`, plus `Authorization: Bearer <token>` and
+`X-NodeHoster-Role-Limit` (below); the caller's cookies, `Authorization`,
+CSRF and forwarding headers never do. Only `Content-Type`,
+`Content-Length`, `Content-Disposition`, `Content-Range`, `Accept-Ranges`,
+`Last-Modified`, `ETag` and `X-Accel-Buffering` come back (never
+`Set-Cookie`); this server's own security and caching headers apply, with
+`Content-Security-Policy: sandbox; default-src 'none'` and
+`X-Content-Type-Options: nosniff` instead of the console's policy, so
+nothing a remote server sends runs as a page of this server. Rules:
+
+- The path stays under the remote `/api`: segments `.` and `..`, a
+  backslash or NUL (also percent-encoded) and empty segments are refused
+  (400). Escapes such as `%2F` inside a segment travel as they are.
+- The remote account endpoints are refused (403): `auth/*` except
+  `auth/me`, and `tokens`. Nobody mints tokens or changes the account
+  behind a connection.
+- The CSRF rule applies to the local request as usual. A caller whose role
+  is `viewer` only reads (`GET`/`HEAD`; 403 otherwise).
+- The caller's role travels as `X-NodeHoster-Role-Limit`: a server of this
+  version or later narrows the request's access to at most that role, so
+  a local operator cannot act as an administrator there even with an
+  administrator's token (`auth/me` shows the capped access). Any client
+  may send the header to narrow its own access; an unknown role is 400.
+  The server answers `X-NodeHoster-Role-Limit-Applied: <role>` when it
+  applied it, and refuses a limited request to the account endpoints
+  (`auth/*` other than `auth/me`, `tokens`, and a change to the token's
+  own user through `/users/{id}`) with 403.
+- An older remote server ignores the header, which would give the token's
+  full rights to anyone: only administrators may use it. For others the
+  proxy answers 403 (`… is too old for role limits`) when the last check
+  found the server does not echo the limit (a connection not checked yet
+  is checked first; 502 when that fails), and 502 when a successful
+  answer does not carry the echo.
+- Only the media types the API answers pass as they are:
+  `application/json`, `text/event-stream`, `text/plain`,
+  `application/octet-stream`, `application/zip`, `application/gzip`,
+  `application/x-pkcs12`, `message/rfc822`. Any other (or none, with a
+  body) becomes `application/octet-stream`, and every type but JSON, event
+  streams and plain text is sent with `Content-Disposition: attachment`.
+- The remote server's 401 becomes a 502 of this server (the token was
+  revoked or expired), so that the console does not take it for its own
+  session ending; redirects are not followed (502). Other answers,
+  including 404 `no such endpoint` from an older version, pass through.
+- Timeouts: 10 s to connect and for the TLS handshake, 5 minutes for the
+  answer's headers, and a response other than an event stream ends when
+  the remote server sends nothing for 2 minutes (or past 16 GiB). An event
+  stream ends within 2 s of the caller losing the right to use the
+  connection (role changed, connection removed or restricted, session or
+  token ended).
+- Every proxied request other than `GET`/`HEAD` is in this server's audit
+  log: `server.proxy`, the connection's name as target and `METHOD
+  /api/<path> (status)` as detail. The remote server audits it too, as the
+  token's user.
+
+The connections are kept apart from `Settings` (saving settings never
+touches them) and are part of configuration backups (`servers` in the
+export; a backup from before connections existed leaves this server's in
+place when restored).
 
 ## Local endpoints (desktop manager, command line)
 
@@ -747,8 +1593,15 @@ service is stopped.
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/status` | `{version, startedAt, adminUrl?, adminError?, sites: [{id, name, type, autoStart, state, message?, instances, ready}]}` |
-| GET | `/status/stream` | **Server-Sent Events**: `event: summary` (as `/status`) every 3 s; `event: notice` `{time, level, type, site, message}` for crashes, rapid-fail, failed health checks and deployments, certificate problems and unreachable upstreams |
+| GET | `/status` | `{version, startedAt, adminUrl?, adminError?, sites: [{id, name, type, autoStart, state, message?, instances, ready}], alerts?: [{id, siteId?, site?, severity, message, silenced?}]}` (`alerts`: resource alerts firing) |
+| GET | `/status/stream` | **Server-Sent Events**: `event: summary` (as `/status`) every 3 s; `event: notice` `{time, level, type, site, message}` for crashes, rapid-fail, failed health checks and deployments, certificate problems, unreachable upstreams and resource alerts firing or resolved |
 
 `adminError` is set when the web console could not start (its port is in
 use, or its certificate is missing): the server keeps running without it.
+
+What the status pipe tells every interactive user of the computer is what
+the icon shows: this server's sites and their state, its resource alerts,
+its web console's URL. A connected server going down (`remote.down`) is a
+notice naming the server only (`Server web02 is unreachable`), without its
+URL or the error, which the web console shows those who may use the
+connection. Nothing about the connections or their tokens travels there.

@@ -121,6 +121,10 @@ func (a *API) siteLogSearch(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	slot, bySlot, ok := querySlot(w, r, s)
+	if !ok {
+		return
+	}
 	var path string
 	src := r.URL.Query().Get("source")
 	switch src {
@@ -134,12 +138,12 @@ func (a *API) siteLogSearch(w http.ResponseWriter, r *http.Request) {
 		q.Parse = func(line string) (time.Time, string, bool) {
 			l, ok := logsearch.ParseApp(line)
 			if !ok {
-				return time.Time{}, line, stream == "" || stream == "all"
+				return time.Time{}, line, (stream == "" || stream == "all") && !bySlot
 			}
-			return l.Time, l.Text, stream == "" || stream == "all" || l.Stream == stream
+			return l.Time, l.Text, (stream == "" || stream == "all" || l.Stream == stream) && (!bySlot || l.Slot == slot)
 		}
 	case "access":
-		path = a.c.Proxy.AccessLogPath(s.ID)
+		path = a.c.Proxy.AccessLogPath(model.SlotKey(s.ID, slot))
 		q.Parse = func(line string) (time.Time, string, bool) { return logsearch.AccessTime(line), line, true }
 	default:
 		a.fail(w, &model.ValidationError{Field: "source", Message: "app or access"})
@@ -154,7 +158,7 @@ func (a *API) siteLogSearch(w http.ResponseWriter, r *http.Request) {
 	for _, l := range res.Lines {
 		if src != "access" {
 			if p, ok := logsearch.ParseApp(l.Text); ok {
-				out.Lines = append(out.Lines, model.LogLine{Time: p.Time, Stream: p.Stream, Instance: p.Instance, Text: p.Text})
+				out.Lines = append(out.Lines, model.LogLine{Time: p.Time, Stream: p.Stream, Instance: p.Instance, Text: p.Text, Slot: p.Slot})
 				continue
 			}
 			out.Lines = append(out.Lines, model.LogLine{Time: l.Time, Stream: "system", Instance: -1, Text: l.Text})

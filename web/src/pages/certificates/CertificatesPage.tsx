@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, BadgeCheck, Download, FileKey, MoreHorizontal, Pencil, RefreshCw, ShieldPlus, Trash2, Upload } from 'lucide-react';
+import { AlertCircle, BadgeCheck, Download, FileKey, MoreHorizontal, Pencil, RefreshCw, ShieldCheck, ShieldPlus, Trash2, Upload } from 'lucide-react';
 import { certsApi, settingsApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -18,6 +18,8 @@ import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { formatDate, relativeTime } from '@/lib/format';
 import { AcmeDialog, EditCertDialog, ExportDialog, ImportDialog, SelfSignedDialog } from './CertDialogs';
+import { OcspBadge } from './OcspBadge';
+import { ocspBadge } from '@/lib/tls';
 
 const sourceTone: Record<string, Tone> = { acme: 'accent', imported: 'blue', selfsigned: 'gray' };
 const sourceLabel: Record<string, string> = { acme: 'ACME', imported: 'Imported', selfsigned: 'Self-signed' };
@@ -48,6 +50,17 @@ export function CertificatesPage() {
       void qc.invalidateQueries({ queryKey: qk.certs });
     },
     onError: (e) => toast.error('Could not renew certificate', e),
+  });
+
+  const checkOcsp = useMutation({
+    mutationFn: (c: CertificateView) => certsApi.checkOcsp(c.id),
+    onSuccess: (r) => {
+      const b = ocspBadge(r.ocsp);
+      if (r.ocsp?.state === 'good' || r.ocsp?.state === 'none') toast.success(`OCSP for ${r.name}: ${b?.label ?? '—'}`, b?.detail);
+      else toast.error(`OCSP for ${r.name}: ${b?.label ?? '—'}`, b?.detail);
+      void qc.invalidateQueries({ queryKey: qk.certs });
+    },
+    onError: (e) => toast.error('Could not check OCSP', e),
   });
 
   const del = useMutation({
@@ -139,6 +152,7 @@ export function CertificatesPage() {
                 <Th>Expires</Th>
                 <Th>Status</Th>
                 <Th>Auto-renew</Th>
+                <Th>OCSP</Th>
                 <Th>Used by</Th>
                 <Th className="w-10" />
               </tr>
@@ -181,6 +195,9 @@ export function CertificatesPage() {
                       <StateBadge state={c.status} />
                     </Td>
                     <Td>{c.autoRenew ? <Badge tone="green">on</Badge> : <span className="text-xs text-zinc-500">off</span>}</Td>
+                    <Td>
+                      <OcspBadge status={c.ocsp} />
+                    </Td>
                     <Td className="max-w-[12rem]">
                       {(c.usedBy ?? []).length === 0 ? (
                         <span className="text-xs text-zinc-400">Not used</span>
@@ -207,6 +224,12 @@ export function CertificatesPage() {
                               disabled: c.status === 'pending',
                               onSelect: () => renew.mutate(c),
                             },
+                            {
+                              label: 'Check OCSP now',
+                              icon: <ShieldCheck />,
+                              hidden: !c.ocsp || c.ocsp.state === 'none',
+                              onSelect: () => checkOcsp.mutate(c),
+                            },
                             { label: 'Edit', icon: <Pencil />, hidden: !isAdmin, onSelect: () => setEditing(c) },
                             { label: 'Export', icon: <Download />, hidden: !isAdmin, disabled: c.status === 'pending', onSelect: () => setExporting(c) },
                             'separator',
@@ -218,7 +241,7 @@ export function CertificatesPage() {
                   </Tr>
                   {c.lastError && (
                     <tr>
-                      <td colSpan={9} className="px-4 pb-3">
+                      <td colSpan={10} className="px-4 pb-3">
                         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
                           <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
                           <div className="min-w-0">

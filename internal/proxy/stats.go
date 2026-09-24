@@ -15,6 +15,8 @@ type siteStats struct {
 	requests, s2xx, s3xx, s4xx, s5xx atomic.Int64
 	bytesIn, bytesOut                atomic.Int64
 	latencyMicros                    atomic.Int64
+	h1, h2, h3                       atomic.Int64 // requests by HTTP version (h3.go)
+	latency                          latencyHist  // for percentiles (latency.go)
 
 	mu       sync.Mutex
 	secs     [60]int64
@@ -39,6 +41,7 @@ func (s *siteStats) record(status int, in, out int64, d time.Duration) {
 	s.bytesIn.Add(in)
 	s.bytesOut.Add(out)
 	s.latencyMicros.Add(d.Microseconds())
+	s.latency.observe(d)
 
 	now := time.Now().Unix()
 	i := now % 60

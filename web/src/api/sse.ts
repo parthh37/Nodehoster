@@ -2,6 +2,7 @@
 // helpers only add typed parsing and a single close function.
 
 import type { Deployment, LogLine, LogType, NHEvent, SiteStatus, TaskRun } from './types';
+import { routePath } from './target';
 
 export interface StreamHandle {
   close(): void;
@@ -27,7 +28,7 @@ function open(url: string, handlers: Handlers, opts: StreamOptions = {}): Stream
 
   const connect = () => {
     if (closed) return;
-    es = new EventSource(url, { withCredentials: true });
+    es = new EventSource(routePath(url), { withCredentials: true });
     es.onopen = () => {
       retry = 0;
       opts.onOpen?.();
@@ -84,14 +85,15 @@ export function openServerStream(
   );
 }
 
-/** /api/sites/{id}/logs/stream: `log` (LogLine). */
+/** /api/sites/{id}/logs/stream: `log` (LogLine). `slot` filters by deployment slot. */
 export function openLogStream(
   siteId: string,
   type: LogType,
   h: { onLine: (l: LogLine) => void } & StreamOptions,
+  slot?: string,
 ): StreamHandle {
   return open(
-    `/api/sites/${encodeURIComponent(siteId)}/logs/stream?type=${type}`,
+    `/api/sites/${encodeURIComponent(siteId)}/logs/stream?type=${type}${slot ? `&slot=${encodeURIComponent(slot)}` : ''}`,
     {
       log: (d) => {
         const v = parse<LogLine>(d);

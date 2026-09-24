@@ -356,6 +356,54 @@ func TestPayloadFormats(t *testing.T) {
 	}
 }
 
+// TestPayloadEscaping: an event's message and site name can hold anyone's
+// text (a blocked request's path); in a chat it neither mentions nor
+// links nor formats.
+func TestPayloadEscaping(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	b := New(st, quietLog(), nil, func(string) string { return "<!here> *shop*" })
+	e := model.Event{Level: "warning", Type: "security.waf", SiteID: "s",
+		Message: "blocked /<!channel>|<https://evil.example|click> @everyone @here <@123> [login](https://evil.example) **x**"}
+	raw := func(v any) string {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	slack := b.payload("slack", e).(map[string]any)["text"].(string)
+	for _, bad := range []string{"<!channel>", "<!here>", "<https://", "<@123>"} {
+		if strings.Contains(slack, bad) {
+			t.Errorf("slack text keeps %q: %s", bad, slack)
+		}
+	}
+	if !strings.Contains(slack, "&lt;!channel&gt;") || !strings.Contains(slack, "[&lt;!here&gt; *shop*]") {
+		t.Errorf("slack text = %s", slack)
+	}
+
+	d := b.payload("discord", e).(map[string]any)
+	content := d["content"].(string)
+	for _, bad := range []string{"@everyone", "@here", "[login](", "<@123>", "**x**", "*shop*"} {
+		if strings.Contains(content, bad) {
+			t.Errorf("discord content keeps %q: %s", bad, content)
+		}
+	}
+	if !strings.Contains(content, `\[login\]\(https\://evil.example\)`) || !strings.HasPrefix(content, "**⚠️ security.waf**\n") {
+		t.Errorf("discord content = %s", content)
+	}
+	if got := raw(d["allowed_mentions"]); got != `{"parse":[]}` {
+		t.Errorf("discord allowed_mentions = %s", got)
+	}
+
+	// Teams shows the text as a TextRun, which is not Markdown.
+	teams := raw(b.payload("teams", e))
+	if strings.Contains(teams, `"TextBlock"`) || !strings.Contains(teams, `"TextRun"`) || !strings.Contains(teams, `[login](https://evil.example)`) {
+		t.Errorf("teams payload = %s", teams)
+	}
+}
+
 func TestPayloadWithoutSiteNameResolver(t *testing.T) {
 	t.Parallel()
 	b := New(openStore(t), quietLog(), nil, nil)

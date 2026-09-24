@@ -19,6 +19,7 @@ import (
 
 	"github.com/parthh37/nodehoster/internal/config"
 	"github.com/parthh37/nodehoster/internal/core"
+	"github.com/parthh37/nodehoster/internal/events"
 	"github.com/parthh37/nodehoster/internal/localapi"
 	"github.com/parthh37/nodehoster/internal/model"
 )
@@ -190,6 +191,26 @@ func TestStatusStream(t *testing.T) {
 	c.Bus.Info("site.started", s.ID, "started")
 	c.Bus.Error("site.crashed", s.ID, "exited with code 1")
 	waitFor("notice ", `"site":"streamed"`)
+}
+
+// TestRemoteDownNotice: every interactive user reads the status pipe, so a
+// connected server being unreachable is told by name only, without its
+// URL or the error.
+func TestRemoteDownNotice(t *testing.T) {
+	c, _ := newServer(t)
+	s, err := c.CreateServer(context.Background(), model.ServerConnection{Name: "web02", URL: "https://10.0.0.5:8484", Token: "nh_t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for msg, want := range map[string]string{
+		"Server web02 (" + s.URL + ") is unreachable: cannot connect: connection refused": "Server web02 is unreachable",
+		"Server gone (https://gone.example) is unreachable: x":                            "A connected server is unreachable",
+	} {
+		n, ok := notice(c, model.Event{Level: "warning", Type: events.RemoteDown, Message: msg})
+		if !ok || n.Message != want || strings.Contains(n.Message, "10.0.0.5") {
+			t.Errorf("notice of %q = %+v, want %q", msg, n, want)
+		}
+	}
 }
 
 func TestNotRunning(t *testing.T) {

@@ -13,6 +13,7 @@ import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { WEEKDAYS, isValidTime, scheduleSummary } from '@/lib/backup';
 import { formatBytes, formatDateTime, relativeTime } from '@/lib/format';
+import { safeHref } from '@/lib/safeHref';
 import { updateHeadline } from '@/lib/updates';
 import type { SettingsTabProps } from './SettingsPage';
 
@@ -173,7 +174,7 @@ function StatusCard() {
                   <span className="flex flex-wrap items-center gap-2">
                     <span>{st.available.version}</span>
                     <span className="text-zinc-500">{formatBytes(st.available.size)}</span>
-                    <a className="inline-flex items-center gap-1 text-accent-600 hover:underline" href={st.available.notes} target="_blank" rel="noreferrer">
+                    <a className="inline-flex items-center gap-1 text-accent-600 hover:underline" href={safeHref(st.available.notes)} target="_blank" rel="noreferrer">
                       Release notes <ExternalLink className="h-3 w-3" />
                     </a>
                   </span>

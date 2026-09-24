@@ -34,6 +34,12 @@ type InstanceStatus struct {
 	HeapTotalBytes uint64  `json:"heapTotalBytes,omitempty"`
 	EventLoopLagMs float64 `json:"eventLoopLagMs,omitempty"`
 	NodeVersion    string  `json:"nodeVersion,omitempty"`
+
+	// The runtime that started the process and its version, for every
+	// runtime (the interpreter or host resolved when it started).
+	Runtime        string `json:"runtime,omitempty"`
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	Agent          bool   `json:"agent,omitempty"` // an agent reports heap and event-loop lag (Node.js, Bun)
 }
 
 type TrafficStats struct {
@@ -103,4 +109,5 @@ type LogLine struct {
 	Stream   string    `json:"s"` // stdout | stderr | system
 	Instance int       `json:"i"`
 	Text     string    `json:"m"`
+	Slot     string    `json:"slot,omitempty"` // the deployment slot that wrote it; "" = production
 }

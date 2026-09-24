@@ -68,7 +68,7 @@ function Check-Module($what) {
   Import-Module NodeHoster -Force -ErrorAction Stop
   $m = Get-Module NodeHoster
   Check ($m.Version.ToString() -eq (Split-Path $m.ModuleBase -Leaf)) "${what}: the module's version ($($m.Version)) matches its folder"
-  Check (@(Get-Command -Module NodeHoster).Count -eq 15) "${what}: the module exports its commands"
+  Check (@(Get-Command -Module NodeHoster).Count -eq 37) "${what}: the module exports its commands"
   $sites = @(Get-NHSite -ErrorAction Stop)
   Check ($sites.Count -eq 0) "${what}: Get-NHSite answers (no sites)"
   Check (@(Get-NHEvent -Count 5 -ErrorAction Stop).Count -ge 1) "${what}: Get-NHEvent answers"
@@ -125,7 +125,7 @@ Check-Module "install"
 Check ($LASTEXITCODE -eq 0) "nodehoster site list talks to the service"
 Check ((AutoUpdate) -eq $true) "the autoupdate task turned automatic updates on"
 $deps = & "$App\nodehoster.exe" --json deps | Out-String | ConvertFrom-Json
-Check ($LASTEXITCODE -eq 0 -and @($deps | Where-Object { -not $_.installed }).Count -eq 0) "nodehoster deps finds Node.js and Git ($(($deps | ForEach-Object { "$($_.name) $($_.version)" }) -join ', '))"
+Check ($LASTEXITCODE -eq 0 -and @($deps | Where-Object { -not $_.installed -and -not $_.optional }).Count -eq 0) "nodehoster deps finds Node.js and Git ($(($deps | ForEach-Object { "$($_.name) $($_.version)" }) -join ', '))"
 # An administrator turns them off; upgrades must not turn them back on.
 & "$App\nodehoster.exe" update auto off | Out-Null
 Check ($LASTEXITCODE -eq 0 -and (AutoUpdate) -eq $false) "nodehoster update auto off turns them off"

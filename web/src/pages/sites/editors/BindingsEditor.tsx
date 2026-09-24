@@ -13,7 +13,9 @@ import { defaultBinding, HOST_RE } from '@/lib/siteDefaults';
 import { bindingHref, defaultPort } from '@/lib/bindings';
 import { cn } from '@/lib/cn';
 import { usePermissions } from '@/hooks/useAuth';
+import { siteSlots } from '@/lib/slots';
 import type { SiteEditorProps } from './types';
+import { ClientCertEditor } from './ClientCertEditor';
 
 export function BindingsEditor({ site, update, readOnly, compact }: SiteEditorProps & { compact?: boolean }) {
   // The certificate store is server-wide: not readable with access to selected sites only.
@@ -21,6 +23,8 @@ export function BindingsEditor({ site, update, readOnly, compact }: SiteEditorPr
   const certs = useQuery({ queryKey: qk.certs, queryFn: certsApi.list, staleTime: 30_000, enabled: !siteScoped });
   const bindings = site.bindings ?? [];
   const hasAuto = bindings.some((b) => b.protocol === 'https' && b.certMode === 'auto');
+  // Deployment slots: each binding routes to production or to one slot.
+  const slotNames = siteSlots(site).map((s) => s.name);
 
   const set = (i: number, patch: Partial<Binding>) =>
     update((d) => {
@@ -63,6 +67,7 @@ export function BindingsEditor({ site, update, readOnly, compact }: SiteEditorPr
           certs={certs.data ?? []}
           readOnly={readOnly}
           compact={compact}
+          slots={slotNames.length > 0 ? slotNames : undefined}
           onChange={(p) => set(i, p)}
           onProtocol={(p) => setProtocol(i, p)}
           onRemove={() =>
@@ -100,6 +105,7 @@ function BindingRow({
   certs,
   readOnly,
   compact,
+  slots,
   onChange,
   onProtocol,
   onRemove,
@@ -109,6 +115,8 @@ function BindingRow({
   certs: CertificateView[];
   readOnly?: boolean;
   compact?: boolean;
+  /** The site's deployment slots, when it has any. */
+  slots?: string[];
   onChange: (p: Partial<Binding>) => void;
   onProtocol: (p: string) => void;
   onRemove: () => void;
@@ -197,6 +205,27 @@ function BindingRow({
               )}
             </div>
           )}
+        </div>
+      )}
+      {https && !compact && <ClientCertEditor policy={b.clientCert} path={p} readOnly={readOnly} onChange={(cc) => onChange({ clientCert: cc })} />}
+      {(slots || b.slot) && (
+        <div className="mt-3 grid gap-3 border-t border-zinc-200 pt-3 dark:border-zinc-800 sm:grid-cols-[14rem_1fr]">
+          <Field label="Deployment slot" path={`${p}.slot`}>
+            <Select
+              value={b.slot ?? ''}
+              onChange={(v) => onChange({ slot: v })}
+              options={[
+                { value: '', label: 'Production' },
+                ...(slots ?? []).map((s) => ({ value: s, label: s })),
+                ...(b.slot && !(slots ?? []).includes(b.slot) ? [{ value: b.slot, label: `${b.slot} (no such slot)` }] : []),
+              ]}
+            />
+          </Field>
+          <p className="self-end pb-1.5 text-xs text-zinc-500">
+            {b.slot
+              ? `Requests on this binding go to the ${b.slot} slot. The binding stays with ${b.slot} when it is swapped.`
+              : 'Requests on this binding go to production. The binding stays with production on a swap.'}
+          </p>
         </div>
       )}
       <div className="mt-2 flex items-center justify-between gap-2">

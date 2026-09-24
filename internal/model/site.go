@@ -21,8 +21,9 @@ const (
 	SiteWorker SiteType = "worker"
 )
 
-// RunsNode reports whether the site is Node.js processes supervised by the
-// process manager (node and worker sites, both configured by Node).
+// RunsNode reports whether the site is processes supervised by the process
+// manager (node and worker sites, both configured by Node), whichever
+// runtime (Node.js, Bun, Deno, Python, .NET, a custom command) runs them.
 func (s *Site) RunsNode() bool { return s.Type == SiteNode || s.Type == SiteWorker }
 
 // Site is the unit of hosting, the equivalent of an IIS site: a set of
@@ -47,9 +48,23 @@ type Site struct {
 	// in the site's release, environment and identity.
 	Tasks []ScheduledTask `json:"tasks,omitempty"`
 
+	// Alerts: overrides of the server-wide alert rules, and this site's own.
+	Alerts SiteAlerts `json:"alerts"`
+	// Deployment slots (node and worker sites): staging copies with their
+	// own release, instances and bindings, swapped into production.
+	Slots []DeploymentSlot `json:"slots,omitempty"`
+
 	// ActiveRelease is the deployment whose files the site currently runs
 	// from. Empty means Node.AppRoot / Static.Root are used as configured.
 	ActiveRelease string `json:"activeRelease,omitempty"`
+
+	// PreviewOf is set on a preview deployment: the ID of the site it
+	// previews (see PreviewConfig). Preview says what it shows.
+	PreviewOf string       `json:"previewOf,omitempty"`
+	Preview   *PreviewInfo `json:"preview,omitempty"`
+	// Slot is set only on the configuration derived for a deployment slot
+	// (SlotSite): deployments made with it go to that slot. Never stored.
+	Slot string `json:"-"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -67,6 +82,14 @@ type Binding struct {
 	// certificate for Host; "certificate" uses CertificateID.
 	CertMode      string `json:"certMode,omitempty"`
 	CertificateID string `json:"certificateId,omitempty"`
+	// ClientCert (HTTPS only) asks clients for a certificate: mutual TLS.
+	// nil = ignore, as before.
+	ClientCert *ClientCertPolicy `json:"clientCert,omitempty"`
+
+	// Slot is the deployment slot the binding routes to ("" = production).
+	// Bindings always stay with their slot on a swap, like Azure's custom
+	// domains: only the releases change places.
+	Slot string `json:"slot,omitempty"`
 }
 
 const (
@@ -78,6 +101,13 @@ type EnvVar struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 	Secret bool   `json:"secret,omitempty"` // encrypted at rest, masked in the API
+	// From takes the value from a secret store when a process starts
+	// (Value is then empty and Secret false).
+	From *SecretRef `json:"from,omitempty"`
+	// SlotSetting (production's variables): the variable stays with
+	// production and is not given to deployment slots, like an Azure
+	// deployment slot setting.
+	SlotSetting bool `json:"slotSetting,omitempty"`
 }
 
 type NodeConfig struct {
@@ -89,6 +119,15 @@ type NodeConfig struct {
 
 	NodeVersion string   `json:"nodeVersion,omitempty"` // "" = server default
 	Env         []EnvVar `json:"env,omitempty"`
+
+	// Runtime runs the processes: node (also when empty), bun, deno,
+	// python, dotnet or custom; see runtimes.go. For the others, Script is
+	// the entry (.py file, app .dll or .exe, the program of a custom
+	// command), NpmScript a package.json script (bun) or task (deno), and
+	// NodeArgs the runtime's own arguments.
+	Runtime        string        `json:"runtime,omitempty"`
+	RuntimeVersion string        `json:"runtimeVersion,omitempty"` // bun, deno: version; python: version or python.exe; dotnet: dotnet.exe; "" = server default
+	Python         *PythonConfig `json:"python,omitempty"`
 
 	Instances int    `json:"instances"`           // processes load-balanced behind the site
 	PortMode  string `json:"portMode"`            // "auto" (PORT env assigned) | "fixed"
@@ -355,6 +394,7 @@ type RoutingConfig struct {
 	Affinity         AffinityConfig    `json:"affinity"`
 	Cache            CacheConfig       `json:"cache"`
 	Banning          SiteBanning       `json:"banning"`
+	WAF              WAFConfig         `json:"waf"`
 }
 
 // CacheConfig is an in-memory response cache in front of a node or proxy
@@ -402,6 +442,9 @@ type GitSource struct {
 	Repo   string `json:"repo,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	Token  string `json:"token,omitempty"` // secret, used for HTTPS auth
+	// TokenFrom reads the token from a secret store at each deployment
+	// instead (Token is then empty).
+	TokenFrom *SecretRef `json:"tokenFrom,omitempty"`
 }
 
 type DeployConfig struct {
@@ -411,6 +454,8 @@ type DeployConfig struct {
 	KeepReleases   int       `json:"keepReleases"`
 	SharedPaths    []string  `json:"sharedPaths,omitempty"`   // persisted across releases (".env", "uploads")
 	WebhookSecret  string    `json:"webhookSecret,omitempty"` // secret
+	// Previews: a temporary site per pull request or branch (previews.go).
+	Previews PreviewConfig `json:"previews"`
 }
 
 // Deployment is a record of one deploy attempt.
@@ -425,6 +470,10 @@ type Deployment struct {
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 	User       string     `json:"user,omitempty"`
+
+	// Slot is the deployment slot the deployment was made to ("" =
+	// production). A swap moves the release, not this record.
+	Slot string `json:"slot,omitempty"`
 }
 
 // ReleaseDir is where a deployment's files live.

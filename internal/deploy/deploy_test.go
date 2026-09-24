@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1057,6 +1058,15 @@ func fakeGit(record string) int {
 		fmt.Println("Cloning into '" + dest + "'...")
 	case len(args) > 2 && args[0] == "-C" && args[2] == "log":
 		fmt.Print("0123456789abcdef0123456789abcdef01234567\nInitial commit\n")
+	case len(args) > 0 && args[0] == "init": // DeployRef: git init -q <dir>
+		os.MkdirAll(filepath.Join(args[len(args)-1], ".git"), 0o750)
+	case len(args) > 2 && args[0] == "-C" && args[2] == "fetch":
+		if os.Getenv("NH_FAKE_GIT_FAIL_FETCH") != "" {
+			fmt.Fprintln(os.Stderr, "fatal: couldn't find remote ref")
+			return 128
+		}
+	case len(args) > 2 && args[0] == "-C" && slices.Contains(args, "checkout"):
+		os.WriteFile(filepath.Join(args[1], "index.html"), []byte("from ref"), 0o640)
 	}
 	return 0
 }
@@ -1143,6 +1153,9 @@ func TestDeployGitKeepsTokenOutOfArgsAndLogs(t *testing.T) {
 	if env["GIT_CONFIG_KEY_0"] != "http.extraHeader" || env["GIT_CONFIG_VALUE_0"] != "Authorization: Basic "+basic {
 		t.Errorf("token was not passed through git's environment config: %v", env)
 	}
+	if env["GIT_CONFIG_KEY_1"] != "credential.helper" || env["GIT_CONFIG_VALUE_1"] != "" {
+		t.Errorf("credential helpers are not cleared (they may wait for a sign-in): %v", env)
+	}
 	if env["GIT_TERMINAL_PROMPT"] != "0" {
 		t.Errorf("GIT_TERMINAL_PROMPT = %q, want 0 (never prompt)", env["GIT_TERMINAL_PROMPT"])
 	}
@@ -1185,7 +1198,7 @@ func TestDeployGitWithoutTokenSetsNoAuthHeader(t *testing.T) {
 		t.Fatalf("status = %s (%s)", got.Status, got.Message)
 	}
 	calls := readFile(t, record)
-	if strings.Contains(calls, "GIT_CONFIG_VALUE_0") || strings.Contains(calls, "Authorization") {
+	if strings.Contains(calls, "http.extraHeader") || strings.Contains(calls, "Authorization") {
 		t.Errorf("an auth header was configured without a token:\n%q", calls)
 	}
 	if !strings.Contains(calls, "--branch\x00feature/x") {

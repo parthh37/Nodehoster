@@ -16,6 +16,13 @@ import (
 type certView struct {
 	*model.Certificate
 	UsedBy []core.CertUse `json:"usedBy"`
+	// OCSP is the certificate's OCSP stapling state (runtime, not stored);
+	// absent while it is not issued or loaded.
+	OCSP *model.OCSPStatus `json:"ocsp,omitempty"`
+}
+
+func (a *API) certView(c *model.Certificate) certView {
+	return certView{Certificate: c, UsedBy: a.c.CertificateUsage(c), OCSP: a.c.Certs.OCSPStatus(c.ID)}
 }
 
 func (a *API) listCerts(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +34,7 @@ func (a *API) listCerts(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	out := make([]certView, 0, len(list))
 	for _, c := range list {
-		out = append(out, certView{c, a.c.CertificateUsage(c)})
+		out = append(out, a.certView(c))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -38,7 +45,7 @@ func (a *API) getCert(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, certView{c, a.c.CertificateUsage(c)})
+	writeJSON(w, http.StatusOK, a.certView(c))
 }
 
 func (a *API) requestCert(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +70,7 @@ func (a *API) requestCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "cert.request", c.Name, "")
-	writeJSON(w, http.StatusAccepted, certView{c, []core.CertUse{}})
+	writeJSON(w, http.StatusAccepted, a.certView(c))
 }
 
 func (a *API) importCert(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +99,7 @@ func (a *API) importCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "cert.import", c.Name, c.Fingerprint)
-	writeJSON(w, http.StatusCreated, certView{c, []core.CertUse{}})
+	writeJSON(w, http.StatusCreated, a.certView(c))
 }
 
 func (a *API) selfSignedCert(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +118,7 @@ func (a *API) selfSignedCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "cert.selfsigned", c.Name, "")
-	writeJSON(w, http.StatusCreated, certView{c, []core.CertUse{}})
+	writeJSON(w, http.StatusCreated, a.certView(c))
 }
 
 func (a *API) renewCert(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +129,7 @@ func (a *API) renewCert(w http.ResponseWriter, r *http.Request) {
 	}
 	c, _ := a.c.Store.GetCertificate(r.Context(), id)
 	a.audit(r, "cert.renew", c.Name, "")
-	writeJSON(w, http.StatusAccepted, certView{c, a.c.CertificateUsage(c)})
+	writeJSON(w, http.StatusAccepted, a.certView(c))
 }
 
 func (a *API) updateCert(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +147,7 @@ func (a *API) updateCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "cert.update", c.Name, "")
-	writeJSON(w, http.StatusOK, certView{c, a.c.CertificateUsage(c)})
+	writeJSON(w, http.StatusOK, a.certView(c))
 }
 
 func (a *API) deleteCert(w http.ResponseWriter, r *http.Request) {

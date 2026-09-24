@@ -11,7 +11,9 @@ import { ListEditor } from '@/components/ListEditor';
 import { SecretInput } from '@/components/SecretInput';
 import { Button, IconButton } from '@/components/Button';
 import { HHMM_RE, LB_STRATEGIES, REDIRECT_CODES } from '@/lib/siteDefaults';
+import { runtimeInfo, runtimeOf } from '@/lib/runtimes';
 import { ArgsInput } from './ArgsInput';
+import { RuntimePicker, RuntimeStart } from './RuntimeEditor';
 import type { SiteEditorProps } from './types';
 
 // ---------------------------------------------------------------- node
@@ -29,10 +31,11 @@ export function useNodeVersionOptions(current?: string) {
   return { options, loading: q.isPending };
 }
 
-/** App root, entry point, node version and instances — used by the wizard and the settings tab (node and worker sites). */
+/** App root, runtime, entry point, version and instances — used by the wizard and the settings tab (node and worker sites). */
 export function NodeEssentials({ site, update, withInstances = true }: SiteEditorProps & { withInstances?: boolean }) {
   const n = site.node!;
   const worker = site.type === 'worker';
+  const nodeRuntime = runtimeOf(n) === 'node';
   const { options } = useNodeVersionOptions(n.nodeVersion);
   const mode: 'script' | 'npm' = n.npmScript ? 'npm' : 'script';
   const set = (patch: Partial<NodeConfig>) =>
@@ -49,35 +52,41 @@ export function NodeEssentials({ site, update, withInstances = true }: SiteEdito
         hint={
           site.activeRelease
             ? 'A deployment is active: a relative path is resolved inside the release; an absolute path is ignored.'
-            : 'Physical folder containing package.json, e.g. D:\\apps\\my-api. Once a deployment is active, relative paths resolve inside the release.'
+            : 'Physical folder of the application, e.g. D:\\apps\\my-api. Once a deployment is active, relative paths resolve inside the release.'
         }
       >
         <Input mono value={n.appRoot} placeholder="C:\inetpub\apps\my-app" onChange={(e) => set({ appRoot: e.target.value })} />
       </Field>
-      <Field label="Start with">
-        <Radio
-          value={mode}
-          onChange={(m) => set(m === 'npm' ? { npmScript: n.npmScript || 'start', script: '' } : { npmScript: '', script: n.script || 'server.js' })}
-          options={[
-            { value: 'script', label: 'Entry script', description: 'node <file>' },
-            { value: 'npm', label: 'npm script', description: 'npm run <script>' },
-          ]}
-        />
-      </Field>
-      <Grid>
-        {mode === 'script' ? (
-          <Field label="Entry script" path="node.script" hint="Relative to the application path.">
-            <Input mono value={n.script ?? ''} placeholder="server.js" onChange={(e) => set({ script: e.target.value })} />
+      <RuntimePicker site={site} update={update} />
+      {!nodeRuntime && <RuntimeStart site={site} update={update} />}
+      {nodeRuntime && (
+        <>
+          <Field label="Start with">
+            <Radio
+              value={mode}
+              onChange={(m) => set(m === 'npm' ? { npmScript: n.npmScript || 'start', script: '' } : { npmScript: '', script: n.script || 'server.js' })}
+              options={[
+                { value: 'script', label: 'Entry script', description: 'node <file>' },
+                { value: 'npm', label: 'npm script', description: 'npm run <script>' },
+              ]}
+            />
           </Field>
-        ) : (
-          <Field label="npm script" path="node.npmScript" hint="A script from package.json.">
-            <Input mono value={n.npmScript ?? ''} placeholder="start" onChange={(e) => set({ npmScript: e.target.value })} />
-          </Field>
-        )}
-        <Field label="Node.js version" path="node.nodeVersion">
-          <Select value={n.nodeVersion ?? ''} onChange={(v) => set({ nodeVersion: v })} options={options} mono />
-        </Field>
-      </Grid>
+          <Grid>
+            {mode === 'script' ? (
+              <Field label="Entry script" path="node.script" hint="Relative to the application path.">
+                <Input mono value={n.script ?? ''} placeholder="server.js" onChange={(e) => set({ script: e.target.value })} />
+              </Field>
+            ) : (
+              <Field label="npm script" path="node.npmScript" hint="A script from package.json.">
+                <Input mono value={n.npmScript ?? ''} placeholder="start" onChange={(e) => set({ npmScript: e.target.value })} />
+              </Field>
+            )}
+            <Field label="Node.js version" path="node.nodeVersion">
+              <Select value={n.nodeVersion ?? ''} onChange={(v) => set({ nodeVersion: v })} options={options} mono />
+            </Field>
+          </Grid>
+        </>
+      )}
       {withInstances && (
         <Field
           label="Instances"
@@ -95,6 +104,8 @@ export function NodeEssentials({ site, update, withInstances = true }: SiteEdito
 export function NodeAdvanced({ site, update }: SiteEditorProps) {
   const n = site.node!;
   const worker = site.type === 'worker';
+  const rt = runtimeOf(n);
+  const rtArgs = runtimeInfo(rt).runtimeArgs;
   const set = (patch: Partial<NodeConfig>) =>
     update((d) => {
       d.node = { ...d.node!, ...patch };
@@ -105,13 +116,18 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
 
   return (
     <>
-      <FormSection title="Arguments" description="Extra arguments for your script and for the node executable.">
-        <Field label="Script arguments" path="node.args" prefix>
+      <FormSection
+        title="Arguments"
+        description={rtArgs ? `Extra arguments for your ${rt === 'custom' ? 'program' : 'app'} and for ${runtimeInfo(rt).label} itself.` : 'Arguments for the program.'}
+      >
+        <Field label={rt === 'custom' ? 'Program arguments' : 'Script arguments'} path="node.args" prefix>
           <ArgsInput value={n.args} onChange={(v) => set({ args: v })} placeholder="--port-from-env" />
         </Field>
-        <Field label="Node arguments" path="node.nodeArgs" prefix hint="e.g. --max-old-space-size=512 --enable-source-maps">
-          <ArgsInput value={n.nodeArgs} onChange={(v) => set({ nodeArgs: v })} placeholder="--max-old-space-size=512" />
-        </Field>
+        {rtArgs && (
+          <Field label={rtArgs.label} path="node.nodeArgs" prefix hint={rtArgs.hint}>
+            <ArgsInput value={n.nodeArgs} onChange={(v) => set({ nodeArgs: v })} placeholder={rtArgs.placeholder} />
+          </Field>
+        )}
       </FormSection>
 
       <FormSection
@@ -144,12 +160,23 @@ export function NodeAdvanced({ site, update }: SiteEditorProps) {
             <NumberInput className="w-32" mono min={1} max={65535} value={n.fixedPort} onChange={(v) => set({ fixedPort: v })} />
           </Field>
         )}
-        <Switch
-          checked={n.agentEnabled}
-          onChange={(v) => set({ agentEnabled: v })}
-          label="NodeHoster agent"
-          description="Injects a small preload module for graceful shutdown and heap / event-loop metrics."
-        />
+        {rt === 'node' || rt === 'bun' ? (
+          <Switch
+            checked={n.agentEnabled}
+            onChange={(v) => set({ agentEnabled: v })}
+            label="NodeHoster agent"
+            description={
+              rt === 'bun'
+                ? 'Injects a small preload module for graceful shutdown and heap metrics (entry scripts only: a package script starts processes of its own).'
+                : 'Injects a small preload module for graceful shutdown and heap / event-loop metrics.'
+            }
+          />
+        ) : (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Stopping asks the process to shut down like Ctrl+Break in a console (Ctrl+Break on Windows, SIGTERM elsewhere) — ASP.NET Core, uvicorn
+            and Hypercorn shut down gracefully on it — and kills it after the shutdown timeout.
+          </p>
+        )}
       </FormSection>
 
       <FormSection title="Restarts" description="Crashed instances restart with a growing delay. Rapid-fail protection pauses a site that keeps crashing, like an IIS application pool.">

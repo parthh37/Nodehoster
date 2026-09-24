@@ -9,11 +9,14 @@ export const qk = {
   siteMetrics: (id: string, minutes: number) => ['sites', id, 'metrics', minutes] as const,
   deployments: (id: string) => ['sites', id, 'deployments'] as const,
   siteTasks: (id: string) => ['sites', id, 'tasks'] as const,
+  sitePreviews: (id: string) => ['sites', id, 'previews'] as const,
   siteRuns: (id: string) => ['sites', id, 'runs'] as const,
   taskRuns: (id: string, task: string, limit: number) => ['sites', id, 'runs', task, limit] as const,
   certs: ['certificates'] as const,
   nodeVersions: ['node', 'versions'] as const,
   nodeAvailable: ['node', 'available'] as const,
+  runtimes: ['runtimes'] as const,
+  runtimeAvailable: (rt: string) => ['runtimes', 'available', rt] as const,
   settings: ['settings'] as const,
   adminSettings: ['settings', 'admin'] as const,
   dnsCatalog: ['settings', 'dns-catalog'] as const,
@@ -35,4 +38,22 @@ export const qk = {
   backupFiles: (destId: string) => ['backups', 'files', destId] as const,
   backupSharedSizes: ['backups', 'shared-sizes'] as const,
   logShippingStatus: ['logshipping', 'status'] as const,
+  tls: ['tls'] as const,
+  // This server's own, kept when the console switches to another server
+  // (see LOCAL_QUERY_ROOTS).
+  servers: ['local', 'servers'] as const,
+  remoteMe: (id: string) => ['local', 'remote-me', id] as const,
+  alerts: ['alerts'] as const,
+  alertList: (siteId?: string) => ['alerts', 'list', siteId ?? ''] as const,
+  alertHistory: (siteId?: string, server?: boolean) => ['alerts', 'history', siteId ?? '', !!server] as const,
+  siteAlertRules: (siteId: string) => ['alerts', 'rules', siteId] as const,
+  secretStores: ['secret-stores'] as const,
+  slots: (id: string) => ['sites', id, 'slots'] as const,
+  swapPreview: (id: string, slot: string) => ['sites', id, 'slots', slot, 'swap'] as const,
+  wafRules: ['waf', 'rules'] as const,
+  wafEvents: (filter: object) => ['waf', 'events', filter] as const,
+  siteWaf: (id: string) => ['sites', id, 'waf'] as const,
 };
+
+/** Query roots that are about this server whichever server the console operates. */
+export const LOCAL_QUERY_ROOTS: readonly string[] = ['me', 'local', 'auth', 'tokens'];

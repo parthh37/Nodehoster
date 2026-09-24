@@ -55,6 +55,7 @@ func (s *Site) ApplyDefaults() {
 		if b.Protocol == "http" {
 			b.CertMode, b.CertificateID = "", ""
 		}
+		b.applyTLSDefaults()
 	}
 	switch s.Type {
 	case SiteNode, SiteWorker:
@@ -62,6 +63,7 @@ func (s *Site) ApplyDefaults() {
 			s.Node = &NodeConfig{}
 		}
 		n := s.Node
+		n.applyRuntimeDefaults()
 		if n.Instances <= 0 {
 			n.Instances = 1
 		}
@@ -100,7 +102,7 @@ func (s *Site) ApplyDefaults() {
 		}
 		lb.HealthCheck.applyDefaults(15)
 		if len(n.WatchIgnore) == 0 {
-			n.WatchIgnore = []string{"node_modules", ".git", "logs"}
+			n.WatchIgnore = DefaultWatchIgnore(n.Runtime)
 		}
 	case SiteProxy:
 		if s.Proxy == nil {
@@ -151,11 +153,14 @@ func (s *Site) ApplyDefaults() {
 		s.Deploy.KeepReleases = 5
 	}
 	if s.Deploy.InstallCommand == "" && s.RunsNode() {
-		s.Deploy.InstallCommand = "npm ci --omit=dev"
+		s.Deploy.InstallCommand = DefaultInstallCommand(s.Node.Runtime)
 	}
 	for i := range s.Tasks {
 		s.Tasks[i].applyDefaults()
 	}
+	s.Deploy.Previews.applyDefaults()
+	s.Alerts.applyDefaults()
+	s.applySlotDefaults()
 }
 
 func (hc *HealthCheck) applyDefaults(intervalSec int) {
@@ -189,6 +194,9 @@ func (s *Site) Validate() error {
 			return err
 		}
 	}
+	if err := s.validateSecretRefs(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for i, b := range s.Bindings {
 		f := fmt.Sprintf("bindings[%d]", i)
@@ -218,6 +226,9 @@ func (s *Site) Validate() error {
 				return verr(f+".certMode", "must be auto or certificate")
 			}
 		}
+		if err := b.validateTLS(f); err != nil {
+			return err
+		}
 		k := b.Key()
 		if seen[k] {
 			return verr(f, "duplicate binding %s", b.String())
@@ -230,8 +241,8 @@ func (s *Site) Validate() error {
 		if strings.TrimSpace(n.AppRoot) == "" && s.ActiveRelease == "" {
 			return verr("node.appRoot", "application path is required")
 		}
-		if n.Script == "" && n.NpmScript == "" {
-			return verr("node.script", "set an entry script or an npm script")
+		if err := s.validateRuntime(); err != nil {
+			return err
 		}
 		if n.Instances > 64 {
 			return verr("node.instances", "at most 64 instances")
@@ -321,6 +332,15 @@ func (s *Site) Validate() error {
 		return verr("tasks", "scheduled tasks need a Node.js application or background worker site")
 	}
 	if err := validateTasks(s.Tasks); err != nil {
+		return err
+	}
+	if err := s.validatePreviews(); err != nil {
+		return err
+	}
+	if err := s.Alerts.validate(s); err != nil {
+		return err
+	}
+	if err := s.validateSlots(); err != nil {
 		return err
 	}
 	r := s.Routing
@@ -595,6 +615,8 @@ func DefaultSettings() Settings {
 		Backup:             DefaultBackup(),
 		LogShipping:        LogShippingSettings{Targets: []LogTarget{}},
 		Updates:            DefaultUpdates(),
+		Alerts:             DefaultAlerts(),
+		WAF:                DefaultWAF(),
 	}
 }
 

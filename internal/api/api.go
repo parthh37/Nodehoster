@@ -111,8 +111,16 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/stream", a.stream)
 		r.Get("/sites", a.listSites)
 		r.Get("/node/versions", a.nodeVersions)
+		r.Get("/runtimes", a.runtimes)
 		r.Get("/settings/dns-catalog", a.dnsCatalog)
 		r.Get("/mime/defaults", a.mimeDefaults)
+		// Filtered per alert; silencing checks operator on the alert's site.
+		r.Get("/alerts", a.listAlerts)
+		r.Get("/alerts/history", a.alertHistory)
+		r.Post("/alerts/{alert}/silence", a.silenceAlert)
+		r.Delete("/alerts/{alert}/silence", a.unsilenceAlert)
+		r.Get("/waf/rules", a.wafRules)
+		r.Get("/waf/events", a.listWAFEvents)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleViewer))
@@ -130,6 +138,12 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/runs", a.listRuns)
 		r.Get("/sites/{id}/runs/{run}/log", a.runLog)
 		r.Get("/sites/{id}/runs/{run}/log/stream", a.runLogStream)
+		r.Get("/sites/{id}/previews", a.listPreviews)
+		r.Get("/sites/{id}/alert-rules", a.siteAlertRules)
+		r.Get("/sites/{id}/slots", a.listSlots)
+		r.Get("/sites/{id}/slots/{slot}/swap", a.swapPreview)
+		r.Get("/sites/{id}/waf", a.getSiteWAF)
+		r.Get("/sites/{id}/waf/events", a.siteWAFEvents)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))
@@ -144,6 +158,15 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/cache/purge", a.siteCachePurge)
 		r.Post("/sites/{id}/tasks/{task}/run", a.runTask)
 		r.Post("/sites/{id}/runs/{run}/cancel", a.cancelRun)
+		r.Post("/sites/{id}/previews", a.createPreview)
+		r.Post("/sites/{id}/previews/{preview}/redeploy", a.redeployPreview)
+		r.Post("/sites/{id}/previews/{preview}/approve", a.approvePreview)
+		r.Delete("/sites/{id}/previews/{preview}", a.deletePreview)
+		r.Post("/sites/{id}/secrets/check", a.checkSiteSecrets)
+		r.Post("/sites/{id}/slots/{slot}/swap", a.swapSlot)
+		r.Post("/sites/{id}/slots/{slot}/start", a.slotAction("start"))
+		r.Post("/sites/{id}/slots/{slot}/stop", a.slotAction("stop"))
+		r.Post("/sites/{id}/slots/{slot}/recycle", a.slotAction("recycle"))
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant
@@ -151,19 +174,30 @@ func (a *API) routes(r chi.Router) {
 		r.Use(a.requireSite(model.RoleAdmin))
 		r.Put("/sites/{id}", a.updateSite)
 		r.Delete("/sites/{id}", a.deleteSite)
+		r.Put("/sites/{id}/waf", a.putSiteWAF)
+		r.Post("/sites/{id}/waf/exclusions", a.addWAFExclusion)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleViewer))
 		r.Get("/server/metrics", a.serverMetrics)
 		r.Get("/certificates", a.listCerts)
 		r.Get("/certificates/{id}", a.getCert)
+		r.Get("/tls", a.getTLS)
 		r.Get("/node/available", a.nodeAvailable)
+		r.Get("/runtimes/{runtime}/available", a.runtimeAvailable)
 		r.Get("/mail/status", a.mailStatus)
 		r.Get("/mail/queue", a.mailQueue)
+		// Server connections (servers.go): each is also limited to the
+		// roles its MinRole allows, checked by the handlers.
+		r.Get("/servers", a.listServers)
+		r.Get("/servers/{id}", a.getServer)
+		r.Post("/servers/{id}/check", a.checkServer)
+		r.Handle("/servers/{id}/proxy/*", http.HandlerFunc(a.proxyServer))
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleOperator))
 		r.Post("/certificates/{id}/renew", a.renewCert)
+		r.Post("/certificates/{id}/ocsp", a.checkCertOCSP)
 		r.Get("/mail/health", a.mailHealth)
 		r.Post("/mail/queue/retry", a.mailRetryAll)
 		r.Post("/mail/queue/{id}/retry", a.mailRetry)
@@ -180,8 +214,12 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/certificates/{id}/export", a.exportCert)
 		r.Post("/node/versions", a.installNode)
 		r.Delete("/node/versions/{version}", a.removeNode)
+		r.Post("/runtimes/refresh", a.refreshRuntimes)
+		r.Post("/runtimes/{runtime}/versions", a.installRuntime)
+		r.Delete("/runtimes/{runtime}/versions/{version}", a.removeRuntime)
 		r.Get("/settings", a.getSettings)
 		r.Put("/settings", a.putSettings)
+		r.Put("/tls", a.putTLS)
 		r.Post("/settings/webhooks/test", a.testWebhook)
 		r.Post("/rewrite/import", a.rewriteImport)
 		r.Post("/import/preview", a.importPreview)
@@ -210,11 +248,18 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/backups/destinations/{dest}/restore", a.backupRestoreFrom)
 		r.Get("/logshipping/status", a.logShippingStatus)
 		r.Post("/logshipping/test", a.logShippingTest)
+		r.Get("/secret-stores", a.listSecretStores)
+		r.Post("/secret-stores/test", a.testSecretStore)
+		r.Post("/secret-stores/resolve", a.resolveSecretRef)
 		r.Get("/server/logs/search", a.serverLogSearch)
 		r.Get("/updates", a.updateStatus)
 		r.Put("/updates", a.putUpdates)
 		r.Post("/updates/check", a.checkUpdate)
 		r.Post("/updates/install", a.installUpdate)
+		r.Post("/servers", a.createServer)
+		r.Post("/servers/test", a.testServer)
+		r.Put("/servers/{id}", a.updateServer)
+		r.Delete("/servers/{id}", a.deleteServer)
 	})
 }
 
@@ -294,7 +339,20 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 		// The access is worked out once per request, from the user as
 		// stored now, so a changed role or grant applies immediately to
 		// sessions and tokens alike.
-		ctx = withAccess(ctx, auth.UserAccess(&u.User).Restrict(tok))
+		acc := auth.UserAccess(&u.User).Restrict(tok)
+		if lim := r.Header.Get(model.RoleLimitHeader); lim != "" {
+			// Another server's connection proxy caps its token at its
+			// user's role (servers_proxy.go): it only takes rights away.
+			var ok bool
+			if acc, ok = limitAccess(acc, model.Role(lim)); !ok {
+				writeErr(w, http.StatusBadRequest, "invalid "+model.RoleLimitHeader)
+				return
+			}
+			// The proxy relays a non-administrator's request only
+			// when the limit is known to be applied.
+			w.Header().Set(model.RoleLimitAppliedHeader, lim)
+		}
+		ctx = withAccess(ctx, acc.WithPreviews(a.c.PreviewIDs))
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxUser, u)))
 	})
 }

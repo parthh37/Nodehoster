@@ -44,6 +44,10 @@ type App struct {
 	watcher      *fileWatcher
 
 	backends atomic.Pointer[[]*Backend]
+
+	// The deployment slot the app is in (nil = production); a swap moves
+	// the app to another slot (see slots.go).
+	slot atomic.Pointer[string]
 }
 
 type exitInfo struct {
@@ -174,7 +178,7 @@ func (a *App) recycle(reason string) error {
 		}
 	}
 	if len(errs) == 0 {
-		a.m.opts.Bus.Info(events.SiteRecycled, a.id, "%s recycled (%s)", a.config().Name, reason)
+		a.m.opts.Bus.Info(events.SiteRecycled, a.id, "%s recycled (%s)", a.config().Name+a.slotSuffix(), reason)
 	}
 	return errors.Join(errs...)
 }
@@ -378,7 +382,7 @@ func (s *slot) run() {
 			site := a.config()
 			policy, code := site.Node.RestartPolicy, inst0.exitCode
 			a.logs.System("instance %d exited with code %d after %s", s.index, code, uptime.Round(time.Second))
-			a.m.opts.Bus.Warn(events.SiteCrashed, a.id, "%s instance %d exited unexpectedly (code %d)", site.Name, s.index, code)
+			a.m.opts.Bus.Warn(events.SiteCrashed, a.id, "%s instance %d exited unexpectedly (code %d)", site.Name+a.slotSuffix(), s.index, code)
 			if policy == "never" || (policy == "on-failure" && code == 0) {
 				if s.idle() {
 					return
@@ -550,7 +554,7 @@ func restartDelay(failures int, lastUptime time.Duration) time.Duration {
 
 func (a *App) tripRapidFail() {
 	a.mu.Lock()
-	name := a.site.Name
+	name := a.site.Name + a.slotSuffix()
 	// Detach the instances now, under the lock, so a Start or Restart issued
 	// while they are still stopping gets a fresh set of slots instead of
 	// having its new processes wiped from view (and orphaned) afterwards.
@@ -608,7 +612,7 @@ func (a *App) autoRecover() {
 		return
 	default:
 	}
-	if a.m.app(a.id) != a {
+	if a.m.app(a.key()) != a {
 		return
 	}
 	a.mu.Lock()
@@ -619,7 +623,7 @@ func (a *App) autoRecover() {
 	a.recoverTimer = nil
 	a.recoveries++
 	a.lastRecovery = time.Now()
-	attempt, name := a.recoveries, a.site.Name
+	attempt, name := a.recoveries, a.site.Name+a.slotSuffix()
 	a.mu.Unlock()
 
 	a.logs.System("automatic restart after rapid-fail protection (attempt %d)", attempt)
@@ -692,6 +696,9 @@ func (m *Manager) nodeCommand(site *model.Site, rt NodeRuntime, dir, script, npm
 	e.set("npm_config_update_notifier", "false")
 	e.set("npm_config_cache", filepath.Join(m.opts.SitesDir, site.ID, ".npm-cache"))
 	for _, v := range n.Env {
+		if v.From != nil {
+			continue // set by the caller: see setSecretEnv
+		}
 		val := v.Value
 		if v.Secret {
 			val = m.opts.Unseal(val)
@@ -750,13 +757,10 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("application folder %q does not exist", dir)
 	}
-	rt, err := a.m.resolveNode(site)
-	if err != nil {
-		return nil, err
-	}
 
 	// A worker gets no port: nothing is routed to it, and an app that
 	// happens to read PORT should not find one.
+	var err error
 	port := n.FixedPort
 	if worker {
 		port = 0
@@ -772,16 +776,17 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 
 	token := newToken()
-	var script, npmScript string
-	if n.NpmScript != "" {
-		npmScript = n.NpmScript
-	} else {
-		script = n.Script
-	}
-	cmd, env, err := a.m.nodeCommand(site, rt, dir, script, npmScript, n.Args, token)
+	cmd, env, rt, err := a.m.processCommand(site, dir, instanceEntry(n), token, port)
 	if err != nil {
 		releasePort()
 		return nil, err
+	}
+	if err := a.m.setSecretEnv(env, site, n.Env, a.key(), ""); err != nil {
+		releasePort()
+		return nil, err
+	}
+	if rt.note != "" {
+		a.logs.System("instance %d: %s", index, rt.note)
 	}
 	if !worker {
 		env.set("PORT", strconv.Itoa(port))
@@ -810,7 +815,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 	}
 	if err := cmd.Start(); err != nil {
 		releasePort()
-		return nil, fmt.Errorf("start %s: %w", rt.Exe, err)
+		return nil, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	osp, err := afterStart(cmd.Process.Pid, n.Limits)
 	if err != nil {
@@ -826,6 +831,7 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		backend: &Backend{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), Slot: index},
 		exited:  make(chan struct{}),
 		state:   "starting", healthy: true,
+		runtime: rt.runtime, runtimeVersion: rt.version, console: rt.console,
 	}
 	if worker {
 		inst.backend.Addr = ""
@@ -848,9 +854,9 @@ func (a *App) spawnOnce(index int) (*Instance, error) {
 		close(inst.exited)
 	}()
 	if worker {
-		a.logs.System("instance %d started: pid %d, node %s", index, inst.pid, rt.Version)
+		a.logs.System("instance %d started: pid %d, %s", index, inst.pid, rt.label())
 	} else {
-		a.logs.System("instance %d started: pid %d, port %d, node %s", index, inst.pid, port, rt.Version)
+		a.logs.System("instance %d started: pid %d, port %d, %s", index, inst.pid, port, rt.label())
 	}
 
 	if err := a.waitReady(inst, site); err != nil {
@@ -910,7 +916,7 @@ func (a *App) waitReady(inst *Instance, site *model.Site) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("did not start listening on port %d within %s; the application must listen on process.env.PORT", inst.port, timeout)
+	return fmt.Errorf("did not start listening on port %d within %s; %s", inst.port, timeout, listenHint(site.Node))
 }
 
 // isWorker reports whether a site runs in the background without serving

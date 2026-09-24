@@ -11,15 +11,20 @@ import { ImportSitesPage } from '@/pages/sites/ImportSitesPage';
 import { SiteDetailPage } from '@/pages/sites/SiteDetailPage';
 import { CertificatesPage } from '@/pages/certificates/CertificatesPage';
 import { NodePage } from '@/pages/node/NodePage';
+import { RuntimesPage } from '@/pages/runtimes/RuntimesPage';
 import { EventsPage } from '@/pages/EventsPage';
+import { AlertsPage } from '@/pages/alerts/AlertsPage';
+import { WafEventsPage } from '@/pages/waf/WafEventsPage';
 import { MailPage } from '@/pages/mail/MailPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { UsersPage } from '@/pages/UsersPage';
 import { AuditPage } from '@/pages/AuditPage';
 import { TokensPage } from '@/pages/account/TokensPage';
+import { ServersPage } from '@/pages/servers/ServersPage';
+import { ThisServerOnly } from '@/pages/shell/ServerSwitcher';
 import { EmptyState } from '@/components/Layout';
 import { Button } from '@/components/Button';
-import { usePermissions } from '@/hooks/useAuth';
+import { useLocalPermissions, usePermissions } from '@/hooks/useAuth';
 
 function NoAccess({ title, description }: { title: string; description: string }) {
   const { siteScoped } = usePermissions();
@@ -49,6 +54,16 @@ function AdminOnly({ children }: { children: ReactNode }) {
 /** Server-wide pages, which users allowed on selected sites only cannot use. */
 function ServerOnly({ children }: { children: ReactNode }) {
   const { siteScoped, role } = usePermissions();
+  if (!role) return null;
+  if (siteScoped) {
+    return <NoAccess title="Not available" description="Your account has access to selected sites only. Server-wide pages need a server role; ask an administrator if you need access." />;
+  }
+  return <>{children}</>;
+}
+
+/** Pages about this server's own server-wide configuration, whichever server the console operates. */
+function LocalServerOnly({ children }: { children: ReactNode }) {
+  const { siteScoped, role } = useLocalPermissions();
   if (!role) return null;
   if (siteScoped) {
     return <NoAccess title="Not available" description="Your account has access to selected sites only. Server-wide pages need a server role; ask an administrator if you need access." />;
@@ -129,6 +144,14 @@ const router = createBrowserRouter([
         ),
       },
       {
+        path: 'runtimes',
+        element: (
+          <ServerOnly>
+            <RuntimesPage />
+          </ServerOnly>
+        ),
+      },
+      {
         path: 'mail/:tab?',
         element: (
           <ServerOnly>
@@ -137,6 +160,8 @@ const router = createBrowserRouter([
         ),
       },
       { path: 'events', element: <EventsPage /> },
+      { path: 'alerts', element: <AlertsPage /> },
+      { path: 'firewall', element: <WafEventsPage /> },
       {
         path: 'settings/:tab?',
         element: (
@@ -161,7 +186,22 @@ const router = createBrowserRouter([
           </AdminOnly>
         ),
       },
-      { path: 'account/tokens', element: <TokensPage /> },
+      {
+        path: 'account/tokens',
+        element: (
+          <ThisServerOnly what="API tokens">
+            <TokensPage />
+          </ThisServerOnly>
+        ),
+      },
+      {
+        path: 'servers',
+        element: (
+          <LocalServerOnly>
+            <ServersPage />
+          </LocalServerOnly>
+        ),
+      },
       { path: 'dashboard', element: <Navigate to="/" replace /> },
       { path: '*', element: <NotFound /> },
     ],

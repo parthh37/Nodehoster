@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   BadgeCheck,
+  BellRing,
   Boxes,
   ChevronDown,
   ClipboardList,
@@ -15,22 +16,28 @@ import {
   Monitor,
   Moon,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   Users,
   X,
   Hexagon,
+  Layers,
   Lock,
+  Network,
 } from 'lucide-react';
 import { authApi, serverApi } from '@/api/endpoints';
+import { setTarget } from '@/api/target';
 import { qk } from '@/api/queryKeys';
-import { useMe, usePermissions } from '@/hooks/useAuth';
+import { useLocalPermissions, useMe, usePermissions } from '@/hooks/useAuth';
+import { useServerTarget } from '@/hooks/useServerTarget';
 import { LiveProvider, useLive } from '@/hooks/useLive';
 import { useTheme, type ThemePref } from '@/hooks/useTheme';
 import { Menu } from '@/components/Menu';
 import { RoleBadge } from '@/components/StatusBadges';
 import { cn } from '@/lib/cn';
 import { Logo } from './Logo';
+import { RemoteBanner, ServerSwitcher } from './ServerSwitcher';
 import { ChangePasswordDialog } from '../account/ChangePasswordDialog';
 import { TwoFactorDialog } from '../account/TwoFactorDialog';
 
@@ -47,14 +54,21 @@ const nav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/certificates', label: 'Certificates', icon: BadgeCheck },
   { to: '/node', label: 'Node.js', icon: Hexagon },
+  { to: '/runtimes', label: 'Runtimes', icon: Layers },
   { to: '/mail', label: 'Mail', icon: Mail },
   { to: '/events', label: 'Events', icon: Activity },
+  { to: '/servers', label: 'Servers', icon: Network },
+  { to: '/alerts', label: 'Alerts', icon: BellRing },
+  { to: '/firewall', label: 'Firewall', icon: ShieldAlert },
 ];
 
 // A user allowed on selected sites only sees their sites and their events.
 const siteNav: NavItem[] = [
   { to: '/sites', label: 'Sites', icon: Boxes },
   { to: '/events', label: 'Events', icon: Activity },
+  { to: '/servers', label: 'Servers', icon: Network },
+  { to: '/alerts', label: 'Alerts', icon: BellRing },
+  { to: '/firewall', label: 'Firewall', icon: ShieldAlert },
 ];
 
 const adminNav: NavItem[] = [
@@ -64,8 +78,11 @@ const adminNav: NavItem[] = [
 ];
 
 export function AppLayout() {
+  // Another server: its own live stream and pages, nothing kept from the
+  // previous one.
+  const { target } = useServerTarget();
   return (
-    <LiveProvider>
+    <LiveProvider key={target?.id ?? 'local'}>
       <Shell />
     </LiveProvider>
   );
@@ -82,6 +99,7 @@ function Shell() {
       <Sidebar open={mobileOpen} onClose={() => setMobileOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col lg:pl-56">
         <TopBar onMenu={() => setMobileOpen(true)} />
+        <RemoteBanner />
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 lg:px-8">
           <Outlet />
         </main>
@@ -100,8 +118,10 @@ function Shell() {
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { isAdmin, siteScoped } = usePermissions();
+  const local = useLocalPermissions();
   const info = useQuery({ queryKey: qk.serverInfo, queryFn: serverApi.info, staleTime: 30_000 });
-  const items = siteScoped ? siteNav : isAdmin ? [...nav, ...adminNav] : nav;
+  // Servers (the connections) are this server's: for its server-wide users.
+  const items = (siteScoped ? siteNav : isAdmin ? [...nav, ...adminNav] : nav).filter((i) => i.to !== '/servers' || (!!local.role && !local.siteScoped));
 
   const content = (
     <div className="flex h-full flex-col">
@@ -182,8 +202,14 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
         <MenuIcon className="h-5 w-5" />
       </button>
       <div className="flex min-w-0 items-center gap-2 text-[13px]">
-        <Monitor className="h-4 w-4 shrink-0 text-zinc-400" />
-        <span className="truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{info.data?.hostname ?? '…'}</span>
+        <ServerSwitcher
+          fallback={
+            <>
+              <Monitor className="h-4 w-4 shrink-0 text-zinc-400" />
+              <span className="truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{info.data?.hostname ?? '…'}</span>
+            </>
+          }
+        />
         {info.data?.os && <span className="hidden truncate text-zinc-400 sm:inline">{info.data.os}</span>}
       </div>
       <div className="ml-auto flex items-center gap-1.5">
@@ -248,6 +274,7 @@ function UserMenu() {
       /* session may already be gone */
     }
     qc.clear();
+    setTarget(null); // the next user of this tab starts on this server
     navigate('/login', { replace: true });
   };
 

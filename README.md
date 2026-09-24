@@ -10,7 +10,7 @@ IIS Manager, with a status icon in the notification area.
 ## Features
 
 **Sites & bindings**
-- Site types: **Node.js application**, **background worker** (a Node.js process without HTTP), **reverse proxy**, **static site**, **redirect**
+- Site types: **application** (Node.js, Bun, Deno, Python, .NET or a custom command), **background worker** (the same without HTTP), **reverse proxy**, **static site**, **redirect**
 - IIS bindings: protocol, IP address (or all unassigned), port, host name; wildcard host names
 - IIS precedence: specific IP › all addresses, exact host › `*.wildcard` › empty host
 - SNI: any number of HTTPS sites on one IP:port, each with its own certificate
@@ -28,15 +28,19 @@ IIS Manager, with a status icon in the notification area.
 - The service itself restarts on failure (Windows service recovery), and auto-start sites come back with it
 - **Windows Job Objects**: every process tree is killed with its site — no orphaned `node.exe`, even if NodeHoster crashes; optional hard CPU % and memory caps
 - **Run as user** (application pool identity) via `LogonUser`
-- Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish
-- Per-instance CPU, memory, heap, event-loop lag, requests; stdout/stderr captured to rotating logs with live tail
+- Graceful shutdown on Windows through an injected agent (Windows has no SIGTERM): apps get `SIGTERM`/`SIGINT`/pm2 `shutdown`, or servers are closed after in-flight requests finish; other runtimes get a console Ctrl+Break, which ASP.NET Core, uvicorn and Hypercorn shut down gracefully on
+- Per-instance CPU, memory and requests for every runtime, heap and event-loop lag where the agent runs (Node.js, Bun); stdout/stderr captured to rotating logs with live tail
 - **Background workers**: queue consumers (BullMQ…), bots and long-running scripts supervised like web apps (no port; running once up for 2 s; rapid-fail protection, recycling, Job Objects, secrets, logs and metrics included)
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
+- **Other runtimes** under the same process manager, like IIS hosting more than ASP.NET: **Bun**, **Deno**, **Python** (a script, `python -m` a module, or an ASGI/WSGI app on uvicorn, Hypercorn or Waitress), **.NET** (ASP.NET Core on Kestrel: `dotnet app.dll` or a self-contained `.exe`, like the ASP.NET Core Module's out-of-process hosting) and any **custom command** that listens on `PORT`. Instances, restarts, rapid-fail protection, recycling, Job Objects, run-as identity, secrets, logs, CPU/memory, deployments and scheduled tasks work the same for all of them — see [Runtimes](#runtimes)
+- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 checked against the release's own checksums: see [Runtimes](#runtimes)), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, registry, PATH, Program Files) and picked per site; only programs no one but administrators can change are ever run
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
+- **Secret stores** like Azure App Service's Key Vault references: a variable (or a git deploy token) can come from **HashiCorp Vault / OpenBao** (KV v1/v2, token or AppRole with automatic renewal, namespaces), **Infisical** (cloud or self-hosted, Universal Auth) or **Bitwarden Secrets Manager** (cloud US/EU or self-hosted; pure Go, no SDK to install). Read at every instance start, recycle, task run and build, cached in memory for a few minutes, never written anywhere; the last known value keeps sites starting while a store is down; optional zero-downtime recycle when a secret changes
 
 **Reverse proxy & request pipeline**
 - HTTP/1.1, HTTP/2, WebSockets, SSE/streaming, `X-Forwarded-*` headers, trusted proxies
+- **HTTP/3 (QUIC)**, off by default: one switch opens a UDP listener next to every HTTPS listener and advertises it with `Alt-Svc`; same sites, certificates and client certificate rules, 0-RTT off, graceful shutdown; access logs and metrics show the protocol. Allow UDP on the HTTPS ports in firewalls and cloud security groups in front of the server (setup's Windows Firewall rule already covers it)
 - Upstream load balancing: round-robin (weighted), least connections, IP hash, random; active and passive health checks
 - **Session affinity** like ARR's client affinity: a signed, opaque cookie keeps each client on its instance, server or upstream (works behind CDNs/NAT, survives zero-downtime recycles, WebSockets included); moved and re-issued when the backend goes down
 - HTTPS redirect, HSTS, **Brotli and gzip compression** (negotiated by q-value, pre-compressed `.br`/`.gz` static files), request body limit, upstream timeout
@@ -47,7 +51,8 @@ IIS Manager, with a status icon in the notification area.
 - **MIME types** like IIS: a built-in table (the Windows registry is never consulted, so `.js` is never served as `text/plain`), server-wide and per-site mappings, and unknown extensions either served as `application/octet-stream` or refused with 404
 - Request/response header rules, **IP & domain restrictions** (CIDR allow/deny)
 - Basic authentication, per-client **rate limiting**
-- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
+- **Automatic IP banning** like fail2ban: failed sign-ins (sites and web console), 404 scans, rate-limit rejections, requests the firewall blocked and trap paths (`/wp-login.php`, `/.env`…) ban the client address across all sites, escalating for repeat offenders; IPv6 by /64, allow list, trusted proxies respected, per-site opt-out, bans survive restarts; unban from the web console or NodeHoster Manager
+- **Web application firewall** like Azure Application Gateway's WAF, per site: SQL and NoSQL injection, cross-site scripting, path traversal, remote file inclusion, command injection (Unix and Windows), Node.js attacks (prototype pollution, template injection, `child_process`), PHP and Java (Log4Shell) payloads, scanners and protocol abuse, in the path, query string, cookies, headers and form/JSON/multipart bodies (gzip and deflate too), after undoing double URL encoding, `%u`, HTML entities and full-width tricks. OWASP-CRS-style anomaly scoring with paranoia levels 1–3, failing closed on a request it cannot inspect completely; **detect** mode logs what would be blocked, **block** answers 403 with a request ID; new sites start in detect, existing sites stay off until turned on. Exclusions by rule, category, path, argument, cookie or header, created from a blocked request in one click; blocks count towards IP banning (not a browser's cross-site requests, so that a page elsewhere cannot get its visitors banned); event paths and snippets keep no tokens or session IDs. Pure Go (RE2, linear time), a few microseconds for an ordinary request, nothing at all for a site with it off
 - **Maintenance mode** (like `app_offline.htm`) with IP bypass, custom error pages
 - Access logs in combined format; default page for unbound host names
 
@@ -66,24 +71,30 @@ IIS Manager, with a status icon in the notification area.
 - Automatic certificates per binding ("certMode: auto") with renewal at ⅔ of lifetime
 - DNS providers: Cloudflare, Route 53, Azure DNS, **Windows DNS Server (RFC 2136 / GSS-TSIG)**, DigitalOcean, GoDaddy, Namecheap, Hetzner, OVH, Gandi, Porkbun, Linode, Vultr, DNSimple, NameSilo, IONOS, netcup, ClouDNS, Duck DNS, HTTP request, external program
 - Import PFX/PEM, create self-signed, export PFX/PEM, expiry warnings
+- **Client certificates (mutual TLS)** per HTTPS binding, like IIS "Require SSL" + client certificates: ignore, accept or require, trusted CA bundle, optional allow list of subjects or SHA-256 fingerprints, per-path requirement (`/admin` only; matched however the path is spelled, after URL rewrites and on the path a location passes on, and not served over the site's plain HTTP bindings either); bindings sharing an IP and port each keep their own policy (chosen by SNI, 421 for mismatched requests); the application gets `X-Client-Verify`, `X-Client-Cert` (URL-escaped PEM, like nginx), `-Subject` and `-Fingerprint`, and client-supplied copies are always stripped
+- **OCSP stapling** for certificates with a responder: responses verified, cached on disk (restarts staple without the CA), refreshed halfway to expiry with back-off, never stapled once expired; `cert.revoked` and Must-Staple warnings; status per certificate in both consoles. Let's Encrypt ended OCSP in 2025, so its certificates simply show "no responder"
 
 **Deployments**
 - Upload a `.zip` or deploy from **git** (token auth never exposed in the process list)
 - Install/build commands, shared paths (`.env`, `uploads`) persisted across releases
 - Releases kept side by side; **one-click rollback**; activation is a zero-downtime recycle
+- **Deployment slots** like Azure App Service's: a `staging` slot runs its own release on its own instances and bindings (`staging.example.com`) with production's configuration, except slot settings (its own variables, production's variables marked sticky, instance count, bindings). Deploy to it (zip, git, webhook, CLI), try it, then **swap**: its instances restart with production's settings, warm-up paths are requested on every instance until they answer (200-399 by default), and production's traffic moves onto them at once — no cold start, in-flight requests finish on the old instances, which become the slot. Swapping again is the rollback; a failed warm-up changes nothing. Optional auto-swap after a deployment, `slot.swapped` / `slot.swap_failed` notifications, per-slot logs and metrics
 - Push-to-deploy webhooks (GitHub, GitLab, Gitea signatures)
+- **Preview deployments** like Azure Static Web Apps' pull request environments: every pull request (GitLab merge request) or matching branch (`feature/*`) gets a temporary site of its own at `pr-42.preview.example.com` or `feature-login.preview.example.com`, cloned from its site with one instance, its own shared folder, none of its secrets and variable overrides (a separate `DATABASE_URL`) plus `PREVIEW`, `PREVIEW_BRANCH`, `PREVIEW_PR`, `PREVIEW_URL`; redeployed on every push and deleted with its releases, logs and certificate when the pull request is closed or merged, the branch deleted or after N days without a push. Forks are never built unless allowed, and then only each commit an operator approves; optional basic auth or IP allow list; per-host Let's Encrypt, a wildcard certificate from the store or one obtained through DNS-01; commit status with the preview's link on GitHub, GitLab and Gitea; `preview.*` notifications
 - **Import sites** from IIS (`applicationHost.config`, or this server's IIS: iisnode apps, bindings, virtual directories, URL Rewrite, ARR proxies, redirects), an iisnode `web.config` or PM2 (`ecosystem.config.js`, `pm2 jlist`), reviewed before anything is created
 
 **Administration**
 - **NodeHoster Manager**: native desktop console laid out like IIS Manager (connections tree, lists, actions pane), over a local named pipe that needs no password, port or certificate — it keeps working when the web console does not
-- **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail and certificate problems, start/stop the service
+- **Status icon** in the notification area: green/amber/red service and site health, notifications for crashes, rapid-fail, certificate problems and resource alerts, start/stop the service
 - Web console (React) with live status over Server-Sent Events
-- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
+- **Multi-server management** like IIS Manager's "Connect to a Server": connect the web console to other NodeHoster servers (their web console URL and an API token created there, encrypted at rest, with a self-signed certificate pinned by its SHA-256 fingerprint after you compare it on first connect) and switch between them from the top bar — every page then operates that server through this one, live status, log tails and zip uploads included. A **Servers** page shows each one's reachability, version, sites running/failed, CPU and memory, checked every 30 s, with `remote.down` / `remote.up` notifications. Administrators choose which roles may use each connection; users never get more there than their role here (viewers only read; a server too old to apply that limit is for administrators only), and every change made through a connection is in the local audit log. NodeHoster Manager (**Connect to a server…**), the command line (`nodehoster --server web02 site list`) and the PowerShell module (`Connect-NHServer`) connect the same way, with the token saved for your Windows account only (DPAPI)
+- **Command line and PowerShell**: `nodehoster site|deploy|rollback|logs|events|task|waf|cert|backup ...` (tables, or `--json` for scripts) and a `NodeHoster` PowerShell module (`Get-NHSite`, `Publish-NHSite`, `Undo-NHDeployment`...) over the local admin pipe
 - Users with roles (admin / operator / viewer), **TOTP two-factor**, API tokens
 - **Per-site permissions** like IIS Manager's: users allowed as viewer or operator on selected sites only, and API tokens restricted to a role and some sites (a CI token that can only deploy one site)
 - **Single sign-on** to the web console with **Microsoft Entra ID** or any OpenID Connect provider (authorization code + PKCE): existing users by default, optional user creation and group/app-role → role mapping; MFA stays with the provider; password sign-in can be turned off (break-glass: NodeHoster Manager and `nodehoster reset-password`, which turns it back on)
 - Audit log, event log, webhook notifications (Slack, Teams, Discord, generic)
 - Metrics history and a Prometheus `/metrics` endpoint
+- **Resource alerts** like Azure Monitor metric alerts: a rule fires when a metric stays past its limit for N minutes ("api.example.com: CPU 93% for 10 min (limit 90%)") and resolves after a recovery period, so a value hovering at the limit does not flap. Site CPU (total or busiest instance), memory (MB, or % of the site's memory limit), Node.js event-loop lag, 5xx error rate and average or p95 response time over a window (with a minimum request count), instances down; the server's CPU, memory and free disk space on the drives holding the data and the sites. Server-wide rules with per-site overrides and opt-out, warning or critical, reminders while firing; stopped or starting sites raise none. Notified through webhooks (Slack, Teams, Discord), the event log, the status icon (amber for critical alerts) and optionally e-mail through the built-in SMTP server; silence for a while or acknowledge until resolved; firing alerts survive a restart without notifying twice; history, a dashboard banner, an Alerts page in both consoles and `nodehoster_alert_firing` in Prometheus
 - **Log shipping** to syslog (RFC 5424 over UDP, TCP or TLS), Seq (CLEF) or any HTTP collector (JSON or NDJSON batches): server log, sites' output and access logs, events and audit log, per-site filters; bounded queues that drop the oldest records rather than ever slowing a site, retries with back-off, delivery counters
 - **Log search** across current and rotated (also gzipped) log files: text or regular expressions, stream and time range, newest first
 - Backup & restore of the whole configuration
@@ -95,8 +106,9 @@ IIS Manager, with a status icon in the notification area.
 Download `NodeHoster-<version>-setup.exe` (release files are hosted on S3;
 the GitHub release page links to them) and run it. The installer registers
 the **NodeHoster** service (automatic, delayed start, restart on failure),
-opens the firewall for the program, starts it and checks that it is running.
-Upgrades install over the top; sites and data are kept. A first
+opens the firewall for the program (every port it binds, TCP and UDP, so
+HTTP/3 needs no extra rule on the server itself), starts it and checks that
+it is running. Upgrades install over the top; sites and data are kept. A first
 installation also asks whether NodeHoster may install its own updates (see
 [Updates](#updates)).
 
@@ -182,22 +194,42 @@ never update themselves. Upgrades never change the setting.
 **Start → NodeHoster Manager** opens the desktop console (it asks for
 administrator rights, like IIS Manager). The left pane lists the server,
 its sites (with their state on their icons), certificates, SMTP e-mail,
-Node.js versions, web console users, banned addresses, the event and audit
-logs and backups; the middle pane shows the selected one (the server's
-home is a dashboard of the service, CPU, memory and disk); the right pane
-has its actions: start/stop/restart/recycle a site, deploy a `.zip` to it,
-edit its bindings, environment, URL Rewrite rules, MIME types and basic
-settings, browse it, follow its log live (pause, filter, save), see a
-deployment's output and roll back a release, run or cancel a scheduled
-task, purge its response cache, install Node.js versions, reset a web
-console user's password or two-factor authentication, ban and unban
-addresses, manage the mail queue, change where the web console listens,
-back up to a file, run a scheduled backup now and see its history, restore
-from a backup, and start or stop the service.
+Node.js versions, web console users, banned addresses, the web application
+firewall, alerts, the event and audit logs and backups; the middle pane
+shows the selected one (the server's home is a dashboard of the service,
+CPU, memory and disk); the right pane has its actions:
+start/stop/restart/recycle a site, deploy a `.zip` to it, edit its bindings,
+environment, URL Rewrite rules, MIME types and basic settings, browse it,
+follow its log live (pause, filter, save), see a deployment's output and
+roll back a release, swap a deployment slot into production (with a preview
+of what the swap does), run or cancel a scheduled task, purge its response
+cache, install Node.js versions, reset a web console user's password or
+two-factor authentication, ban and unban addresses, silence or acknowledge
+an alert, switch a site's firewall between off, detect and block, see the
+requests it blocked and exclude the rules behind a false positive, manage
+the mail queue, change where the web console listens, back up to a file, run
+a scheduled backup now and see its history, restore from a backup, and start
+or stop the service.
+
+**Connect to a server…** (File menu, or the tool bar) adds another
+NodeHoster server to the connections tree: its web console URL and an API
+token created there (Account → API tokens). A certificate that is not
+trusted (the self-signed one admin listeners get by default) is shown with
+its SHA-256 fingerprint to compare with the server's before it is pinned.
+The token is saved for your Windows account, protected by DPAPI, and the
+command line shares these connections. Selecting the server's node shows
+the same pages for it, over HTTPS instead of the pipe, with what the
+token's role allows there: sites (start, stop, recycle, deploy a `.zip`,
+live logs, settings), preview deployments, certificates, Node.js, mail,
+users, bans, alerts, the web application firewall, events, backups and
+updates. What needs the server's own computer — starting and stopping its
+Windows service, changing where its web console listens, and opening its
+data folder, log files or site folders — is disabled for remote servers (use
+NodeHoster Manager on that server). File → Remove connection forgets it.
 
 Every list can be searched (Ctrl+F) and sorted by clicking a column, and
 has the actions of its rows on a right-click; Delete removes, Enter opens,
-F5 refreshes, Ctrl+N adds a site, Ctrl+1…9 go to a section. The window
+F5 refreshes, Ctrl+N adds a site, Ctrl+0…9 go to a section. The window
 remembers its size, its panes and its lists' columns.
 
 It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
@@ -210,8 +242,10 @@ manager (Tools → Web console settings) and restart the service.
 The **status icon** (`nodehoster-manager.exe --tray`) starts at sign-in for
 every user (installer task; each user can turn it off from its menu). It
 runs unelevated and reads a read-only status pipe; its color is the overall
-health, its menu lists the sites and opens the manager, and it notifies
-about crashes, rapid-fail protection, failed deployments and certificates.
+health, its menu lists the sites (and the critical alerts firing) and opens
+the manager, and it notifies about crashes, rapid-fail protection, failed
+deployments, slot swaps, certificates and resource alerts. A critical alert
+that nobody silenced turns it amber.
 
 ### Command line
 
@@ -234,12 +268,30 @@ nodehoster deploy <site> --zip app.zip       upload a release, showing the log u
 nodehoster deploy <site> --git [--branch x]  deploy from the site's repository
 nodehoster releases <site>                   deployments; * marks the active release
 nodehoster rollback <site> [<release-id>]    default: the previous successful release
+nodehoster deploy|releases|rollback|logs <site> --slot staging   the same for a deployment slot
+nodehoster slot list <site>                  slots: state, release, bindings, last swap
+nodehoster slot swap <site> [<slot>] [--yes] [--no-wait]  warm up the slot and swap it into production
+nodehoster slot start|stop|recycle <site> <slot>
 nodehoster logs <site> [-n 100] [-f] [--access]
 nodehoster events [-n 50] [--site x]
 nodehoster task list <site>                  scheduled tasks, next run, last result
 nodehoster task run <site> <task> [--no-wait]  run now, showing its output until it ends
 nodehoster task runs <site> [<task>] [-n 20] | task cancel <site> <run-id>
+nodehoster preview list <site>               preview deployments: pull request or branch, state, address
+nodehoster preview deploy <site> <branch>    deploy a branch as a preview now
+nodehoster preview redeploy|delete <site> <preview> [--yes]   <preview>: ID, PR number, host or branch
+nodehoster preview approve <site> <preview> [--commit <sha>] [--yes]   build a pull request waiting for approval
+nodehoster alert list [--site x] | alert history [-n 50] [--site x]
+nodehoster alert silence <alert-id> [--minutes 60] [--note ...] | alert ack <alert-id> | alert unsilence <alert-id>
 nodehoster cert list | cert renew <id|name|domain>
+nodehoster cert ocsp <id|name|domain>        ask the certificate's OCSP responder now
+nodehoster tls                               TLS settings and the HTTP/3 (UDP) listeners
+nodehoster tls set [--http3 on|off] [--http2 on|off] [--min-version 1.2|1.3]
+nodehoster waf list                          each site's firewall mode, paranoia, exclusions, blocks
+nodehoster waf mode <site> off|detect|block [--paranoia 1-3] [--threshold 5]
+nodehoster waf events [<site>] [-n 50] [--action blocked] [--ip x] [--rule 942100] [--id <request-id>]
+nodehoster waf exclude <site> [--path /admin/] [--rule 942100] [--category sqli] [--arg content] [--cookie x] [--header x]
+nodehoster waf rules [--category sqli]
 nodehoster backup <file>                     .zip: the full archive (encrypted with the backup
                                              passphrase, if set); any other name: the configuration (JSON)
 nodehoster backup run | backup history [-n 10]  back up to the destinations now; recent backups
@@ -247,9 +299,28 @@ nodehoster restore <file> [--yes] [--passphrase-file <file>]
 nodehoster update                            installed and newest version, automatic update settings
 nodehoster update check | update install [--yes]
 nodehoster update auto on|off [--time 03:00] [--days 0,6|all]
-nodehoster deps                              Node.js and Git: installed or missing (exit code 1 if missing)
-nodehoster deps install [node] [git]         install what is missing (setup runs this)
+nodehoster deps                              Node.js, Git and the runtimes sites use: installed or missing
+                                             (exit code 1 if missing)
+nodehoster deps install [node] [git] [bun] [deno]  install what is missing (setup runs this for node and git)
+nodehoster server add <name> <url> [--fingerprint <sha256>]  save a connection to another server
+nodehoster server list | server test <name> | server remove <name>
+nodehoster --server <name|url> [--token <token>] <command>   run a command on that server
+nodehoster secrets list                      secret stores: references, values in memory, last read and error
+nodehoster secrets test <store> [--ref <secret>]  sign in (and read a reference) without showing any value
+nodehoster secrets check <site>              read every secret store reference of a site now
+nodehoster runtime list                      Bun and Deno versions, Python interpreters, .NET runtimes
+nodehoster runtime install bun|deno [version] [--default]  default: the newest release
+nodehoster runtime remove bun|deno <version>
 ```
+
+`--server` runs a command against another server's web console over HTTPS
+instead of the local pipe (no elevation needed): a connection saved with
+`nodehoster server add` (it asks for the token, and shows a certificate
+that is not trusted with its fingerprint to confirm; the token is saved for
+your Windows account with DPAPI, shared with NodeHoster Manager), or a URL
+with the token in `--token` or, better, `NODEHOSTER_TOKEN`
+(`NODEHOSTER_FINGERPRINT` pins a self-signed certificate). The token's role
+on that server applies. `deps` and `server` work on this computer only.
 
 `backup run` and `backup history` are commands: to save a backup in a file
 named `run` or `history`, give a path (`nodehoster backup .\run`). An
@@ -268,12 +339,24 @@ PowerShell 5.1 and PowerShell 7, which wraps these commands and returns
 objects: `Get-NHSite`, `Start-NHSite`, `Stop-NHSite`, `Restart-NHSite
 [-Recycle]`, `Invoke-NHRecycle`, `Publish-NHSite -ZipPath|-Git`,
 `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog [-Follow]`, `Get-NHEvent`,
-`Get-NHCertificate`, `Get-NHTask`, `Start-NHTask [-NoWait]`, `Get-NHTaskRun`,
-`Start-NHBackup`. They take site names from the pipeline:
+`Get-NHCertificate`, `Update-NHCertificateOcsp`, `Get-NHTask`, `Start-NHTask
+[-NoWait]`, `Get-NHTaskRun`, `Start-NHBackup`, `Get-NHTlsSetting`,
+`Set-NHTlsSetting [-Http3] [-Http2] [-MinVersion]`, `Get-NHPreview`,
+`Publish-NHPreview -Branch|-Preview`, `Approve-NHPreview`, `Remove-NHPreview`,
+`Get-NHAlert [-Pending] [-History]`, `Set-NHAlertSilence [-Minutes]`,
+`Clear-NHAlertSilence`, `Get-NHSecretStore [-Test]`,
+`Test-NHSecretReference`, `Get-NHSlot`, `Switch-NHSlot` (and `-Slot` on
+`Publish-NHSite`, `Get-NHRelease`, `Undo-NHDeployment`, `Get-NHLog`),
+`Get-NHRuntime`, `Install-NHRuntime bun|deno [-Version] [-Default]`,
+`Get-NHWafEvent`, `Set-NHWafMode`, `Add-NHWafExclusion`. They take site
+names from the pipeline. `Connect-NHServer <name|url> [-Token]` makes them
+target another server until `Disconnect-NHServer`; `Get-NHServer` lists the
+saved connections:
 
 ```powershell
 Get-NHSite | Where-Object State -eq 'failed' | Start-NHSite
 Publish-NHSite shop -ZipPath .\build\shop.zip
+Publish-NHSite shop -ZipPath .\build\shop.zip -Slot staging; Switch-NHSlot shop -Confirm:$false
 Get-NHLog shop -Tail 50 | Where-Object Stream -eq 'stderr'
 Get-Help Publish-NHSite -Examples
 ```
@@ -281,7 +364,7 @@ Get-Help Publish-NHSite -Examples
 ## Hosting a Node.js app
 
 1. **Node.js** page → install an LTS version (or use the `node` on PATH).
-2. **Sites → New site → Node.js application**: app folder, entry script
+2. **Sites → New site → Application**, runtime Node.js: app folder, entry script
    (`server.js`) or an npm script (`start`), instances.
 3. Add bindings, e.g. `http *:80 app.example.com` and `https *:443 app.example.com`
    with certificate **Auto (Let's Encrypt)**. DNS must point at the server and
@@ -299,6 +382,170 @@ site: each run starts the script in the site's current release with its
 Node.js version, variables and identity, plus `NODEHOSTER_TASK=<name>`; a
 deployment during a run does not delete the release it runs in.
 
+To try a release before it goes live, add a **staging slot** (the site's
+Slots tab): give it a binding (`staging.example.com`), mark production's
+variables that must not reach it as slot settings (the database URL) and
+give it its own values, then deploy to it (`nodehoster deploy shop --zip
+app.zip --slot staging`). **Swap** puts it into production without a cold
+start; swap again to go back. Scheduled tasks run in production only, and a
+slot needs automatic ports (not a fixed port).
+
+### Preview deployments
+
+On a site deployed from git (**Deployments** tab: repository, production
+branch and webhook secret), the **Previews** tab turns them on:
+
+1. Pick a host pattern such as `pr-{number}.preview.example.com` and point a
+   wildcard DNS record (`*.preview.example.com`) at the server. For HTTPS,
+   prefer a wildcard certificate (from the store, or obtained through DNS-01
+   with one of the DNS providers): a per-host Let's Encrypt certificate needs
+   port 80 and counts against the CA's limit of 50 new certificates a week
+   per registered domain, which your production sites under that domain
+   share. NodeHoster asks for at most 20 a week for previews under one
+   domain and refuses new previews beyond that (`preview.failed`), so that
+   previews never use up what production renewals and new domains need.
+2. Subscribe the site's push webhook to pull request events and branch
+   deletions as well as pushes (GitHub: *Pull requests*, *Branch or tag
+   deletion*; GitLab: *Merge request events*; Gitea: *Pull Request*,
+   *Delete*). Signatures are verified exactly as for pushes. Use the
+   site's webhook URL without `?slot=`: a slot's URL deploys the slot on
+   pushes to the production branch and leaves previews alone.
+3. Optionally: variables that differ in previews (a staging database),
+   basic auth or an IP allow list so they are not public, and a token to
+   report a commit status whose link opens the preview.
+
+A preview is a site of its own (`shop pr-42`), listed under its site in the
+console and in `nodehoster preview list`. Its configuration is made from
+its site's at every deployment: one instance, one release kept, its own
+shared folder (never the site's `uploads` or `.env`), no scheduled tasks
+(they would run against the same data twice), no deployment slots, the
+site's firewall mode and, on HTTPS, its client certificate policy. Previews
+get the site's plain variables but **not its secrets**: secret variables,
+variables read from a secret store and slot settings stay in production;
+give previews their own in the preview variables, or turn on
+`inheritSecrets` for same-repository previews (anyone who can push a branch
+could then read them). The git token is only ever used by NodeHoster to
+fetch. A site that requires client certificates cannot have plain-HTTP
+previews unless they have basic auth or an IP allow list. Previews raise no
+alerts. Whoever may operate the site may redeploy, approve and delete its
+previews.
+
+Pull requests from forks are ignored unless allowed. When allowed, a fork's
+pull request is listed **awaiting approval** and nothing of it is fetched
+until an operator approves its head commit (Previews tab, `nodehoster
+preview approve`, `Approve-NHPreview`, the Manager's Previews page): its
+install and build commands and then its code run on the server, with the
+service's privileges unless the site runs as a separate account. Only the
+approved commit is built (the pull request's ref is checked before
+anything runs), each new push waits for approval again while the approved
+build keeps serving, fork previews never get the site's secrets, and
+turning forks off deletes their previews at once. `requireApproval: "all"`
+holds every pull request the same way (branch previews never wait).
+
+At most two preview deployments run at once on the server; the others wait
+their turn, so a burst of pushed branches does not start as many installs
+side by side. At most `maxPreviews` previews exist per site: a new one
+evicts a preview that never deployed successfully first, then the one
+pushed to least recently; a pull request awaiting approval only evicts
+another one awaiting approval since it was opened.
+
+## Runtimes
+
+An application or background worker site runs with one runtime, chosen in
+the new-site wizard or the site's settings (`node.runtime` in the API; the
+configuration object keeps the name `node` whatever the runtime, and a site
+saved before runtimes existed is Node.js). Everything about supervising the
+processes is the same for all of them; what differs is how they start:
+
+| Runtime | Starts | Version |
+|---|---|---|
+| **Node.js** | `node <script>` or `npm run <script>` | installed on the Node.js page, pinned per site |
+| **Bun** | `bun <script>` or `bun run <script>` | installed on the Runtimes page (or `bun` on PATH), pinned per site |
+| **Deno** | `deno run <flags> <script>` or `deno task <name>` | installed on the Runtimes page (or `deno` on PATH), pinned per site |
+| **Python** | `python <script>`, `python -m <module>`, or `python -m uvicorn\|hypercorn\|waitress <module:app>` | an interpreter found on the server: a version (`3.12`) or a `python.exe` |
+| **.NET** | `dotnet <app.dll>` or `<app.exe>` (self-contained) | the `dotnet.exe` found on the server; the app's runtimeconfig picks the framework |
+| **Custom command** | any program with its arguments | — |
+
+- **What the Bun and Deno checksums prove**: a version is downloaded over
+  HTTPS from the project's GitHub release, and its SHA-256 is compared with
+  the one GitHub reports for the asset or the checksum file in the same
+  release (`SHASUMS256.txt`, `*.sha256sum`). That catches a corrupt or
+  truncated download, not a release replaced by someone with access to the
+  project's GitHub account or its build: the checksum comes from the same
+  place as the zip. Deno does not sign its releases; Bun publishes a
+  PGP signature of `SHASUMS256.txt` (`SHASUMS256.txt.asc`) that NodeHoster
+  does not check. Install from the Runtimes page what you would install by
+  hand from the same release, and pin versions per site rather than taking
+  the newest on every server.
+- **Deno** grants a program nothing it is not told to: the consoles start a
+  Deno site with `--allow-net --allow-env --allow-read` (edit them under
+  Arguments); a task in `deno.json` sets its own.
+- **Port**: every instance gets `PORT`. .NET sites also get
+  `ASPNETCORE_URLS=http://127.0.0.1:<port>` (a site variable cannot move
+  it; `ASPNETCORE_ENVIRONMENT` passes through as the site sets it), and the
+  Python servers are started with `127.0.0.1` and the port. An instance is
+  ready once it listens on its port, as for Node.js.
+- **Stopping**: Node.js and Bun (entry scripts) stop through the agent.
+  The others get a console **Ctrl+Break** (Windows has no SIGTERM; `SIGTERM`
+  elsewhere): ASP.NET Core's generic host, uvicorn and Hypercorn shut down
+  gracefully on it, Deno and Bun run their `SIGBREAK` listeners, and
+  anything still running after the shutdown timeout is killed with its Job
+  Object. (The event is sent by a short-lived `nodehoster.exe` that
+  attaches to the instance's console: only for a process in the instance's
+  Job Object, and as the site's run-as account when it has one.)
+- **Metrics**: CPU and memory of the whole process tree for every runtime;
+  heap and event-loop lag only where the agent reports them (Node.js, and
+  Bun's heap), so the consoles show those columns only then.
+- **Deployments** run the runtime's install command in each new release:
+  `npm ci --omit=dev`, `bun install --production`, `deno install` (into the
+  site's own `DENO_DIR`, which its processes use too), or for Python
+  `python -m pip install -r requirements.txt` inside a **virtual
+  environment created in the release** (`.venv` by default; one that came
+  with the upload is replaced). A virtual environment per release means a
+  rollback gets the packages it was deployed with and a running release is
+  never changed under it; pip's download cache is shared by the site's
+  releases, like npm's. .NET has no install step; set the build command to
+  `dotnet publish -c Release -o publish` and the application to
+  `publish\MyApp.dll`, or deploy a ready-built app. A step is skipped when
+  the release has nothing for it (`package.json`, `deno.json`,
+  `requirements.txt`/`pyproject.toml`). The virtual environment and the
+  default pip install run Python in isolated mode (`-I`), by the
+  environment's full path, so a `venv.py`, `pip.py` or `python.bat` in the
+  release is not what runs; an install or build command of your own runs as
+  you wrote it (`python -m ...` there imports from the release first, as
+  Python always does).
+- **Who runs the install and build commands**: the site's **Run as**
+  account when it has one, like its instances (see
+  [Data directory](#data-directory)), and the service (SYSTEM) otherwise. These
+  commands run the application's own code (package scripts, NuGet build
+  targets, `setup.py`), and use caches in the site's folder (`.npm-cache`,
+  `.bun-cache`, `.deno-cache`, `.pip-cache`, `.nuget`) that a run-as
+  account can change. **Give a site that builds code you do not fully
+  trust, such as pull request previews, a run-as account**: without one,
+  that code runs as SYSTEM.
+- **Scheduled tasks** and **background workers** run with the site's
+  runtime: a Python site's task is `python <script>` in its virtual
+  environment; package scripts are for Node.js, Bun and Deno.
+- **Python and .NET are not installed by NodeHoster**: install Python for
+  all users from python.org (the service cannot see per-user installs) and
+  the ASP.NET Core Hosting Bundle from dotnet.microsoft.com; the Runtimes
+  page shows what was found and links there when nothing was.
+  `nodehoster deps` lists every runtime a site uses as required.
+- **Only programs administrators control are run.** The service runs as
+  SYSTEM (checked when NodeHoster runs as SYSTEM or root, not when a
+  developer runs it as their own account), and runs what it finds (to ask an interpreter its version, and in
+  deployments). So an interpreter, `dotnet.exe`, a `bun`/`deno`, and a
+  `node`, `git` or custom command's program found on PATH are used only when no account but SYSTEM, Administrators and
+  TrustedInstaller can change it, its folder (for Python also `Lib`,
+  `site-packages` and `DLLs`) or the folders leading to it. Python in
+  `C:\Python312` fails this (a folder made in `C:\` lets every signed-in
+  user change what it holds), as does a runtime in a user's profile on the
+  machine's PATH: install for all users, into Program Files, or remove the
+  other accounts' write access. What is refused is left off the Runtimes
+  page with the reason in the server log; a site that names it by path
+  (`runtimeVersion`, or the server default) fails to start and deploy with
+  that reason. Only administrators can set either.
+
 ### Migrating from IIS/iisnode or PM2
 
 **Sites → Import sites** in the web console (or **Import from IIS…** on
@@ -311,6 +558,62 @@ HTTPS bindings get Let's Encrypt certificates (IIS certificates stay in the
 Windows store; import the PFX to reuse one), and application pool passwords
 are never imported. PM2 ecosystem files are read, never run: if yours
 computes values, import `pm2 jlist > apps.json` instead.
+
+### Secret stores
+
+Instead of pasting a database password into a site, keep it in the secret
+manager you already run and give the variable a **reference**: in the
+variable editor choose **From secret store** (the vault icon), pick the
+store and name the secret; **Test** asks the server to read it and says
+whether it resolves, without ever showing the value. NodeHoster Manager and
+the command line show a reference as `secretref:<store>/<secret>`, and
+typing that as a variable's value (or pasting it in a `.env`) makes one.
+Deployment slots' own variables, the variables previews are given and
+tasks' variables can be references as well; variables NodeHoster sets
+itself (`PORT`, `NODE_APP_INSTANCE`, `ASPNETCORE_URLS`, `NODE_OPTIONS`,
+`NODEHOSTER_*`) cannot. A git deploy token can be a reference too
+(**Deployment settings → Read the access token from a secret store**).
+
+Add stores in **Settings → Secret stores** (administrators). Store URLs
+must be `https://` (`http://` only for a store on the machine itself), and
+NodeHoster does not follow a redirect to another server. Credentials
+are encrypted at rest like other secrets and travel in passphrase-protected
+backups; they are only ever sent to the server they were entered for, so
+changing a store's address means entering them again. Each store has a
+**cache time** (default 5 minutes: a recycle of eight instances asks the
+store once) and, optionally, a **watch interval**: every running site or
+deployment slot whose secret changed is recycled without downtime.
+Values live only in memory. If a store is unreachable when a process
+starts, the last value read is used and a `secret.stale` event says so; if
+the store refuses NodeHoster's credentials (revoked or expired), the last
+value is used for at most an hour after it was read, with a
+`secret.failed` event. A secret never read (after a service restart, say)
+or deleted from the store fails the start with a `secret.failed` event
+naming the variable, and a recycle that fails keeps the running
+instances. Self-hosted servers with a private CA: paste the CA certificate
+in the store; certificate checks cannot be turned off.
+
+- **HashiCorp Vault / OpenBao**: the address, the KV mount (`secret`) and
+  version (2 unless it is a v1 engine), and either a token or AppRole
+  (role ID + secret ID; NodeHoster renews its token at half its TTL and
+  signs in again at the max TTL). A token given directly should be a
+  periodic token; NodeHoster renews it. The policy needs `read` on
+  `<mount>/data/<path>` (KV v2) or `<mount>/<path>` (v1). References are
+  `<path>#<key>`: `app/prod#DB_PASSWORD`. Enterprise and OpenBao
+  namespaces are supported.
+- **Infisical**: create a machine identity with **Universal Auth**, give it
+  (at least viewer) access to the project, and enter its client ID and
+  secret, the project ID and the environment slug (`prod`). Leave the URL
+  empty for Infisical Cloud (US), or enter `https://eu.infisical.com` or
+  your self-hosted server. References are a secret name, optionally in a
+  folder: `DB_PASSWORD`, `/backend/DB_PASSWORD`. Secret references and
+  imports inside Infisical are expanded.
+- **Bitwarden Secrets Manager**: create a machine account with read access
+  to the projects, and an access token for it; choose the US or EU cloud,
+  or enter the URL of your self-hosted Bitwarden server (NodeHoster uses
+  its `/api` and `/identity`). References are secret IDs (the UUID shown in
+  the web app). **Vaultwarden does not implement Secrets Manager**; it
+  cannot be used here.
 
 ## Data directory
 
@@ -352,6 +655,17 @@ permissions: changing or turning off the identity removes the previous
 account's access. An application folder outside the data directory is the
 administrator's to share with that account. Applications' output is
 written to `logs\sites\<id>\` by the service, so that folder stays closed.
+
+A deployment of such a site runs its install and build commands (and
+Python's `-m venv`) as that account too, in a Job Object, with `TEMP` in
+`sites\<id>\.tmp`: what those commands run, and the package caches in the
+site's folder that the account can change, never run as SYSTEM. The
+service still extracts the upload or clones the repository and links the
+shared paths, into a release folder the account cannot open until then,
+and opens it for the commands. If you turn a site's run-as account off,
+delete the caches in its folder (`.npm-cache`, `.bun-cache`,
+`.deno-cache`, `.pip-cache`, `.nuget`, `.dotnet`): the account could have
+changed them, and SYSTEM would now build with them.
 
 Run unelevated (for development), the server also admits its own account,
 so it does not lock itself out of a data folder it created.
@@ -399,17 +713,23 @@ cmd/nodehoster        entry point, CLI, admin listener
 cmd/nodehoster-manager desktop manager and status icon (Win32, walk)
 internal/core         composition root; site lifecycle
 internal/procmgr      process supervisor (+ agent/ injected into apps)
-internal/proxy        listeners, binding match, request pipeline, load balancing
-internal/certs        ACME (lego), import/export, renewal
+internal/proxy        listeners (TCP, QUIC), binding match, mTLS, request pipeline, load balancing
+internal/waf          web application firewall: rules, normalisation, inspection, events
+internal/certs        ACME (lego), import/export, renewal, OCSP stapling
+internal/alerts       resource alert rules: evaluation, firing/resolving state machine
 internal/deploy       zip/git deployments and releases
+internal/preview      preview deployments: webhook events, names, commit statuses (lifecycle in core)
 internal/nodeversions Node.js runtime installer
+internal/runtimes     Bun/Deno installer, Python and .NET detection
 internal/deps         Git lookup and MinGit installer (nodehoster deps)
 internal/api          REST API (docs/API.md) and embedded web UI
 internal/localapi     local pipes for the desktop programs (client; server in localserver)
+internal/remote       other servers' web console API: TLS pinning, health checks, saved connections
 internal/desktop      desktop presentation logic: health, formatting, icons
 internal/auth         users, sessions, tokens, TOTP
 internal/store        SQLite persistence
 internal/secrets      AES-GCM + DPAPI
+internal/secretstore  Vault/OpenBao, Infisical and Bitwarden Secrets Manager clients, value cache
 internal/service      Windows service integration
 web/                  React admin console
 installer/            Inno Setup script

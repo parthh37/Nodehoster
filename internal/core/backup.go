@@ -979,7 +979,7 @@ func (c *Core) resealSecrets(data []byte, portable map[string]string) ([]byte, [
 		return nil, nil, fmt.Errorf("not a NodeHoster backup: %w", err)
 	}
 	var cur any
-	here, err := json.Marshal(Backup{Settings: c.Settings(), Sites: c.Sites()})
+	here, err := json.Marshal(Backup{Settings: c.Settings(), Sites: c.Sites(), Servers: c.ServerConnections()})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1081,6 +1081,16 @@ func sameEntry(path string, x any, list []any) any {
 	}
 	if path == "settings.backup.destinations" {
 		keys = append(keys, destLocation)
+	}
+	if path == "settings.secretStores" {
+		// References name stores: one set up here under the same name
+		// with the same type is the same store.
+		keys = append(keys, func(m map[string]any) string {
+			if str(m["name"]) == "" {
+				return ""
+			}
+			return str(m["type"]) + "\x00" + str(m["name"])
+		})
 	}
 	for _, key := range keys {
 		k := key(m)

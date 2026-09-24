@@ -4,12 +4,12 @@ package deploy
 
 import (
 	"context"
-	"io"
 	"os/exec"
 )
 
-func runShellWindows(ctx context.Context, out io.Writer, dir string, env []string, command string) error {
-	panic("unreachable")
+// shellCommand runs a command line through sh.
+func shellCommand(ctx context.Context, command string) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c", command)
 }
 
 func hideWindow(*exec.Cmd) {}

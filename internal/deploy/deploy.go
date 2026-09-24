@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,9 @@ type Options struct {
 	Settings func() model.Settings
 	// ResolveNode finds the runtime used for install and build commands.
 	ResolveNode func(version string) (procmgr.NodeRuntime, error)
+	// ResolveRuntime finds the runtime of a site that is not Node.js
+	// (bun, deno, python, dotnet; "" version = the server default).
+	ResolveRuntime func(runtime, version string) (procmgr.RuntimeExe, error)
 	// Activate points the site at a release and applies it (a rolling
 	// recycle for Node.js sites).
 	Activate func(ctx context.Context, siteID, release string) error
@@ -51,6 +55,15 @@ type Options struct {
 	InUse func(siteID string) []string
 	// FindGit locates git for git deployments; nil looks on PATH.
 	FindGit func() (string, error)
+	// SecretEnv reads the site's variables that come from secret stores
+	// (by name) and SecretToken a git token that does; optional.
+	SecretEnv   func(site *model.Site, vars []model.EnvVar) (map[string]string, error)
+	SecretToken func(site *model.Site, ref model.SecretRef) (string, error)
+	// ActivateSlot points a deployment slot at a release (slots.go).
+	ActivateSlot func(ctx context.Context, siteID, slot, release string) error
+	// OnFinish, optional, is told of every deployment that ended, after
+	// the site is free for the next one (auto-swap starts from it).
+	OnFinish func(site *model.Site, dep *model.Deployment)
 }
 
 type Deployer struct {
@@ -59,10 +72,15 @@ type Deployer struct {
 	mu      sync.Mutex
 	running map[string]string // siteID -> deployment id
 	logs    map[string]*depLog
+
+	// runAsAccount runs a command as a site's run-as account
+	// (procmgr.RunAs); tests, which cannot log on as another account,
+	// replace it.
+	runAsAccount func(ctx context.Context, cmd *exec.Cmd, runAs model.RunAsConfig, password, siteDir string) error
 }
 
 func New(opts Options) *Deployer {
-	return &Deployer{opts: opts, running: map[string]string{}, logs: map[string]*depLog{}}
+	return &Deployer{opts: opts, running: map[string]string{}, logs: map[string]*depLog{}, runAsAccount: procmgr.RunAs}
 }
 
 // depLog is a deployment's output: written to a file and streamed live.
@@ -157,9 +175,9 @@ func newReleaseID() string {
 // begin reserves the site and creates the deployment record and log.
 func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user string) (*model.Deployment, *depLog, error) {
 	d.mu.Lock()
-	if _, busy := d.running[site.ID]; busy {
+	if holder, busy := d.running[site.ID]; busy {
 		d.mu.Unlock()
-		return nil, nil, ErrBusy
+		return nil, nil, busyError(holder)
 	}
 	id := newReleaseID()
 	d.running[site.ID] = id
@@ -167,7 +185,7 @@ func (d *Deployer) begin(ctx context.Context, site *model.Site, source, user str
 
 	dep := &model.Deployment{
 		ID: id, SiteID: site.ID, Source: source, Status: "running", StartedAt: time.Now(), User: user,
-		ReleaseDir: model.ReleaseDir(d.opts.SitesDir, site.ID, id),
+		ReleaseDir: model.ReleaseDir(d.opts.SitesDir, site.ID, id), Slot: site.Slot,
 	}
 	lp := d.logPath(site.ID, id)
 	os.MkdirAll(filepath.Dir(lp), 0o750)
@@ -241,22 +259,21 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 	token := d.opts.Box.MustUnseal(g.Token)
 	snapshot := *dep // the worker keeps updating dep; callers get it as started
 	go d.run(site, dep, l, func() error {
+		if g.TokenFrom != nil {
+			l.printf("reading the token from secret store %q", g.TokenFrom.Store)
+			t, err := d.secretToken(site, *g.TokenFrom)
+			if err != nil {
+				return err
+			}
+			token = t
+		}
 		args := []string{"clone", "--depth", "1", "--single-branch"}
 		if branch != "" {
 			args = append(args, "--branch", branch)
 		}
 		args = append(args, g.Repo, dep.ReleaseDir)
 		l.printf("git clone %s%s", redact(g.Repo), map[bool]string{true: " (" + branch + ")", false: ""}[branch != ""])
-		env := os.Environ()
-		env = append(env, "GIT_TERMINAL_PROMPT=0")
-		if token != "" {
-			// The token travels in an HTTP header set through git's
-			// environment config, so it never appears in the process list
-			// or in the clone's .git/config.
-			basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-			env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader",
-				"GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
-		}
+		env := gitEnv(token)
 		if err := runCmd(context.Background(), l, "", env, git, args...); err != nil {
 			return fmt.Errorf("git clone failed: %w", err)
 		}
@@ -281,6 +298,29 @@ func (d *Deployer) findGit() (string, error) {
 	return "", errors.New("git is not installed on the server; install it with: nodehoster deps install git")
 }
 
+// gitEnv is the environment NodeHoster runs git in. git never asks for
+// anything: not on a terminal (GIT_TERMINAL_PROMPT), and not through a
+// credential helper, which the machine's git configuration may name (Git
+// for Windows sets Git Credential Manager, which can wait for someone to
+// sign in); credentials are the site's token or nothing. The token
+// travels in an HTTP header set through git's environment config, so it
+// never appears in the process list or in the repository's .git/config.
+func gitEnv(token string) []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
+	var keys [][2]string
+	if token != "" {
+		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+		keys = append(keys, [2]string{"http.extraHeader", "Authorization: Basic " + basic})
+	}
+	keys = append(keys, [2]string{"credential.helper", ""}) // an empty value clears the configured helpers
+	env = append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(len(keys)))
+	for i, kv := range keys {
+		n := strconv.Itoa(i)
+		env = append(env, "GIT_CONFIG_KEY_"+n+"="+kv[0], "GIT_CONFIG_VALUE_"+n+"="+kv[1])
+	}
+	return env
+}
+
 func redact(repo string) string {
 	u, err := url.Parse(repo)
 	if err != nil || u.User == nil {
@@ -294,12 +334,13 @@ func redact(repo string) string {
 // activate, prune.
 func (d *Deployer) run(site *model.Site, dep *model.Deployment, l *depLog, fetch func() error) {
 	ctx := context.Background()
+	defer d.finished(site, dep) // after finish: the site is free again
 	defer d.finish(site.ID, dep.ID)
 	// The release active before this deployment keeps serving while the
 	// rolling recycle drains it, so pruning must not remove it.
 	previous := ""
 	if cur, err := d.opts.Store.GetSite(ctx, site.ID); err == nil {
-		previous = cur.ActiveRelease
+		previous = cur.ReleaseIn(site.Slot)
 	}
 	err := d.steps(ctx, site, dep, l, fetch)
 	now := time.Now()
@@ -326,6 +367,15 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 	if err := os.MkdirAll(filepath.Dir(dep.ReleaseDir), 0o750); err != nil {
 		return err
 	}
+	// The service fills the release; a run-as account, which can change
+	// what is in the site's folder, cannot reach it until the commands
+	// that run as that account (see createClosedRelease).
+	ra, asAccount := runAs(site)
+	if asAccount {
+		if err := createClosedRelease(dep.ReleaseDir); err != nil {
+			return fmt.Errorf("create the release folder: %w", err)
+		}
+	}
 	if err := fetch(); err != nil {
 		return err
 	}
@@ -340,6 +390,22 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 	if err != nil {
 		return err
 	}
+	if asAccount {
+		if err := openRelease(dep.ReleaseDir); err != nil {
+			return fmt.Errorf("give %s access to the release: %w", ra.Username, err)
+		}
+		// The service's temporary folder may be closed to the account.
+		tmp := filepath.Join(d.opts.SitesDir, site.ID, ".tmp")
+		if err := os.MkdirAll(tmp, 0o750); err != nil {
+			return err
+		}
+		env = append(env, "TEMP="+tmp, "TMP="+tmp, "TMPDIR="+tmp)
+		l.printf("commands run as %s", ra.Username)
+	}
+	env, python, err := d.prepareVenv(ctx, site, workDir, env, l)
+	if err != nil {
+		return err
+	}
 	for _, step := range []struct{ name, cmd string }{
 		{"install", site.Deploy.InstallCommand},
 		{"build", site.Deploy.BuildCommand},
@@ -347,20 +413,24 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 		if strings.TrimSpace(step.cmd) == "" {
 			continue
 		}
-		if step.name == "install" && !fileExists(filepath.Join(workDir, "package.json")) {
-			l.printf("no package.json, skipping install")
+		if msg := installSkipMessage(site, workDir); step.name == "install" && msg != "" {
+			l.printf("%s", msg)
 			continue
 		}
-		l.printf("%s: %s", step.name, step.cmd)
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		err := runShell(cctx, l, workDir, env, step.cmd)
+		cmd, shown := shellCommand(cctx, step.cmd), step.cmd
+		if c := isolatedInstall(cctx, site, step.cmd, python); step.name == "install" && c != nil {
+			cmd, shown = c, strings.Join(c.Args, " ")
+		}
+		l.printf("%s: %s", step.name, shown)
+		err := d.siteCommand(cctx, site, l, workDir, env, cmd)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("%s command failed: %w", step.name, err)
 		}
 	}
 	l.printf("activating release %s", dep.ID)
-	if err := d.opts.Activate(ctx, site.ID, dep.ID); err != nil {
+	if err := d.activate(ctx, site, dep.ID); err != nil {
 		return fmt.Errorf("activate: %w", err)
 	}
 	return nil
@@ -368,7 +438,8 @@ func (d *Deployer) steps(ctx context.Context, site *model.Site, dep *model.Deplo
 
 // commandEnv is the environment for install/build commands: the service's
 // environment, the site's node and git on PATH (npm fetches git
-// dependencies with it), and the site's variables.
+// dependencies with it), the site's own runtime ahead of them when it is
+// not Node.js, and the site's variables.
 func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	env := os.Environ()
 	if git, err := d.findGit(); err == nil {
@@ -381,18 +452,29 @@ func (d *Deployer) commandEnv(site *model.Site) ([]string, error) {
 	if version == "" {
 		version = d.opts.Settings().DefaultNodeVersion
 	}
+	// Node.js is on PATH for every site when there is one (a Python site
+	// may still build its front end with npm); only Node.js sites need it.
 	rt, err := d.opts.ResolveNode(version)
 	if err == nil {
 		env = prependPath(env, filepath.Dir(rt.Exe))
-	} else if site.RunsNode() {
+	} else if siteRuntime(site) == model.RuntimeNode {
+		return nil, err
+	}
+	if env, err = d.runtimeEnv(site, env); err != nil {
 		return nil, err
 	}
 	env = append(env, "npm_config_cache="+filepath.Join(d.opts.SitesDir, site.ID, ".npm-cache"),
 		"npm_config_update_notifier=false", "CI=true")
 	if site.RunsNode() {
+		fromStore, err := d.secretEnv(site, site.Node.Env)
+		if err != nil {
+			return nil, err
+		}
 		for _, e := range site.Node.Env {
 			v := e.Value
-			if e.Secret {
+			if e.From != nil {
+				v = fromStore[e.Name]
+			} else if e.Secret {
 				v = d.opts.Box.MustUnseal(v)
 			}
 			env = append(env, e.Name+"="+v)
@@ -481,7 +563,7 @@ func (d *Deployer) Activate(ctx context.Context, site *model.Site, depID string)
 	if _, err := os.Stat(dep.ReleaseDir); err != nil {
 		return nil, errors.New("the release folder no longer exists")
 	}
-	if err := d.opts.Activate(ctx, site.ID, dep.ID); err != nil {
+	if err := d.activate(ctx, site, dep.ID); err != nil {
 		return nil, err
 	}
 	d.opts.Bus.Info(events.DeploySucceeded, site.ID, "%s rolled back to %s", site.Name, dep.ID)
@@ -544,11 +626,37 @@ func runCmd(ctx context.Context, out io.Writer, dir string, env []string, name s
 	return cmd.Run()
 }
 
-func runShell(ctx context.Context, out io.Writer, dir string, env []string, command string) error {
-	if runtime.GOOS == "windows" {
-		return runShellWindows(ctx, out, dir, env, command)
+// runAs is the run-as account of a site that has one: its instances and
+// its deployments' commands run as that account.
+func runAs(site *model.Site) (model.RunAsConfig, bool) {
+	if site.RunsNode() && site.Node.RunAs.Enabled {
+		return site.Node.RunAs, true
 	}
-	return runCmd(ctx, out, dir, env, "sh", "-c", command)
+	return model.RunAsConfig{}, false
+}
+
+// siteCommand runs a command of a site's deployment in dir: the virtual
+// environment's creation, the install and build commands. They run the
+// application's own code (package scripts, build targets, setup.py), so
+// for a site with a run-as account they run as that account, like its
+// instances, in a Job Object; the caches they use in the site's folder are
+// the account's to change, and must not be trusted by SYSTEM. Without one
+// they run as the service, as the site's instances do.
+func (d *Deployer) siteCommand(ctx context.Context, site *model.Site, out io.Writer, dir string, env []string, cmd *exec.Cmd) error {
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, env, out, out
+	cmd.WaitDelay = 10 * time.Second
+	if ra, ok := runAs(site); ok {
+		return d.runAsAccount(ctx, cmd, ra, d.opts.Box.MustUnseal(ra.Password), filepath.Join(d.opts.SitesDir, site.ID))
+	}
+	return cmd.Run()
+}
+
+// program is the command running a program with arguments, without a
+// console window.
+func program(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	hideWindow(cmd)
+	return cmd
 }
 
 func fileExists(p string) bool {

@@ -39,12 +39,22 @@ type Options struct {
 	// ResolveNode maps a version ("" = system) to an installed runtime.
 	ResolveNode func(version string) (NodeRuntime, error)
 	Unseal      func(string) string
+	// ResolveRuntime maps a runtime other than Node.js (bun, deno, python,
+	// dotnet) and a site's version ("" = the server default) to the
+	// executable that runs it. Optional: without it those sites cannot
+	// start (custom commands need none).
+	ResolveRuntime func(runtime, version string) (RuntimeExe, error)
 	// IsLocationTarget reports whether another site mounts this one as a
 	// location, which means it serves HTTP even without bindings.
 	IsLocationTarget func(siteID string) bool
 	// OnLog, optional, sees every line a site's log sink writes (log
 	// shipping). It must not block.
 	OnLog func(siteID string, l model.LogLine)
+	// ResolveEnv, optional, reads the variables of vars that come from
+	// secret stores (by name). key is model.SlotKey of the process's site
+	// and slot; task is "" for an instance, whose values are recorded under
+	// key (see secretstore.ResolveOptions).
+	ResolveEnv func(site *model.Site, vars []model.EnvVar, key, task string) (map[string]string, error)
 }
 
 type Manager struct {
@@ -55,8 +65,12 @@ type Manager struct {
 	health      *http.Client
 
 	mu   sync.Mutex
-	apps map[string]*App
+	apps map[string]*App // by model.SlotKey: a site's production app under its ID
 	logs map[string]*LogSink
+	// Deployment slots (slots.go): sites in the middle of a swap, and
+	// removed slots still stopping.
+	swapping map[string]bool
+	retiring sync.WaitGroup
 
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -135,6 +149,7 @@ func (m *Manager) app(id string) *App {
 // picks the change up: instance count changes are applied directly, and any
 // other change to how the process runs triggers a rolling recycle.
 func (m *Manager) Apply(site *model.Site) {
+	defer m.applySlots(site)
 	if !site.RunsNode() {
 		m.Remove(site.ID)
 		return
@@ -145,18 +160,25 @@ func (m *Manager) Apply(site *model.Site) {
 		a = &App{m: m, id: site.ID, site: site, schedFired: map[string]string{}}
 		m.apps[site.ID] = a
 		m.mu.Unlock()
-		a.logs = m.Logs(site.ID)
+		a.logs = m.Logs(site.ID).view(a.slotName)
 		return
 	}
 	m.mu.Unlock()
+	a.reconfigure(site, false)
+}
 
+// reconfigure gives an app a new configuration. A running app picks the
+// change up: instance count changes are applied directly, and any other
+// change to how the process runs triggers a rolling recycle, in the
+// background unless wait is set (then its error is returned).
+func (a *App) reconfigure(site *model.Site, wait bool) error {
 	a.mu.Lock()
 	old := a.site
 	a.site = site
 	running := a.running
 	a.mu.Unlock()
 	if !running {
-		return
+		return nil
 	}
 	oldCount, newCount := old.Node.Instances, site.Node.Instances
 	if processChanged(old, site) {
@@ -165,15 +187,22 @@ func (m *Manager) Apply(site *model.Site) {
 		if newCount < oldCount {
 			a.resize(newCount)
 		}
-		go func() {
-			a.recycle("configuration changed")
+		recycle := func() error {
+			err := a.recycle("configuration changed")
 			if newCount > oldCount {
 				a.resize(newCount)
 			}
-		}()
+			return err
+		}
+		if !wait {
+			go recycle()
+			return nil
+		}
+		return recycle()
 	} else if newCount != oldCount {
 		a.resize(newCount)
 	}
+	return nil
 }
 
 // processChanged reports whether anything that affects the running process
@@ -198,6 +227,7 @@ func processChanged(a, b *model.Site) bool {
 
 // Remove stops a site and forgets it.
 func (m *Manager) Remove(id string) {
+	defer m.removeSlots(id)
 	m.mu.Lock()
 	a := m.apps[id]
 	delete(m.apps, id)
@@ -331,6 +361,7 @@ func (m *Manager) Shutdown() {
 		}(a)
 	}
 	wg.Wait()
+	m.retiring.Wait()
 	m.agent.close()
 	m.mu.Lock()
 	for _, l := range m.logs {
@@ -459,7 +490,7 @@ func (m *Manager) healthCheck(a *App, inst *Instance, hc model.HealthCheck, now 
 	a.logs.System("instance %d health check failed (%d/%d): %s", inst.index, inst.healthFails, hc.UnhealthyThreshold, detail)
 	if inst.healthFails >= hc.UnhealthyThreshold {
 		inst.healthy = false
-		m.opts.Bus.Warn(events.SiteUnhealthy, a.id, "%s instance %d failed %d health checks", a.site.Name, inst.index, inst.healthFails)
+		m.opts.Bus.Warn(events.SiteUnhealthy, a.id, "%s instance %d failed %d health checks", a.site.Name+a.slotSuffix(), inst.index, inst.healthFails)
 		return "unhealthy"
 	}
 	return ""

@@ -21,11 +21,16 @@ import { useConfirm } from '@/components/Confirm';
 import { useToast } from '@/components/Toast';
 import { formatDateTime } from '@/lib/format';
 import { NAME_RE, runsNode } from '@/lib/siteDefaults';
+import { canHavePreviews } from '@/lib/previews';
 import { cn } from '@/lib/cn';
 import { BindingLink, SiteHeaderActions } from './shared';
 import { OverviewTab } from './OverviewTab';
 import { LogsTab } from './LogsTab';
 import { TasksTab } from './TasksTab';
+import { PreviewBanner, PreviewsTab } from './PreviewsTab';
+import { AlertsTab } from './AlertsTab';
+import { SlotsTab } from './SlotsTab';
+import { FirewallTab } from './FirewallTab';
 import { DeployConfigCard, DeploymentsPanel } from './DeploymentsTab';
 import { BindingsEditor } from './editors/BindingsEditor';
 import { EnvEditor } from './editors/EnvEditor';
@@ -37,9 +42,9 @@ import { NodeAdvanced, NodeEssentials, NodeLoadBalancer, ProxyAdvanced, ProxyEss
 import { useSiteDraft } from './useSiteDraft';
 import type { SiteEditorProps } from './editors/types';
 
-type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'deployments' | 'tasks' | 'logs';
+type TabKey = 'overview' | 'bindings' | 'settings' | 'environment' | 'routing' | 'firewall' | 'deployments' | 'slots' | 'previews' | 'tasks' | 'alerts' | 'logs';
 
-const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'deployments', 'tasks'];
+const EDIT_TABS: TabKey[] = ['bindings', 'settings', 'environment', 'routing', 'firewall', 'deployments', 'slots', 'previews', 'tasks', 'alerts'];
 
 /** Which tab shows the field named in a validation error. */
 function tabForField(field: string | undefined, type: string): TabKey | null {
@@ -47,9 +52,13 @@ function tabForField(field: string | undefined, type: string): TabKey | null {
   // A worker has no Bindings or Routing tab; the settings tab shows the error in its banner.
   const http = type !== 'worker';
   if (field.startsWith('tasks')) return 'tasks';
+  if (field.startsWith('alerts')) return 'alerts';
+  if (field.startsWith('slots')) return runsNode(type) ? 'slots' : 'settings';
   if (field.startsWith('bindings')) return http ? 'bindings' : 'settings';
   if (field.startsWith('node.env')) return 'environment';
+  if (field.startsWith('routing.waf')) return http ? 'firewall' : 'settings';
   if (field.startsWith('routing')) return http ? 'routing' : 'settings';
+  if (field.startsWith('deploy.previews')) return 'previews';
   if (field.startsWith('deploy')) return runsNode(type) || type === 'static' ? 'deployments' : 'settings';
   return 'settings';
 }
@@ -74,8 +83,12 @@ export function SiteDetailPage() {
     { key: 'settings', label: 'Settings' },
     { key: 'environment', label: 'Environment', hidden: !runsNode(type) },
     { key: 'routing', label: 'Routing', hidden: worker },
+    { key: 'firewall', label: 'Firewall', hidden: worker },
     { key: 'deployments', label: 'Deployments', hidden: !runsNode(type) && type !== 'static' },
+    { key: 'slots', label: 'Slots', hidden: !runsNode(type) },
+    { key: 'previews', label: 'Previews', hidden: !site || !canHavePreviews(site) },
     { key: 'tasks', label: 'Tasks', hidden: !runsNode(type) },
+    { key: 'alerts', label: 'Alerts' },
     { key: 'logs', label: 'Logs' },
   ];
   const tab: TabKey = (tabs.find((t) => t.key === tabParam && !t.hidden)?.key ?? 'overview') as TabKey;
@@ -164,6 +177,7 @@ export function SiteDetailPage() {
       </div>
 
       <RouteTabs tabs={tabs} base={`/sites/${id}`} value={tab} className="mb-5" />
+      {site.previewOf && <PreviewBanner site={site} />}
 
       <FormErrors error={saveError}>
         {editing && <FormErrorBanner className="mb-4" />}
@@ -214,8 +228,16 @@ export function SiteDetailPage() {
             </fieldset>
           </div>
         )}
+        {/* Not in a fieldset: operators redeploy and delete previews; the settings are read-only for them. */}
+        {tab === 'previews' && editorProps && base && <PreviewsTab {...editorProps} savedSite={base} dirty={dirty} />}
         {/* Not in the fieldset: operators run and cancel tasks; the definitions are read-only for them. */}
         {tab === 'tasks' && editorProps && base && <TasksTab {...editorProps} savedSite={base} />}
+        {/* Not in the fieldset either: operators silence alerts; the rules are read-only for them. */}
+        {tab === 'alerts' && editorProps && <AlertsTab {...editorProps} />}
+        {/* Like tasks: operators start, stop and swap slots; the slots' settings are read-only for them. */}
+        {tab === 'slots' && editorProps && base && <SlotsTab {...editorProps} savedSite={base} />}
+        {/* Not in the fieldset either: viewers filter the events; the configuration part disables itself. */}
+        {tab === 'firewall' && editorProps && <FirewallTab {...editorProps} />}
       </FormErrors>
 
       {dirty && isAdmin && (
@@ -279,7 +301,7 @@ function SettingsTab(props: SiteEditorProps & { view: SiteView }) {
       </Card>
 
       {runsNode(site.type) && site.node && (
-        <Card title={site.type === 'worker' ? 'Background worker' : 'Node.js application'}>
+        <Card title={site.type === 'worker' ? 'Background worker' : 'Application'}>
           <Sections>
             <FormSection title="Application" description="Where the app lives and how it starts.">
               <NodeEssentials {...props} withInstances={false} />

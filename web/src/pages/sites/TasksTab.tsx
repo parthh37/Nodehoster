@@ -21,6 +21,7 @@ import { jsonEqual } from '@/lib/obj';
 import { defaultTask } from '@/lib/siteDefaults';
 import type { SiteEditorProps } from './editors/types';
 import { TaskDialog } from './tasks/TaskDialog';
+import { runtimeOf, taskCommand } from '@/lib/runtimes';
 import { RunHistory } from './tasks/RunHistory';
 import { RunLogDialog } from './tasks/RunLogDialog';
 import { RunStatusBadge } from './tasks/RunStatus';
@@ -114,7 +115,7 @@ export function TasksTab({ site, update, readOnly, savedSite }: SiteEditorProps 
         title="Scheduled tasks"
         description={
           <>
-            Scripts this site runs on a schedule, like Task Scheduler or cron. A run uses the site's active release, Node.js version, environment
+            Scripts this site runs on a schedule, like Task Scheduler or cron. A run uses the site's active release, runtime and version, environment
             variables, secrets and Windows identity, with <span className="font-mono">NODEHOSTER_TASK</span> set to the task's name (no PORT). Tasks run
             even while the site is stopped — disable a task to pause it. Schedules use the server's local time; runs missed while the service was
             down are not caught up.
@@ -178,8 +179,8 @@ export function TasksTab({ site, update, readOnly, savedSite }: SiteEditorProps 
                         <span className="font-medium">{t.name || <span className="text-zinc-400">Unnamed</span>}</span>
                         {!savedTask ? <Badge tone="amber">new</Badge> : unsaved && <Badge tone="amber">edited</Badge>}
                       </div>
-                      <Mono className="block truncate text-xs text-zinc-500" title={t.npmScript ? `npm run ${t.npmScript}` : `node ${t.script}`}>
-                        {t.npmScript ? `npm run ${t.npmScript}` : `node ${t.script}`}
+                      <Mono className="block truncate text-xs text-zinc-500" title={taskCommand(site.node, t)}>
+                        {taskCommand(site.node, t)}
                       </Mono>
                       <PathError path={`tasks[${i}]`} prefix />
                     </Td>
@@ -266,6 +267,7 @@ export function TasksTab({ site, update, readOnly, savedSite }: SiteEditorProps 
         value={editing?.task ?? null}
         index={editing?.index ?? 0}
         others={tasks.filter((_, j) => j !== editing?.index)}
+        runtime={runtimeOf(site.node)}
         readOnly={readOnly}
         onClose={() => setEditing(null)}
         onApply={(task) => {

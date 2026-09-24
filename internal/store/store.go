@@ -121,6 +121,19 @@ var migrations = []string{
 		error TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX task_runs_task ON task_runs(site_id, task_id, started DESC);`,
+	// Resource alert history (see model.Alert and alerts.go).
+	`CREATE TABLE alerts (
+		id TEXT PRIMARY KEY,
+		site_id TEXT NOT NULL DEFAULT '',
+		rule_id TEXT NOT NULL,
+		state TEXT NOT NULL,
+		fired INTEGER NOT NULL,
+		resolved INTEGER,
+		doc TEXT NOT NULL
+	);
+	CREATE INDEX alerts_fired ON alerts(fired DESC);
+	CREATE INDEX alerts_site ON alerts(site_id, fired DESC);
+	CREATE INDEX alerts_state ON alerts(state);`,
 }
 
 func Open(path string) (*Store, error) {

@@ -121,6 +121,9 @@ func statusHandler(c *core.Core) http.Handler {
 func summary(c *core.Core) localapi.Summary {
 	out := localapi.Summary{Version: config.Version, StartedAt: c.StartedAt, AdminURL: c.AdminURL, AdminError: c.AdminError, Sites: []localapi.SiteSummary{}}
 	for _, s := range c.Sites() {
+		if s.IsPreview() {
+			continue // temporary sites: a failing pull request must not turn the server's icon red
+		}
 		st := c.Status(s)
 		ss := localapi.SiteSummary{ID: s.ID, Name: s.Name, Type: s.Type, AutoStart: s.AutoStart, State: st.State, Message: st.Message}
 		if s.Node != nil {
@@ -133,6 +136,7 @@ func summary(c *core.Core) localapi.Summary {
 		}
 		out.Sites = append(out.Sites, ss)
 	}
+	out.Alerts = alertSummaries(c)
 	return out
 }
 
@@ -141,8 +145,12 @@ var noticeTypes = map[string]bool{
 	events.SiteCrashed: true, events.SiteFailed: true, events.SiteUnhealthy: true,
 	events.DeployFailed: true, events.DeploySucceeded: true,
 	events.CertFailed: true, events.CertExpiring: true, events.UpstreamDown: true,
+	events.CertRevoked: true, events.CertStapling: true,
 	events.MailFailed: true, events.MailError: true,
 	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
+	events.RemoteDown:  true,
+	events.AlertFiring: true, events.AlertResolved: true,
+	events.SlotSwapped: true, events.SlotSwapFailed: true,
 }
 
 func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {
@@ -150,6 +158,10 @@ func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {
 		return localapi.Notice{}, false
 	}
 	n := localapi.Notice{Time: e.Time, Level: e.Level, Type: e.Type, Message: e.Message}
+	if e.Type == events.RemoteDown {
+		// Every interactive user reads this pipe: the server's name only.
+		n.Message = c.ServerDownNotice(e.Message)
+	}
 	if e.SiteID != "" {
 		if s, err := c.Site(e.SiteID); err == nil {
 			n.Site = s.Name

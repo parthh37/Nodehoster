@@ -1,5 +1,7 @@
 // Thin fetch wrapper around the NodeHoster REST API.
 
+import { remoteError, routePath } from './target';
+
 export class ApiError extends Error {
   readonly status: number;
   readonly field?: string;
@@ -72,8 +74,10 @@ async function send(method: string, path: string, body: unknown, opts: RequestOp
     payload = JSON.stringify(body);
   }
   let res: Response;
+  // Another server's API when the console operates one (target.ts).
+  const url = routePath(path);
   try {
-    res = await fetch(path, {
+    res = await fetch(url, {
       method,
       headers,
       body: payload,
@@ -87,7 +91,7 @@ async function send(method: string, path: string, body: unknown, opts: RequestOp
   if (res.status === 401 && !opts.noAuthRedirect) {
     redirectToLogin();
   }
-  if (!res.ok) throw await parseError(res);
+  if (!res.ok) throw remoteError(await parseError(res), url);
   return res;
 }
 

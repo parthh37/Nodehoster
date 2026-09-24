@@ -27,11 +27,12 @@ const (
 	AuthFailure Kind = iota
 	NotFound
 	RateLimited
+	WAFBlocked // the web application firewall blocked a request
 	kinds
 )
 
 func (k Kind) String() string {
-	return [...]string{"authentication failures", "requests for missing pages", "rate limit rejections"}[k]
+	return [...]string{"authentication failures", "requests for missing pages", "rate limit rejections", "requests blocked by the web application firewall"}[k]
 }
 
 const (
@@ -233,7 +234,7 @@ func (m *Manager) Record(ip net.IP, kind Kind) {
 		return
 	}
 	m.mu.Lock()
-	rule := [...]model.BanRule{m.cfg.AuthFailures, m.cfg.NotFound, m.cfg.RateLimited}[kind]
+	rule := [...]model.BanRule{m.cfg.AuthFailures, m.cfg.NotFound, m.cfg.RateLimited, m.cfg.WAFBlocks}[kind]
 	if !m.cfg.Enabled || rule.Threshold <= 0 || m.allowedLocked(ip) {
 		m.mu.Unlock()
 		return

@@ -30,6 +30,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/localapi/localserver"
 	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/secrets"
 	"github.com/parthh37/nodehoster/internal/service"
 	"github.com/parthh37/nodehoster/internal/store"
@@ -40,7 +41,7 @@ import (
 const usage = `NodeHoster %s — Node.js application server
 
 Usage:
-  nodehoster [--data DIR] [--json] <command>
+  nodehoster [--data DIR] [--json] [--server NAME|URL [--token TOKEN]] <command>
 
 Commands:
   run                      Run in the foreground (default)
@@ -61,6 +62,11 @@ prompt, like NodeHoster Manager). <site> is a site name or ID:
   failed deployment, task run or backup, or the service not running), 2
   wrong usage.
 
+  --server runs the command against another server's web console over
+  HTTPS instead: a connection saved with "nodehoster server add", or its
+  URL with --token (or NODEHOSTER_TOKEN; NODEHOSTER_FINGERPRINT pins a
+  self-signed certificate). The token's role on that server applies.
+
 The data directory defaults to %s
 (override with --data or the NODEHOSTER_DATA environment variable).
 `
@@ -68,9 +74,18 @@ The data directory defaults to %s
 func main() {
 	dataDir := flag.String("data", config.DefaultDataDir(), "data directory")
 	jsonOut := flag.Bool("json", false, "machine-readable output for management commands")
+	server := flag.String("server", "", "run a management command against another server: a saved connection or its URL")
+	token := flag.String("token", "", "API token of the --server (or set NODEHOSTER_TOKEN)")
 	flag.Usage = func() { fmt.Fprintf(os.Stderr, usage, config.Version, cli.Usage(), config.DefaultDataDir()) }
 	flag.Parse()
 	args := flag.Args()
+
+	// Sends a console Ctrl+Break to a hosted process that has no agent
+	// (not listed; the process manager starts it to stop Python, .NET,
+	// Deno... gracefully on Windows).
+	if len(args) > 0 && args[0] == procmgr.CtrlBreakCommand {
+		os.Exit(procmgr.RunCtrlBreak(args[1:]))
+	}
 
 	if service.IsService() {
 		err := service.Run(func(stop <-chan struct{}) error { return run(*dataDir, stop, true) })
@@ -91,7 +106,12 @@ func main() {
 			st, _ := service.Status()
 			return st == "running" || st == "starting"
 		}
+		cli.Server, cli.Token = *server, *token
 		os.Exit(cli.Main(args, *dataDir, *jsonOut))
+	}
+	if *server != "" || *token != "" {
+		fmt.Fprintln(os.Stderr, "error: --server and --token apply to management commands (nodehoster help lists them)")
+		os.Exit(2)
 	}
 	cmd := "run"
 	if len(args) > 0 {

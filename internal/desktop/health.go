@@ -70,6 +70,7 @@ func Overall(service string, sum *localapi.Summary) Health {
 		h.Level = LevelWarning
 		h.Summary += " · web console unavailable"
 	}
+	alertHealth(&h, sum)
 	return h
 }
 

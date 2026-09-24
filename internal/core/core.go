@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/parthh37/nodehoster/internal/alerts"
 	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/certs"
 	"github.com/parthh37/nodehoster/internal/config"
@@ -32,10 +33,13 @@ import (
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/proxy"
 	"github.com/parthh37/nodehoster/internal/rewrite"
+	"github.com/parthh37/nodehoster/internal/runtimes"
 	"github.com/parthh37/nodehoster/internal/secrets"
+	"github.com/parthh37/nodehoster/internal/secretstore"
 	"github.com/parthh37/nodehoster/internal/store"
 	"github.com/parthh37/nodehoster/internal/tasks"
 	"github.com/parthh37/nodehoster/internal/update"
+	"github.com/parthh37/nodehoster/internal/waf"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -53,11 +57,15 @@ type Core struct {
 	Proxy     *proxy.Server
 	Certs     *certs.Manager
 	Nodes     *nodeversions.Manager
+	Runtimes  *runtimes.Manager // Bun, Deno, Python and .NET
 	Deploy    *deploy.Deployer
 	Mail      *mail.Server
 	Bans      *ipban.Manager
+	WAF       *waf.Recorder // web application firewall events and counters
 	Tasks     *tasks.Scheduler
 	Ship      *logship.Shipper
+	Alerts    *alerts.Engine
+	Secrets   *secretstore.Manager
 	StartedAt time.Time
 	IsService bool
 
@@ -76,7 +84,11 @@ type Core struct {
 	running map[string]bool // desired state of non-node sites
 
 	backups backupState
+	slots   slotState
 	updates updateState
+
+	previews previewState // preview deployments' workers (previews.go)
+	servers  serverState  // connections to other NodeHoster servers
 	// UpdateFeed is where new releases come from (tests replace it).
 	UpdateFeed *update.Feed
 
@@ -113,7 +125,9 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		c.settings.Mime.UnknownTypes = model.UnknownMimeServe
 	}
 	c.settings.IPBan.ApplyDefaults() // settings saved before IP banning existed
+	c.settings.WAF.ApplyDefaults()   // ... and before the web application firewall
 	c.settings.Updates.ApplyDefaults()
+	c.settings.Alerts.ApplyDefaults() // settings saved before resource alerts existed
 	c.UpdateFeed = update.NewFeed(update.DefaultFeed)
 
 	c.Ship = newShipper(log, c.siteName)
@@ -121,13 +135,21 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if err := c.openBans(ctx); err != nil {
 		return nil, fmt.Errorf("load IP bans: %w", err)
 	}
+	if err := c.openServers(ctx); err != nil {
+		return nil, fmt.Errorf("load server connections: %w", err)
+	}
+	if err := c.openWAF(ctx); err != nil {
+		return nil, fmt.Errorf("web application firewall: %w", err)
+	}
 	c.Bus.OnEmit = func(e model.Event) {
 		if c.Ship.Wants(model.LogSourceEvent) {
 			c.Ship.Ship(eventRecord(e))
 		}
 	}
 	c.Auth = auth.New(st, box)
+	c.openSecretStores()
 	c.Nodes = nodeversions.New(paths.Node, paths.Tmp, log, func() string { return "" })
+	c.openRuntimes()
 	c.Certs = certs.New(st, box, paths.Certs, paths.ACME, log, c.Bus, c.Settings)
 	if err := c.Certs.Load(ctx); err != nil {
 		return nil, fmt.Errorf("load certificates: %w", err)
@@ -136,7 +158,9 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 		Log: log, Bus: c.Bus,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, RunDir: paths.Run,
 		Settings: c.Settings, ResolveNode: c.Nodes.Resolve, Unseal: box.MustUnseal,
+		ResolveRuntime:   c.resolveRuntime,
 		IsLocationTarget: c.isLocationTarget,
+		ResolveEnv:       c.procSecretEnv,
 		OnLog: func(siteID string, l model.LogLine) {
 			if c.Ship.Wants(model.LogSourceApp) {
 				c.Ship.Ship(appRecord(siteID, l))
@@ -153,6 +177,7 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	c.Proxy = proxy.New(proxy.Deps{
 		Log: log, Bus: c.Bus, Procs: c.Procs, Certs: c.Certs, Settings: c.Settings,
 		SitesDir: paths.Sites, LogsDir: paths.SiteLogs, AffinityKey: affKey, Bans: c.Bans, Ship: c.Ship,
+		WAF: c.WAF,
 	})
 	c.Mail, err = mail.New(mail.Options{
 		Dir: paths.Mail, LogFile: filepath.Join(paths.Logs, "smtp.log"), Log: log, Bus: c.Bus,
@@ -162,13 +187,21 @@ func Open(paths config.Paths, boot config.Bootstrap, log *slog.Logger) (*Core, e
 	if err != nil {
 		return nil, err
 	}
+	if err := c.openAlerts(ctx); err != nil {
+		return nil, fmt.Errorf("load alerts: %w", err)
+	}
 	c.Tasks = tasks.New(tasks.Options{
 		Store: st, Bus: c.Bus, Log: log, LogsDir: paths.SiteLogs, Runner: taskRunner{c.Procs},
 	})
 	c.Deploy = deploy.New(deploy.Options{
 		Store: st, Box: box, Log: log, Bus: c.Bus, SitesDir: paths.Sites, Settings: c.Settings,
-		ResolveNode: c.Nodes.Resolve, Activate: c.activateRelease, InUse: c.Tasks.Releases,
+		ResolveNode: c.Nodes.Resolve, ResolveRuntime: c.resolveRuntime, Activate: c.activateRelease, InUse: c.releasesInUse,
+		ActivateSlot: c.activateSlot, OnFinish: c.deployFinished,
 		FindGit: func() (string, error) { return deps.FindGit(paths.Data) },
+		SecretEnv: func(s *model.Site, vars []model.EnvVar) (map[string]string, error) {
+			return c.secretEnv(s, vars, "the deployment", "")
+		},
+		SecretToken: c.secretToken,
 	})
 
 	sites, err := st.ListSites(ctx)
@@ -207,6 +240,7 @@ func (c *Core) Start() {
 			c.setRunning(s.ID, true)
 		}
 	}
+	c.startSlots(auto)
 	c.reload()
 	c.Mail.Start()
 	c.Tasks.Start()
@@ -219,6 +253,11 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
 	c.wg.Go(func() { c.updateLoop(ctx) })
+	c.wg.Go(func() { c.previewLoop(ctx) })
+	c.wg.Go(func() { c.serverMonitor(ctx) })
+	c.wg.Go(func() { c.alertLoop(ctx) })
+	c.wg.Go(func() { c.Secrets.Run(ctx) })
+	c.wg.Go(func() { c.wafLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -227,6 +266,7 @@ func (c *Core) Shutdown() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	c.closePreviews() // before the processes: a preview worker may start or remove a site
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c.Proxy.Shutdown(ctx)
@@ -310,6 +350,10 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := in.IPBan.Validate(); err != nil {
 		return cur, err
 	}
+	in.WAF.ApplyDefaults()
+	if err := in.WAF.Validate(); err != nil {
+		return cur, err
+	}
 	if err := c.prepareMail(&in.Mail, cur.Mail); err != nil {
 		return cur, err
 	}
@@ -326,6 +370,17 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	if err := in.Updates.Validate(); err != nil {
 		return cur, err
 	}
+	in.Alerts.ApplyDefaults()
+	if err := in.Alerts.Validate(); err != nil {
+		return cur, err
+	}
+	if err := c.prepareSecretStores(&in.SecretStores, cur.SecretStores); err != nil {
+		return cur, err
+	}
+	in.Runtimes.ApplyDefaults()
+	if err := in.Runtimes.Validate(); err != nil {
+		return cur, err
+	}
 	if err := c.Store.PutDoc(ctx, settingsKey, in); err != nil {
 		return cur, err
 	}
@@ -337,6 +392,7 @@ func (c *Core) UpdateSettings(ctx context.Context, in model.Settings) (model.Set
 	c.reload()
 	c.Mail.Apply(in.Mail)
 	c.applyLogShipping(in.LogShipping)
+	c.Secrets.Apply(in.SecretStores)
 	if in.ACME != cur.ACME && in.ACME.AgreeTOS && in.ACME.Email != "" {
 		go c.Certs.RetryPending(context.Background())
 	}
@@ -392,6 +448,7 @@ func (c *Core) MaskedSettings() model.Settings {
 	maskSSO(&s.SSO)
 	maskBackup(&s.Backup)
 	maskLogShipping(&s.LogShipping)
+	maskSecretStores(&s.SecretStores)
 	return s
 }
 
@@ -569,7 +626,7 @@ func (c *Core) reload() {
 	routed := make([]*model.Site, 0, len(sites))
 	for _, s := range sites {
 		if s.Type != model.SiteWorker {
-			routed = append(routed, s)
+			routed = append(routed, c.routedViews(s)...) // production and its deployment slots
 		}
 	}
 	// A stopped node site still gets its bindings routed, so visitors see a
@@ -619,6 +676,12 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 		return err
 	}
 	if err := rewrite.Validate(in.Routing); err != nil {
+		return err
+	}
+	if err := c.checkSiteSecretRefs(in); err != nil {
+		return err
+	}
+	if err := waf.Validate(in.Routing.WAF, in.Type); err != nil {
 		return err
 	}
 	if m := c.Settings().Mail; m.Enabled {
@@ -716,6 +779,12 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	}
 	in.Deploy.Git.Token = seal(in.Deploy.Git.Token, ex.Deploy.Git.Token)
 	in.Deploy.WebhookSecret = seal(in.Deploy.WebhookSecret, ex.Deploy.WebhookSecret)
+	if err := c.preparePreviews(in, &ex); err != nil {
+		return err
+	}
+	if err := c.prepareSlots(in, existing); err != nil {
+		return err
+	}
 
 	// Basic auth: hash new passwords, keep existing hashes otherwise.
 	for i := range in.Routing.BasicAuth.Users {
@@ -743,6 +812,7 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 // CreateSite validates, stores and applies a new site, starting it when
 // it is set to start automatically.
 func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, error) {
+	in.PreviewOf, in.Preview = "", nil // only the server makes previews
 	return c.createSite(ctx, in, in.AutoStart)
 }
 
@@ -751,6 +821,7 @@ func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*mod
 	defer c.sitesMu.Unlock()
 	in.ID = uuid.NewString()
 	in.ActiveRelease = ""
+	c.applyWAFDefaults(in)
 	if err := c.prepare(in, nil); err != nil {
 		return nil, err
 	}
@@ -775,6 +846,7 @@ func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*mod
 func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
+	c.keepPreviewFields(id, in)
 	return c.updateSite(ctx, id, in)
 }
 
@@ -782,6 +854,9 @@ func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*mode
 func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	existing, err := c.Site(id)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.swapBusy(id); err != nil {
 		return nil, err
 	}
 	in.ID = id
@@ -803,11 +878,15 @@ func (c *Core) updateSite(ctx context.Context, id string, in *model.Site) (*mode
 	c.Procs.Apply(in)
 	c.Tasks.Apply(in)
 	c.reload()
+	c.dropDisallowedForks(in)
 	return in, nil
 }
 
 // activateRelease is called by the deployer to switch a site to a release.
 func (c *Core) activateRelease(ctx context.Context, id, release string) error {
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
 	existing, err := c.Site(id)
@@ -845,6 +924,10 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 		c.sitesMu.Unlock()
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		c.sitesMu.Unlock()
+		return err
+	}
 	for _, s := range c.Sites() {
 		for _, l := range s.Routing.Locations {
 			if l.Kind == "site" && l.SiteID == id {
@@ -861,6 +944,7 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 	c.sitesMu.Unlock()
 	c.reload()
 	c.Proxy.ForgetSite(id)
+	c.forgetSlots(existing)
 
 	c.Tasks.Remove(id)
 	c.Procs.Remove(id)
@@ -880,14 +964,22 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 		c.reload()
 		return err
 	}
+	if existing.IsPreview() {
+		deleteFiles = true // a preview's files are its own and temporary
+	}
+	c.forgetWAF(id)
 	if deleteFiles {
 		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
 		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))
 	}
+	c.previewSiteDeleted(existing)
 	return nil
 }
 
 func (c *Core) startSite(s *model.Site) error {
+	if err := previewStartable(s); err != nil {
+		return err
+	}
 	if s.RunsNode() {
 		return c.Procs.Start(s.ID)
 	}
@@ -901,6 +993,9 @@ func (c *Core) StartSite(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	if err := c.startSite(s); err != nil {
 		return err
 	}
@@ -911,6 +1006,9 @@ func (c *Core) StartSite(id string) error {
 func (c *Core) StopSite(id string) error {
 	s, err := c.Site(id)
 	if err != nil {
+		return err
+	}
+	if err := c.swapBusy(id); err != nil {
 		return err
 	}
 	if s.RunsNode() {
@@ -930,6 +1028,9 @@ func (c *Core) RestartSite(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.swapBusy(id); err != nil {
+		return err
+	}
 	if s.RunsNode() {
 		err = c.Procs.Restart(id)
 	} else {
@@ -943,6 +1044,9 @@ func (c *Core) RestartSite(id string) error {
 func (c *Core) RecycleSite(id string) error {
 	s, err := c.Site(id)
 	if err != nil {
+		return err
+	}
+	if err := c.swapBusy(id); err != nil {
 		return err
 	}
 	if !s.RunsNode() {
@@ -1013,6 +1117,8 @@ func Masked(s *model.Site) *model.Site {
 	}
 	m.Deploy.Git.Token = mask(m.Deploy.Git.Token)
 	m.Deploy.WebhookSecret = mask(m.Deploy.WebhookSecret)
+	maskPreviews(m)
+	maskSlots(m)
 	for i := range m.Routing.BasicAuth.Users {
 		m.Routing.BasicAuth.Users[i].PasswordHash = ""
 		m.Routing.BasicAuth.Users[i].Password = ""
@@ -1086,6 +1192,7 @@ func (c *Core) metricsLoop(ctx context.Context) {
 				cpu, mem := c.Procs.Usage(s.ID)
 				p := model.MetricPoint{Time: ts, Requests: req, Errors: errs, AvgLatency: lat, CPUPercent: cpu, MemoryBytes: mem}
 				c.Store.AddMetrics(ctx, s.ID, p)
+				c.recordSlotMetrics(ctx, s, ts)
 				tot.Requests += req
 				tot.Errors += errs
 				latSum += lat * float64(req)

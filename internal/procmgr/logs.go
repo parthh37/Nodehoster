@@ -27,6 +27,11 @@ type LogSink struct {
 	subs map[chan model.LogLine]struct{}
 
 	onWrite func(model.LogLine) // set at creation, called outside mu
+
+	// A view (see view) only writes: to parent, tagging lines with its
+	// slot.
+	parent *LogSink
+	slot   func() string
 }
 
 func NewLogSink(path string, maxSizeMB, maxFiles, maxAgeDays int) *LogSink {
@@ -45,12 +50,21 @@ func NewLogSink(path string, maxSizeMB, maxFiles, maxAgeDays int) *LogSink {
 }
 
 func (s *LogSink) Write(l model.LogLine) {
+	if s.parent != nil {
+		l.Slot = s.slot()
+		s.parent.Write(l)
+		return
+	}
 	if s.onWrite != nil {
 		defer s.onWrite(l)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fmt.Fprintf(s.file, "%s [%d %s] %s\n", l.Time.Format("2006-01-02T15:04:05.000Z07:00"), l.Instance, l.Stream, l.Text)
+	if l.Slot != "" {
+		fmt.Fprintf(s.file, "%s [%s %d %s] %s\n", l.Time.Format("2006-01-02T15:04:05.000Z07:00"), l.Slot, l.Instance, l.Stream, l.Text)
+	} else {
+		fmt.Fprintf(s.file, "%s [%d %s] %s\n", l.Time.Format("2006-01-02T15:04:05.000Z07:00"), l.Instance, l.Stream, l.Text)
+	}
 	s.ring[s.next] = l
 	s.next = (s.next + 1) % ringSize
 	if s.next == 0 {

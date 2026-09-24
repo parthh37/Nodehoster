@@ -186,6 +186,7 @@ type siteCommands struct {
 	open, start, stop, restart, recycle, browse, explore *command
 	deploy, purge, basic, bindings, env, rewrite, mime   *command
 	console, remove                                      *command
+	swap                                                 *command // deployment slots (pages_slots_windows.go)
 }
 
 func newSiteCommands(m *manager, target func() string) *siteCommands {
@@ -213,6 +214,7 @@ func newSiteCommands(m *manager, target func() string) *siteCommands {
 	c.mime = newCommand("MIME types…", desktop.IconFileCode, on(func(id string) { siteMimeDialog(m, id) }))
 	c.console = newCommand("Open in web console", desktop.IconConsole, on(func(id string) { m.openConsolePath("/sites/" + url.PathEscape(id)) }))
 	c.remove = newCommand("Remove…", desktop.IconRemove, on(m.removeSite))
+	c.swap = newCommand("Swap slots…", desktop.IconToggle, on(m.swapSlot))
 	return c
 }
 
@@ -227,6 +229,7 @@ func (c *siteCommands) enable(m *manager) {
 	setEnabled(ok && len(st.Bindings) > 0, c.browse)
 	setEnabled(ok && sitePath(st.Site) != "", c.explore, c.deploy)
 	setEnabled(ok && st.Node != nil, c.env)
+	setEnabled(ok && len(st.Slots) > 0, c.swap)
 	setEnabled(ok && m.info != nil && m.info.AdminURL != "" && m.info.AdminError == "", c.console)
 }
 
@@ -320,7 +323,7 @@ func (s *sitesPage) content(m *manager) []Widget {
 			sortable:   true,
 			onActivate: func() { m.showSite(s.list.selected()) },
 			onDelete:   c.remove.trigger,
-			menu: menu(c.open, nil, c.start, c.stop, c.restart, c.recycle, nil, c.browse, c.explore, c.deploy, c.purge, nil,
+			menu: menu(c.open, nil, c.start, c.stop, c.restart, c.recycle, nil, c.browse, c.explore, c.deploy, c.swap, c.purge, nil,
 				c.basic, c.bindings, c.env, c.rewrite, c.mime, nil, c.remove),
 		},
 			col("Name", 180), col("Status", 90), col("Type", 140), col("Bindings", 280),
@@ -333,7 +336,7 @@ func (s *sitesPage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Sites", m.cmdAddSite, m.cmdImport,
 		"Selected site", c.open, c.start, c.stop, c.restart, c.recycle, c.browse, c.explore,
-		"Deploy", c.deploy, c.purge,
+		"Deploy", c.deploy, c.swap, c.purge,
 		"Edit", c.basic, c.bindings, c.env, c.rewrite, c.mime,
 		"Remove", c.remove,
 	)
@@ -356,7 +359,7 @@ func (s *sitesPage) redraw(m *manager) {
 		s.states[i] = st.Status.State
 		s.attention[i] = desktop.SiteNeedsAttention(desktop.SummaryOf(st))
 		rows[i] = []string{
-			st.Name, desktop.StateText(st.Status.State), desktop.SiteTypeText(st.Type), desktop.BindingsText(st.Bindings),
+			st.Name, desktop.StateText(st.Status.State), desktop.SiteKindText(st.Site), desktop.BindingsText(st.Bindings),
 			desktop.InstancesText(st.Site, st.Status), usage[0], usage[1], fmt.Sprintf("%.1f", st.Status.Traffic.RPS),
 		}
 	}
@@ -635,8 +638,11 @@ func (s *sitePage) init(m *manager) *page {
 		if col != 0 || row >= len(s.env.rows) {
 			return nil
 		}
-		if s.env.rows[row][2] == "Yes" {
+		switch s.env.rows[row][2] {
+		case desktop.EnvSecret:
 			return img(desktop.IconLock)
+		case desktop.EnvStore:
+			return img(desktop.IconKey)
 		}
 		return img(desktop.IconBraces)
 	}
@@ -735,7 +741,7 @@ func (s *sitePage) content(m *manager) []Widget {
 				}},
 				{Title: "Environment", Image: img(desktop.IconBraces), Layout: VBox{}, Children: []Widget{
 					s.env.viewWith(tableOpts{name: "siteEnv", onActivate: s.editEnv.trigger, menu: menu(s.editEnv)},
-						col("Name", 240), col("Value", 380), col("Secret", 60)),
+						col("Name", 240), col("Value", 380), col("Source", 80)),
 					hint("Changes apply with a zero-downtime recycle. Secret values are encrypted at rest and never shown again."),
 					buttons(s.editEnv),
 				}},
@@ -772,7 +778,7 @@ func (s *sitePage) actionsPane(m *manager) []Widget {
 	return pane(
 		"Manage site", c.start, c.stop, c.restart, c.recycle,
 		"Browse site", s.browse[:],
-		"Deploy", c.deploy, s.viewDeploys, c.purge,
+		"Deploy", c.deploy, s.viewDeploys, c.swap, c.purge,
 		"Edit site", c.basic, c.bindings, c.env, c.rewrite, c.mime,
 		"Tools", c.explore, s.viewLogs, c.console,
 		"Site", c.remove,
@@ -856,24 +862,16 @@ func (s *sitePage) redraw(m *manager) {
 		props = append(props, p(desktop.IconInfo, "Message", msg))
 	}
 	props = append(props,
-		p(desktop.SiteTypeIcon(string(st.Type)), "Type", desktop.SiteTypeText(st.Type)),
+		p(desktop.SiteTypeIcon(string(st.Type)), "Type", desktop.SiteKindText(st.Site)),
 		p(desktop.IconStart, "Start automatically", yesNo(st.AutoStart)),
 		p(desktop.IconLink, "Bindings", desktop.BindingsText(st.Bindings)),
 	)
 	switch {
 	case st.Node != nil:
-		entry := st.Node.Script
-		if st.Node.NpmScript != "" {
-			entry = "npm run " + st.Node.NpmScript
-		}
-		version := st.Node.NodeVersion
-		if version == "" {
-			version = "server default"
-		}
 		props = append(props,
 			p(desktop.IconFolder, "Application folder", st.Node.AppRoot),
-			p(desktop.IconTerminal, "Entry point", entry),
-			p(desktop.IconNode, "Node.js version", version),
+			p(desktop.IconTerminal, "Entry point", st.Node.StartText()),
+			p(desktop.IconNode, "Runtime", desktop.RuntimeText(st.Site)),
 			p(desktop.IconCPU, "Instances", strconv.Itoa(st.Node.Instances)),
 			p(desktop.IconRestart, "Restart policy", st.Node.RestartPolicy),
 		)
@@ -932,8 +930,9 @@ func (s *sitePage) redraw(m *manager) {
 	keys, rows = nil, nil
 	if st.Node != nil {
 		for _, e := range st.Node.Env {
+			v, source := desktop.EnvText(e)
 			keys = append(keys, e.Name)
-			rows = append(rows, []string{e.Name, e.Value, yesNo(e.Secret)})
+			rows = append(rows, []string{e.Name, v, source})
 		}
 	}
 	s.env.set(keys, rows)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -29,7 +30,12 @@ import (
 // job, so not even a grandchild spawned in the first microseconds can escape.
 
 type osProc struct {
+	mu  sync.Mutex // guards the handles: release may come while stopping
 	job windows.Handle
+	// token is a copy of the process's primary token, taken before it ran,
+	// when it runs as another account than NodeHoster (a site's run-as
+	// account): the console Ctrl+Break helper runs with it (ctrlbreak_windows.go).
+	token windows.Token
 }
 
 const jobObjectCpuRateControlInformation = 15
@@ -84,9 +90,15 @@ func logonUser(username, password string) (windows.Token, error) {
 }
 
 // prepare configures the command before it starts. siteDir is the site's
-// folder under the data directory (sites\<id>).
+// folder under the data directory (sites\<id>). A raw command line the
+// caller set (cmd.exe's, for a deployment's shell command) is kept.
 func prepare(cmd *exec.Cmd, runAs model.RunAsConfig, password, siteDir string) (func(), error) {
+	cmdLine := ""
+	if cmd.SysProcAttr != nil {
+		cmdLine = cmd.SysProcAttr.CmdLine
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine:       cmdLine,
 		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 		HideWindow:    true,
 	}
@@ -164,7 +176,7 @@ func afterStart(pid int, limits model.ProcessLimits) (*osProc, error) {
 			return nil, fmt.Errorf("set CPU limit: %w", err)
 		}
 	}
-	ph, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
+	ph, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		windows.CloseHandle(job)
 		return nil, fmt.Errorf("open process: %w", err)
@@ -174,12 +186,50 @@ func afterStart(pid int, limits model.ProcessLimits) (*osProc, error) {
 		windows.CloseHandle(job)
 		return nil, fmt.Errorf("assign job object: %w", err)
 	}
-	if err := resumeProcess(uint32(pid)); err != nil {
+	tok, err := otherAccountToken(ph)
+	if err != nil {
 		windows.TerminateJobObject(job, 1)
 		windows.CloseHandle(job)
 		return nil, err
 	}
-	return &osProc{job: job}, nil
+	if err := resumeProcess(uint32(pid)); err != nil {
+		windows.TerminateJobObject(job, 1)
+		windows.CloseHandle(job)
+		if tok != 0 {
+			tok.Close()
+		}
+		return nil, err
+	}
+	return &osProc{job: job, token: tok}, nil
+}
+
+// otherAccountToken copies the primary token of a process that has not run
+// yet, when it is another account's than NodeHoster's; 0 when it is
+// NodeHoster's own. The copy is made before the process runs: nothing it
+// does to its own token later (its default DACL, say) reaches the copy.
+func otherAccountToken(ph windows.Handle) (windows.Token, error) {
+	var tok windows.Token
+	if err := windows.OpenProcessToken(ph, windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &tok); err != nil {
+		return 0, fmt.Errorf("open the process token: %w", err)
+	}
+	defer tok.Close()
+	theirs, err := tok.GetTokenUser()
+	if err != nil {
+		return 0, fmt.Errorf("read the process token: %w", err)
+	}
+	ours, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return 0, fmt.Errorf("read this process's token: %w", err)
+	}
+	if windows.EqualSid(theirs.User.Sid, ours.User.Sid) {
+		return 0, nil
+	}
+	var dup windows.Token
+	if err := windows.DuplicateTokenEx(tok, windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|
+		windows.TOKEN_ADJUST_DEFAULT|windows.TOKEN_ADJUST_SESSIONID, nil, windows.SecurityImpersonation, windows.TokenPrimary, &dup); err != nil {
+		return 0, fmt.Errorf("copy the process token: %w", err)
+	}
+	return dup, nil
 }
 
 // resumeProcess resumes every thread of a process created suspended. Go's
@@ -212,22 +262,37 @@ func resumeProcess(pid uint32) error {
 	return nil
 }
 
-// signalStop asks the process to stop when no agent is connected. Console
-// control events cannot cross into a process with no console, so on Windows
-// there is nothing gentler than the agent; requests have already been drained
-// by the proxy by the time this is called.
+// signalStop asks a Node.js process to stop when no agent is connected.
+// On Windows there is nothing gentler than the agent for Node.js, which
+// has no default Ctrl+Break handling worth sending (other runtimes get
+// one: interrupt, in ctrlbreak_windows.go); requests have already been
+// drained by the proxy by the time this is called.
 func (p *osProc) signalStop(pid int) error { return errors.New("not supported") }
 
 func (p *osProc) kill(pid int) error {
-	if p == nil || p.job == 0 {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.job == 0 {
 		return nil
 	}
 	return windows.TerminateJobObject(p.job, 1)
 }
 
 func (p *osProc) release() {
-	if p != nil && p.job != 0 {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.job != 0 {
 		windows.CloseHandle(p.job)
 		p.job = 0
+	}
+	if p.token != 0 {
+		p.token.Close()
+		p.token = 0
 	}
 }

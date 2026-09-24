@@ -21,6 +21,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/rewrite"
+	"github.com/parthh37/nodehoster/internal/waf"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -65,6 +66,8 @@ type siteRuntime struct {
 	access    *lumberjack.Logger
 	affinity  *affinityRuntime // nil = no session affinity
 	cache     *responseCache   // nil = no response cache
+	waf       *waf.Engine      // nil = no web application firewall
+	wafStats  *waf.Counters
 }
 
 func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
@@ -111,6 +114,7 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 	if a := r.Affinity; a.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
 		rt.affinity = newAffinity(s.affinityKey(), site.ID, a.CookieName, a.LifetimeSec)
 	}
+	s.compileWAF(rt)
 
 	timeout := time.Duration(r.TimeoutSec) * time.Second
 	insecure := (site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify) ||
@@ -311,7 +315,7 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, ro.ErrorPages, http.StatusTooManyRequests, "Too many requests. Slow down and try again.")
 		return
 	}
-	if rt.basicUsers != nil && !excluded(r.URL.Path, ro.BasicAuth.ExcludePaths) && !rt.checkBasic(r) {
+	if rt.basicUsers != nil && !excluded(r.URL.Path, r.URL.RawPath, ro.BasicAuth.ExcludePaths) && !rt.checkBasic(r) {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm=%q, charset="UTF-8"`, ro.BasicAuth.Realm))
 		errorPage(w, ro.ErrorPages, http.StatusUnauthorized, "Authentication is required.")
 		return
@@ -323,6 +327,9 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
+	}
+	if rt.waf != nil && !rt.inspectWAF(w, r, clientIP) {
+		return
 	}
 
 	// URL rewrite rules, in order.
@@ -342,6 +349,9 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "proxy":
 			r = r.WithContext(context.WithValue(r.Context(), ctxRewriteProxy, &res))
 		}
+	}
+	if !rt.clientCertPaths(w, r) {
+		return
 	}
 
 	applyHeaderRules(r.Header, ro.RequestHeaders)
@@ -370,12 +380,9 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 		rt.toURL.ServeHTTP(w, r)
 		return
 	}
-	for _, loc := range rt.locations {
-		if r.URL.Path != loc.Path && !strings.HasPrefix(r.URL.Path, strings.TrimSuffix(loc.Path, "/")+"/") {
-			continue
-		}
+	if loc := rt.locationFor(r.URL.Path); loc != nil {
 		if loc.StripPrefix {
-			r.URL.Path = "/" + strings.TrimLeft(strings.TrimPrefix(r.URL.Path, strings.TrimSuffix(loc.Path, "/")), "/")
+			r.URL.Path = loc.strip(r.URL.Path)
 			r.URL.RawPath = ""
 			r.Header.Set("X-Forwarded-Prefix", loc.Path)
 		}
@@ -385,6 +392,14 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 			if target == nil {
 				errorPage(w, ro.ErrorPages, http.StatusBadGateway, "The application mounted at this path does not exist.")
 				return
+			}
+			// The mounted site's own firewall applies too, with its own
+			// mode and exclusions (on the path it sees).
+			if target.waf != nil && target != rt {
+				clientIP, _ := r.Context().Value(ctxClientIP).(string)
+				if !target.inspectWAF(w, r, clientIP) {
+					return
+				}
 			}
 			target.core.ServeHTTP(w, r)
 		default:
@@ -397,6 +412,23 @@ func (rt *siteRuntime) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt.core.ServeHTTP(w, r)
+}
+
+// locationFor is the location that serves a path (the longest prefix), or
+// nil.
+func (rt *siteRuntime) locationFor(p string) *location {
+	for i := range rt.locations {
+		loc := &rt.locations[i]
+		if p == loc.Path || strings.HasPrefix(p, strings.TrimSuffix(loc.Path, "/")+"/") {
+			return loc
+		}
+	}
+	return nil
+}
+
+// strip is the path a location that strips its prefix passes on.
+func (loc *location) strip(p string) string {
+	return "/" + strings.TrimLeft(strings.TrimPrefix(p, strings.TrimSuffix(loc.Path, "/")), "/")
 }
 
 func applyHeaderRules(h http.Header, rules []model.HeaderRule) {
@@ -412,9 +444,28 @@ func applyHeaderRules(h http.Header, rules []model.HeaderRule) {
 	}
 }
 
-func excluded(p string, prefixes []string) bool {
+// excluded reports whether basic authentication skips the path. An
+// exclusion takes protection away, so it is the reverse of requirePaths:
+// the path must fall under the prefix, segment by segment, both as sent and
+// with its dot segments resolved (/public/../admin is neither under
+// /public for an application resolving it nor for a file system), and a
+// path pathForms cannot read, or an entry it cannot read, is never
+// excluded.
+func excluded(p, raw string, prefixes []string) bool {
+	literal, resolved, ok := pathForms(p, raw)
+	if !ok {
+		return false
+	}
 	for _, x := range prefixes {
-		if x != "" && strings.HasPrefix(p, x) {
+		if x == "" {
+			continue
+		}
+		_, px, ok := pathForms(x, "")
+		if !ok {
+			continue
+		}
+		px = strings.TrimSuffix(px, "/")
+		if underPrefix(literal, px) && underPrefix(resolved, px) {
 			return true
 		}
 	}
@@ -484,6 +535,7 @@ func (rt *siteRuntime) forwardHeaders(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("X-Forwarded-Proto", proto)
 	pr.Out.Header.Set("X-Forwarded-Host", in.Host)
 	pr.Out.Header.Set("X-Real-IP", clientIP)
+	copyClientCertHeaders(pr.Out.Header, in.Header)
 }
 
 func (rt *siteRuntime) errorHandler(w http.ResponseWriter, r *http.Request, err error) {

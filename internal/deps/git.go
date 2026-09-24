@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 // GitDir is where NodeHoster keeps its own Git: MinGit, the distribution
@@ -28,26 +30,44 @@ import (
 // runtimes.
 func GitDir(data string) string { return filepath.Join(data, "git") }
 
+// checkProgram vets a git before deployments run it (tests replace it).
+var checkProgram = winacl.CheckServiceProgram
+
 // FindGit returns the git that deployments run: the one on PATH, else
 // NodeHoster's own, else Git for Windows in its standard folder. The last
 // two matter because a Windows service keeps the PATH it started with
 // until the computer restarts, so a Git installed after that is not on it.
+// Deployments run git as the service (LocalSystem), so one that users
+// other than administrators could replace (a folder on PATH anyone can
+// write to) is passed over (winacl.CheckProgram).
 func FindGit(data string) (string, error) {
+	var candidates []string
 	if p, err := exec.LookPath("git"); err == nil {
-		return p, nil
+		candidates = append(candidates, p)
 	}
 	if runtime.GOOS == "windows" {
-		candidates := []string{filepath.Join(GitDir(data), "cmd", "git.exe")}
+		candidates = append(candidates, filepath.Join(GitDir(data), "cmd", "git.exe"))
 		for _, env := range []string{"ProgramFiles", "ProgramW6432"} {
 			if pf := os.Getenv(env); pf != "" {
 				candidates = append(candidates, filepath.Join(pf, "Git", "cmd", "git.exe"))
 			}
 		}
-		for _, p := range candidates {
-			if _, err := os.Stat(p); err == nil {
-				return p, nil
-			}
+	}
+	var untrusted error
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err != nil {
+			continue
 		}
+		if err := checkProgram(p); err != nil {
+			if untrusted == nil {
+				untrusted = err
+			}
+			continue
+		}
+		return p, nil
+	}
+	if untrusted != nil {
+		return "", fmt.Errorf("git is not used: %w; install one only administrators can change with: nodehoster deps install git", untrusted)
 	}
 	return "", errors.New("git is not installed on the server; install it with: nodehoster deps install git")
 }

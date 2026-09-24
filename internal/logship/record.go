@@ -39,6 +39,7 @@ type AccessFields struct {
 	Host       string  `json:"host"`
 	UserAgent  string  `json:"userAgent,omitempty"`
 	Referer    string  `json:"referer,omitempty"`
+	Protocol   string  `json:"protocol,omitempty"` // HTTP/1.1, HTTP/2.0, HTTP/3.0
 }
 
 // AppLevel is the level of a line of application output: stdout is info;

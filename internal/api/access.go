@@ -124,7 +124,8 @@ func (a *API) requireFiltered(next http.Handler) http.Handler {
 	})
 }
 
-// unrestrictedToken refuses requests made with a restricted API token.
+// unrestrictedToken refuses requests made with a restricted API token or
+// limited to a role.
 func unrestrictedToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if restrictedToken(w, r) {
@@ -136,8 +137,16 @@ func unrestrictedToken(next http.Handler) http.Handler {
 
 // restrictedToken refuses (403) a request made with a restricted API token,
 // for the account endpoints and for a change to the token's own user
-// through /users/{id}.
+// through /users/{id}. A request limited to a role (model.RoleLimitHeader)
+// is refused too: it comes through another server's connection, whose
+// proxy already keeps its users away from the account behind the token;
+// were that bypassed, a limited caller could otherwise mint itself an
+// unlimited token or change the account's password.
 func restrictedToken(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get(model.RoleLimitHeader) != "" {
+		writeErr(w, http.StatusForbidden, "a request limited to a role (through a server connection) cannot manage the account")
+		return true
+	}
 	if t, _ := r.Context().Value(ctxToken).(*model.APIToken); t != nil && t.Restricted() {
 		writeErr(w, http.StatusForbidden, "a restricted API token cannot manage the account")
 		return true
@@ -170,7 +179,7 @@ func (a *API) currentAccess(r *http.Request) (acc auth.Access, ok bool) {
 	if err != nil || fresh.Disabled || fresh.ID != u.ID {
 		return auth.Access{}, false
 	}
-	return auth.UserAccess(&fresh.User).Restrict(tok), true
+	return auth.UserAccess(&fresh.User).Restrict(tok).WithPreviews(a.c.PreviewIDs), true
 }
 
 // eventVisible reports whether a live or stored event may be shown to the

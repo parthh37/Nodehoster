@@ -41,6 +41,10 @@ type Instance struct {
 
 	exited   chan struct{}
 	exitCode int
+
+	runtime        string // what started it: node, bun, python, ...
+	runtimeVersion string
+	console        bool // stopped with a console Ctrl+Break when no agent answers (see launched)
 	// addrInUse is set when the application reported that its port was
 	// already in use: it never owned the port, whatever answered on it.
 	addrInUse *atomic.Bool
@@ -56,6 +60,7 @@ type Instance struct {
 
 	agentConn net.Conn
 	agentNode string
+	agentSeen bool // an agent reports for this instance
 	heapUsed  uint64
 	heapTotal uint64
 	lag       float64
@@ -87,6 +92,10 @@ func (i *Instance) attachAgent(c net.Conn, hello agentMsg) {
 	i.mu.Lock()
 	i.agentConn = c
 	i.agentNode = hello.Node
+	if hello.Bun != "" {
+		i.agentNode = "" // Bun's process.version is the Node.js it is compatible with
+	}
+	i.agentSeen = true
 	i.mu.Unlock()
 }
 
@@ -125,14 +134,17 @@ func (i *Instance) requestShutdown(timeout time.Duration) bool {
 }
 
 // stop shuts the process down: gracefully through the agent (or SIGTERM on
-// Unix) and, after the timeout, by killing the whole process tree.
+// Unix; a console Ctrl+Break on Windows for runtimes other than Node.js)
+// and, after the timeout, by killing the whole process tree.
 func (i *Instance) stop(timeout time.Duration) {
 	if i.isExited() {
 		return
 	}
 	i.setState("stopping")
 	asked := i.requestShutdown(timeout)
-	if !asked {
+	if !asked && i.console {
+		asked = i.os.interrupt(i.pid) == nil
+	} else if !asked {
 		asked = i.os.signalStop(i.pid) == nil
 	}
 	if asked {
@@ -167,6 +179,9 @@ func (i *Instance) status(restarts int, lastExit *exitInfo) model.InstanceStatus
 		HeapTotalBytes: i.heapTotal,
 		EventLoopLagMs: i.lag,
 		NodeVersion:    i.agentNode,
+		Runtime:        i.runtime,
+		RuntimeVersion: i.runtimeVersion,
+		Agent:          i.agentSeen,
 	}
 	t := i.startedAt
 	st.StartedAt = &t

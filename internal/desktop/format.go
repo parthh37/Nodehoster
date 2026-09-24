@@ -25,6 +25,9 @@ func BindingText(b model.Binding) string {
 	if b.Host != "" {
 		s += " " + b.Host
 	}
+	if b.Slot != "" {
+		s += " (" + b.Slot + ")" // routes to a deployment slot
+	}
 	return s
 }
 

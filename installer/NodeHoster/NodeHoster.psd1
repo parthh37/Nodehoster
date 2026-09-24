@@ -12,14 +12,22 @@
   Author = 'NodeHoster'
   CompanyName = 'NodeHoster'
   Copyright = '(c) NodeHoster contributors'
-  Description = 'Manage NodeHoster sites, deployments, logs, events, certificates, scheduled tasks and backups on this computer.'
+  Description = 'Manage NodeHoster sites, deployments, preview deployments, deployment slots, logs, events, certificates, scheduled tasks, backups, alerts and runtimes on this computer.'
   PowerShellVersion = '5.1'
   CompatiblePSEditions = @('Desktop', 'Core')
   FunctionsToExport = @(
     'Get-NHSite', 'Start-NHSite', 'Stop-NHSite', 'Restart-NHSite', 'Invoke-NHRecycle',
     'Publish-NHSite', 'Get-NHRelease', 'Undo-NHDeployment',
     'Get-NHLog', 'Get-NHEvent', 'Get-NHCertificate',
-    'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup'
+    'Get-NHTask', 'Start-NHTask', 'Get-NHTaskRun', 'Start-NHBackup',
+    'Update-NHCertificateOcsp', 'Get-NHTlsSetting', 'Set-NHTlsSetting',
+    'Get-NHPreview', 'Publish-NHPreview', 'Approve-NHPreview', 'Remove-NHPreview',
+    'Connect-NHServer', 'Disconnect-NHServer', 'Get-NHServer',
+    'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
+    'Get-NHSecretStore', 'Test-NHSecretReference',
+    'Get-NHSlot', 'Switch-NHSlot',
+    'Get-NHRuntime', 'Install-NHRuntime',
+    'Get-NHWafEvent', 'Set-NHWafMode', 'Add-NHWafExclusion'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

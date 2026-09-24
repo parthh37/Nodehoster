@@ -290,7 +290,7 @@ func bindingsDialog(m *manager, siteID string) {
 		rows := make([][]string, len(s.Bindings))
 		for i, b := range s.Bindings {
 			keys[i] = fmt.Sprint(i, b.ID)
-			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), b.Host, certLabel(b, certs)}
+			rows[i] = []string{b.Protocol, orStar(b.IP), strconv.Itoa(b.Port), hostWithSlot(b), certLabel(b, certs), desktop.ClientCertText(b.ClientCert)}
 		}
 		t.set(keys, rows)
 	}
@@ -311,11 +311,11 @@ func bindingsDialog(m *manager, siteID string) {
 		}
 	}
 	refresh()
-	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 760, Height: 380}, []Widget{
+	ok := runDialogAs(&dlg, m.mw, "Site bindings — "+s.Name, Size{Width: 900, Height: 380}, []Widget{
 		intro(desktop.IconLink, "The addresses the site answers on: protocol, IP address, port and host name. HTTPS bindings use a certificate from this server, or get one automatically."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 			t.viewWith(tableOpts{onActivate: edit, onDelete: remove},
-				col("Type", 70), col("IP address", 120), colR("Port", 60), col("Host name", 200), col("Certificate", 180)),
+				col("Type", 70), col("IP address", 120), colR("Port", 60), col("Host name", 200), col("Certificate", 180), col("Client certificates", 150)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
 				button("Add…", func() {
 					b := model.Binding{Protocol: "http", IP: "*", Port: 80}
@@ -376,12 +376,15 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 		}
 	}
 	protos := []string{"http", "https"}
+	var self *walk.Dialog
+	clientCert := newClientCertField(b.ClientCert) // pages_tls_windows.go
 	onType := func() {
 		if cert == nil || port == nil { // still being created
 			return
 		}
 		https := typ.CurrentIndex() == 1
 		cert.SetEnabled(https)
+		clientCert.setEnabled(https)
 		// Like IIS: switching the protocol moves the default port along.
 		switch {
 		case https && port.Value() == 80:
@@ -390,8 +393,8 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 			port.SetValue(80)
 		}
 	}
-	return runDialog(owner, title, Size{Width: 500}, []Widget{
-		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
+	return runDialogAs(&self, owner, title, Size{Width: 500}, []Widget{
+		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: append([]Widget{
 			Label{Text: "Type:"},
 			ComboBox{AssignTo: &typ, Model: protos, CurrentIndex: slices.Index(protos, b.Protocol), OnCurrentIndexChanged: onType},
 			Label{Text: "IP address:"},
@@ -402,7 +405,7 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 			LineEdit{AssignTo: &host, Text: b.Host, CueBanner: "www.example.com, *.example.com, or empty for any"},
 			Label{Text: "Certificate:"},
 			ComboBox{AssignTo: &cert, Model: certNames, CurrentIndex: certIdx, Enabled: b.Protocol == "https"},
-		}},
+		}, clientCert.widgets(&self, b.Protocol == "https")...)},
 	}, func(dlg *walk.Dialog) bool {
 		addr := strings.TrimSpace(ip.Text())
 		if addr != "" && addr != "*" && net.ParseIP(addr) == nil {
@@ -415,8 +418,9 @@ func bindingEditDialog(owner walk.Form, title string, b *model.Binding, certs []
 		}
 		b.Port = int(port.Value())
 		b.Host = strings.ToLower(strings.TrimSpace(host.Text()))
-		b.CertMode, b.CertificateID = "", ""
+		b.CertMode, b.CertificateID, b.ClientCert = "", "", nil
 		if b.Protocol == "https" {
+			b.ClientCert = clientCert.cc
 			b.CertMode = model.CertModeAuto
 			if i := cert.CurrentIndex(); i > 0 {
 				b.CertMode, b.CertificateID = model.CertModeManual, certs[i-1].ID
@@ -444,6 +448,9 @@ func envDialog(m *manager, siteID string) {
 		if col != 0 || row >= len(s.Node.Env) {
 			return nil
 		}
+		if s.Node.Env[row].From != nil {
+			return img(desktop.IconKey)
+		}
 		if s.Node.Env[row].Secret {
 			return img(desktop.IconLock)
 		}
@@ -453,12 +460,9 @@ func envDialog(m *manager, siteID string) {
 		keys := make([]string, len(s.Node.Env))
 		rows := make([][]string, len(s.Node.Env))
 		for i, e := range s.Node.Env {
-			v := e.Value
-			if e.Secret {
-				v = "••••••••"
-			}
+			v, source := desktop.EnvText(e)
 			keys[i] = fmt.Sprint(i, e.Name)
-			rows[i] = []string{e.Name, v, yesNo(e.Secret)}
+			rows[i] = []string{e.Name, v, source}
 		}
 		t.set(keys, rows)
 	}
@@ -480,9 +484,9 @@ func envDialog(m *manager, siteID string) {
 	}
 	refresh()
 	ok := runDialogAs(&dlg, m.mw, "Environment variables — "+s.Name, Size{Width: 700, Height: 420}, []Widget{
-		intro(desktop.IconBraces, "Variables the site's processes see. Changes apply with a zero-downtime recycle; secret values are encrypted at rest."),
+		intro(desktop.IconBraces, "Variables the site's processes see. Changes apply with a zero-downtime recycle; secret values are encrypted at rest. A value secretref:<store>/<secret> is read from a secret store at each start."),
 		Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
-			t.viewWith(tableOpts{onActivate: edit, onDelete: remove}, col("Name", 200), col("Value", 300), col("Secret", 60)),
+			t.viewWith(tableOpts{onActivate: edit, onDelete: remove}, col("Name", 200), col("Value", 280), col("Source", 80)),
 			Composite{Layout: VBox{MarginsZero: true}, Children: []Widget{
 				button("Add…", func() {
 					var e model.EnvVar
@@ -511,12 +515,15 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 	if stored {
 		shown = ""
 	}
+	if e.From != nil {
+		shown = e.From.String()
+	}
 	return runDialog(owner, title, Size{Width: 460}, []Widget{
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: []Widget{
 			Label{Text: "Name:"},
 			LineEdit{AssignTo: &name, Text: e.Name, CueBanner: "DATABASE_URL"},
 			Label{Text: "Value:"},
-			LineEdit{AssignTo: &value, Text: shown, PasswordMode: e.Secret, CueBanner: map[bool]string{true: "unchanged"}[stored]},
+			LineEdit{AssignTo: &value, Text: shown, PasswordMode: e.Secret, CueBanner: map[bool]string{true: "unchanged", false: "value, or secretref:<store>/<secret>"}[stored]},
 			Label{},
 			CheckBox{AssignTo: &secret, Text: "Secret (encrypted, never shown again)", Checked: e.Secret,
 				OnCheckedChanged: func() {
@@ -530,20 +537,11 @@ func envEditDialog(owner walk.Form, title string, e *model.EnvVar) bool {
 		if n == "" || strings.ContainsAny(n, "= \t") {
 			return invalid(dlg, "Enter a variable name without spaces or '='.")
 		}
-		v := value.Text()
-		if stored && v == "" && n != e.Name {
-			// The server finds a stored secret by its name.
-			return invalid(dlg, "Enter the value again: a secret's stored value cannot move to a new name.")
+		next := *e
+		if err := desktop.EnvFromText(&next, n, value.Text(), secret.Checked()); err != nil {
+			return invalid(dlg, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
 		}
-		if stored && v == "" && !secret.Checked() {
-			return invalid(dlg, "Enter the value: a secret's stored value is never shown, so it cannot become a plain variable as it is.")
-		}
-		e.Name, e.Secret = n, secret.Checked()
-		if stored && v == "" {
-			e.Value = secrets.Mask // keep the stored secret
-		} else {
-			e.Value = v
-		}
+		*e = next
 		return true
 	})
 }
@@ -555,9 +553,10 @@ func basicSettingsDialog(m *manager, siteID string) {
 	if s == nil {
 		return
 	}
-	var name, path, entry, npm, version, target *walk.LineEdit
+	var name, path, target *walk.LineEdit
 	var auto, preserve *walk.CheckBox
 	var instances *walk.NumberEdit
+	var rtf runtimeFields
 	var upstreams *walk.TextEdit
 	var code *walk.ComboBox
 	codes := []string{"301", "302", "307", "308"}
@@ -574,13 +573,9 @@ func basicSettingsDialog(m *manager, siteID string) {
 	}
 	switch {
 	case s.Node != nil:
-		fields = append(fields,
-			Label{Text: "Application folder:"}, folder(s.Node.AppRoot),
-			Label{Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: s.Node.Script, CueBanner: "server.js"},
-			Label{Text: "or npm script:"}, LineEdit{AssignTo: &npm, Text: s.Node.NpmScript, CueBanner: "start"},
-			Label{Text: "Instances:"}, NumberEdit{AssignTo: &instances, Value: float64(s.Node.Instances), MinValue: 1, MaxValue: 64},
-			Label{Text: "Node.js version:"}, LineEdit{AssignTo: &version, Text: s.Node.NodeVersion, CueBanner: "server default"},
-		)
+		fields = append(fields, Label{Text: "Application folder:"}, folder(s.Node.AppRoot))
+		fields = append(fields, rtf.widgets(s.Node)...)
+		fields = append(fields, Label{Text: "Instances:"}, NumberEdit{AssignTo: &instances, Value: float64(s.Node.Instances), MinValue: 1, MaxValue: 64})
 	case s.Static != nil:
 		fields = append(fields, Label{Text: "Folder:"}, folder(s.Static.Root))
 	case s.Proxy != nil:
@@ -598,7 +593,7 @@ func basicSettingsDialog(m *manager, siteID string) {
 		)
 	}
 	ok := runDialog(m.mw, "Basic settings — "+s.Name, Size{Width: 560}, []Widget{
-		intro(desktop.SiteTypeIcon(string(s.Type)), desktop.SiteTypeText(s.Type)+". Other settings (routing, recycling, limits, health checks) are in the web console."),
+		intro(desktop.SiteTypeIcon(string(s.Type)), desktop.SiteKindText(s)+". Other settings (routing, recycling, limits, health checks) are in the web console."),
 		Composite{Layout: Grid{Columns: 2, MarginsZero: true}, Children: fields},
 	}, func(dlg *walk.Dialog) bool {
 		s.Name, s.AutoStart = strings.TrimSpace(name.Text()), auto.Checked()
@@ -607,8 +602,10 @@ func basicSettingsDialog(m *manager, siteID string) {
 		}
 		switch {
 		case s.Node != nil:
-			s.Node.AppRoot, s.Node.Script, s.Node.NpmScript = path.Text(), strings.TrimSpace(entry.Text()), strings.TrimSpace(npm.Text())
-			s.Node.Instances, s.Node.NodeVersion = int(instances.Value()), strings.TrimSpace(version.Text())
+			if msg := rtf.apply(s); msg != "" {
+				return invalid(dlg, msg)
+			}
+			s.Node.AppRoot, s.Node.Instances = path.Text(), int(instances.Value())
 		case s.Static != nil:
 			s.Static.Root = path.Text()
 		case s.Proxy != nil:
@@ -646,16 +643,17 @@ func weightOf(ups []model.Upstream, u string) int {
 
 func addSiteDialog(m *manager) {
 	types := []model.SiteType{model.SiteNode, model.SiteWorker, model.SiteStatic, model.SiteProxy, model.SiteRedirect}
-	typeNames := []string{"Node.js application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
+	typeNames := []string{"Application", "Background worker (no HTTP)", "Static site", "Reverse proxy", "Redirect"}
 	typeNotes := []string{
-		"Runs a Node.js app (server.js or an npm script) behind the reverse proxy, with process management and zero-downtime recycling.",
-		"Runs a Node.js process that serves no HTTP: a queue consumer, a bot, a long-running script. It has no binding.",
+		"Runs an app (Node.js, Bun, Deno, Python, .NET or any command) behind the reverse proxy, with process management and zero-downtime recycling.",
+		"Runs a process that serves no HTTP: a queue consumer, a bot, a long-running script. It has no binding.",
 		"Serves the files of a folder, with compression, caching and MIME types.",
 		"Forwards requests to one or more servers, with load balancing and health checks.",
 		"Answers every request with a redirect to another URL.",
 	}
 	var name, path, entry, target, ip, host *walk.LineEdit
-	var typ, proto *walk.ComboBox
+	var typ, proto, rtBox *walk.ComboBox
+	var rtLabel *walk.Label
 	var port *walk.NumberEdit
 	var start *walk.CheckBox
 	var pathBox *walk.Composite
@@ -678,6 +676,8 @@ func addSiteDialog(m *manager) {
 		pathBox.SetVisible(hasPath)
 		entryLabel.SetVisible(node)
 		entry.SetVisible(node)
+		rtLabel.SetVisible(node)
+		rtBox.SetVisible(node)
 		// A worker serves no HTTP, so it has no binding.
 		bindingBox.SetVisible(t != model.SiteWorker)
 		httpsNote.SetVisible(t != model.SiteWorker)
@@ -689,6 +689,21 @@ func addSiteDialog(m *manager) {
 		} else {
 			targetLabel.SetText("Redirect to:")
 			target.SetCueBanner("https://www.example.com")
+		}
+	}
+
+	// The entry follows the runtime: its label, and an example until one
+	// is typed.
+	onRuntime := func() {
+		if entry == nil || entryLabel == nil || rtBox == nil {
+			return
+		}
+		rt := model.Runtimes[max(rtBox.CurrentIndex(), 0)]
+		label, example := desktop.EntryHint(rt)
+		entryLabel.SetText(label)
+		entry.SetCueBanner(example)
+		if cur := entry.Text(); cur == "server.js" || cur == "" {
+			entry.SetText(map[bool]string{true: "server.js", false: ""}[rt == model.RuntimeNode])
 		}
 	}
 
@@ -707,6 +722,7 @@ func addSiteDialog(m *manager) {
 				LineEdit{AssignTo: &path, CueBanner: `C:\apps\my-app`},
 				PushButton{Text: "Browse…", Image: img(desktop.IconFolder), OnClicked: func() { browseFolder(m.mw, path, "Folder of the site") }},
 			}},
+			Label{AssignTo: &rtLabel, Text: "Runtime:"}, ComboBox{AssignTo: &rtBox, Model: desktop.RuntimeOptions(), CurrentIndex: 0, OnCurrentIndexChanged: onRuntime},
 			Label{AssignTo: &entryLabel, Text: "Entry script:"}, LineEdit{AssignTo: &entry, Text: "server.js"},
 			Label{AssignTo: &targetLabel, Text: "Upstream URL:", Visible: false}, LineEdit{AssignTo: &target, Visible: false},
 		}},
@@ -745,12 +761,17 @@ func addSiteDialog(m *manager) {
 			b.CertMode = model.CertModeAuto
 		}
 		s.Bindings = []model.Binding{b}
+		rt := model.Runtimes[max(rtBox.CurrentIndex(), 0)]
+		var rtArgs []string
+		if rt == model.RuntimeDeno { // Deno grants nothing unless told to
+			rtArgs = slices.Clone(model.DenoWebPermissions)
+		}
 		switch t {
 		case model.SiteNode:
-			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
+			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1, Runtime: rt, NodeArgs: rtArgs}
 		case model.SiteWorker:
 			s.Bindings = nil
-			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1}
+			s.Node = &model.NodeConfig{AppRoot: path.Text(), Script: strings.TrimSpace(entry.Text()), Instances: 1, Runtime: rt, NodeArgs: rtArgs}
 		case model.SiteStatic:
 			s.Static = &model.StaticConfig{Root: path.Text()}
 		case model.SiteProxy:

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -46,16 +47,69 @@ const (
 	UpdateInstalling = "update.installing" // the updater is starting setup
 	UpdateInstalled  = "update.installed"  // the service runs the new version
 	UpdateFailed     = "update.failed"     // downloading or installing failed
+
+	RuntimeInstalled = "runtime.installed" // a Bun or Deno version was installed
+	RuntimeFailed    = "runtime.failed"    // installing a Bun or Deno version failed
 )
 
 // SecurityBanned: automatic IP banning banned an address (or an
 // administrator did).
 const SecurityBanned = "security.banned"
 
+// OCSP stapling: a certificate's CA reports it revoked; a Must-Staple
+// certificate has no valid response to staple.
+const (
+	CertRevoked  = "cert.revoked"
+	CertStapling = "cert.stapling"
+)
+
+// Preview deployments, reported on the parent site.
+const (
+	PreviewCreated = "preview.created" // the first deployment of a preview succeeded: it is up
+	PreviewUpdated = "preview.updated" // a later deployment succeeded
+	PreviewDeleted = "preview.deleted" // closed, merged, branch deleted, expired or evicted
+	PreviewFailed  = "preview.failed"  // a preview could not be created, deployed or deleted
+	// PreviewApproval: a pull request's head waits for an operator to
+	// approve it before it is built (forks, or requireApproval "all").
+	PreviewApproval = "preview.approval"
+)
+
+// A server connection (another NodeHoster server managed from this one)
+// stopped answering, or answers again.
+const (
+	RemoteDown = "remote.down"
+	RemoteUp   = "remote.up"
+)
+
+// Resource alerts (internal/alerts): a rule's condition has held for its
+// "for" period (and, as reminders, still does), and it has cleared.
+// Critical alerts are errors, warnings warnings.
+const (
+	AlertFiring   = "alert.firing"
+	AlertResolved = "alert.resolved"
+)
+
+// Deployment slots: a swap moved a slot's release into production, or it
+// was abandoned (warm-up or preparation failed) and nothing changed.
+const (
+	SlotSwapped    = "slot.swapped"
+	SlotSwapFailed = "slot.swap_failed"
+)
+
+// SecurityWAF: the web application firewall blocked a request (at most
+// 10 a minute; the rest are summarized).
+const SecurityWAF = "security.waf"
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
-	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed}
+	UpdateAvailable, UpdateInstalling, UpdateInstalled, UpdateFailed, CertRevoked, CertStapling,
+	PreviewCreated, PreviewUpdated, PreviewDeleted, PreviewFailed, PreviewApproval,
+	RemoteDown, RemoteUp,
+	AlertFiring, AlertResolved,
+	SlotSwapped, SlotSwapFailed,
+	RuntimeInstalled, RuntimeFailed,
+	SecurityWAF}
 
 type Bus struct {
 	store    *store.Store
@@ -180,6 +234,11 @@ func (b *Bus) Send(ctx context.Context, w model.WebhookTarget, e model.Event) er
 	return last
 }
 
+// payload is the body of a webhook in its format. Chat formats show the
+// event's message and site name, which can hold text from anyone (a
+// blocked request's path, a site named by a site-scoped user): it is
+// escaped for the chat so that it cannot mention everyone, link somewhere
+// or format the message.
 func (b *Bus) payload(format string, e model.Event) any {
 	site := ""
 	if e.SiteID != "" && b.siteName != nil {
@@ -187,17 +246,30 @@ func (b *Bus) payload(format string, e model.Event) any {
 	}
 	icon := map[string]string{"info": "ℹ️", "warning": "⚠️", "error": "🛑"}[e.Level]
 	title := fmt.Sprintf("%s %s", icon, e.Type)
-	text := e.Message
-	if site != "" {
-		text = fmt.Sprintf("[%s] %s", site, e.Message)
+	text := func(esc func(string) string) string {
+		if site != "" {
+			return fmt.Sprintf("[%s] %s", esc(site), esc(e.Message))
+		}
+		return esc(e.Message)
 	}
 	switch strings.ToLower(format) {
 	case "slack":
-		return map[string]any{"text": fmt.Sprintf("*%s*\n%s", title, text)}
+		return map[string]any{"text": fmt.Sprintf("*%s*\n%s", title, text(slackEscape))}
 	case "discord":
-		return map[string]any{"content": fmt.Sprintf("**%s**\n%s", title, text)}
+		return map[string]any{
+			"content": fmt.Sprintf("**%s**\n%s", title, text(discordEscape)),
+			// No pings, whatever the text says.
+			"allowed_mentions": map[string]any{"parse": []string{}},
+		}
 	case "teams":
 		color := map[string]string{"info": "Good", "warning": "Warning", "error": "Attention"}[e.Level]
+		// The text is a TextRun of a RichTextBlock, which Teams shows as
+		// it is: a TextBlock would render it as Markdown.
+		run := func(text string, style map[string]any) map[string]any {
+			tr := map[string]any{"type": "TextRun", "text": text}
+			maps.Copy(tr, style)
+			return map[string]any{"type": "RichTextBlock", "inlines": []any{tr}}
+		}
 		return map[string]any{
 			"type": "message",
 			"attachments": []any{map[string]any{
@@ -206,8 +278,8 @@ func (b *Bus) payload(format string, e model.Event) any {
 					"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
 					"type":    "AdaptiveCard", "version": "1.4",
 					"body": []any{
-						map[string]any{"type": "TextBlock", "text": title, "weight": "Bolder", "color": color},
-						map[string]any{"type": "TextBlock", "text": text, "wrap": true},
+						run(title, map[string]any{"weight": "Bolder", "color": color}),
+						run(text(func(s string) string { return s }), nil),
 					},
 				},
 			}},
@@ -215,4 +287,26 @@ func (b *Bus) payload(format string, e model.Event) any {
 	default:
 		return map[string]any{"event": e, "site": site, "source": "nodehoster"}
 	}
+}
+
+// slackEscape escapes text for a Slack message: &, < and > as entities, as
+// Slack asks, which leaves no <!channel>, <@user> or <url|link>.
+var slackEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
+
+// discordMarkdown are the characters Discord's Markdown gives a meaning.
+const discordMarkdown = "\\*_~`|<>[]()#-:"
+
+// discordEscape escapes text for a Discord message: a backslash before
+// every Markdown character (no formatting, masked links, headings or
+// mentions) and a zero-width space in @everyone and @here, which
+// allowed_mentions already keeps from pinging.
+func discordEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(discordMarkdown, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return strings.NewReplacer("@everyone", "@\u200beveryone", "@here", "@\u200bhere").Replace(b.String())
 }
