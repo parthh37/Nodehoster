@@ -44,8 +44,14 @@
     "TILE_FILE_CODE": {
       "0000": "icons/tile_file_code.ico"
     },
+    "TILE_FOLDER": {
+      "0000": "icons/tile_folder.ico"
+    },
     "TILE_HISTORY": {
       "0000": "icons/tile_history.ico"
+    },
+    "TILE_ID_CARD": {
+      "0000": "icons/tile_id_card.ico"
     },
     "TILE_IMPORT": {
       "0000": "icons/tile_import.ico"
@@ -59,6 +65,9 @@
     "TILE_LINK": {
       "0000": "icons/tile_link.ico"
     },
+    "TILE_LOCK": {
+      "0000": "icons/tile_lock.ico"
+    },
     "TILE_MAIL": {
       "0000": "icons/tile_mail.ico"
     },
@@ -68,6 +77,9 @@
     "TILE_NODE_VERSIONS": {
       "0000": "icons/tile_node_versions.ico"
     },
+    "TILE_PACKAGE": {
+      "0000": "icons/tile_package.ico"
+    },
     "TILE_PROXY": {
       "0000": "icons/tile_proxy.ico"
     },
@@ -76,6 +88,9 @@
     },
     "TILE_ROUTE": {
       "0000": "icons/tile_route.ico"
+    },
+    "TILE_SEND": {
+      "0000": "icons/tile_send.ico"
     },
     "TILE_SERVER": {
       "0000": "icons/tile_server.ico"
@@ -88,6 +103,12 @@
     },
     "TILE_STATIC": {
       "0000": "icons/tile_static.ico"
+    },
+    "TILE_TAG": {
+      "0000": "icons/tile_tag.ico"
+    },
+    "TILE_TERMINAL": {
+      "0000": "icons/tile_terminal.ico"
     },
     "TILE_UPLOAD": {
       "0000": "icons/tile_upload.ico"

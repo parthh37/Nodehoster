@@ -144,7 +144,8 @@ func (s *backupsPage) redraw(m *manager) {
 	} else {
 		s.next.set("—", "", 0)
 	}
-	s.bar.hide()
+	// The bar is shown or hidden once: this runs on every refresh.
+	showBar := false
 	if len(st.History) > 0 {
 		r := st.History[0]
 		c, _ := runColor(r.Status)
@@ -152,11 +153,16 @@ func (s *backupsPage) redraw(m *manager) {
 		switch {
 		case r.Error != "":
 			s.bar.show(barError, "The last backup failed: "+r.Error, "Details…", func() { s.showRun(m, r) })
+			showBar = true
 		case r.Status != model.BackupSuccess:
 			s.bar.show(barWarning, "The last backup did not reach every destination: "+failedDestinations(r), "Details…", func() { s.showRun(m, r) })
+			showBar = true
 		}
 	} else {
 		s.last.set("Never", "", colorMuted)
+	}
+	if !showBar {
+		s.bar.hide()
 	}
 	if st.Encrypted {
 		s.encryption.set("Passphrase set", "archives restore on any server", colorOK)

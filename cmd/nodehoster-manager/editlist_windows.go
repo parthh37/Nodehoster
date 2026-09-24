@@ -23,7 +23,8 @@ type editList[T any] struct {
 	row       func(v T) []string
 	t         table
 	minHeight int
-	numbered  bool // the first column is the row's position, "1", "2"…
+	onDelete  func() // the Delete key; nil: remove the row
+	numbered  bool   // the first column is the row's position, "1", "2"…
 }
 
 func newEditList[T any](items *[]T, row func(v T) []string) *editList[T] {
@@ -110,7 +111,11 @@ func (l *editList[T]) move(delta int) {
 // view declares the table with the buttons to its right. The Delete key
 // removes the selected row.
 func (l *editList[T]) view(onActivate func(), cols []TableViewColumn, buttons ...Widget) Composite {
-	tv := l.t.viewWith(tableOpts{onActivate: onActivate, onDelete: l.remove, minHeight: l.minHeight}, cols...)
+	del := l.remove
+	if l.onDelete != nil {
+		del = l.onDelete // it confirms first
+	}
+	tv := l.t.viewWith(tableOpts{onActivate: onActivate, onDelete: del, minHeight: l.minHeight}, cols...)
 	return Composite{Layout: HBox{MarginsZero: true}, Children: []Widget{
 		tv,
 		Composite{Layout: VBox{MarginsZero: true}, Children: append(buttons, VSpacer{})},

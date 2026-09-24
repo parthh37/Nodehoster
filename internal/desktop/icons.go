@@ -730,6 +730,7 @@ var TileIcons = []string{
 	IconMail, IconNodeVersion, IconUsers, IconBans, IconActivity, IconBackups, IconSettings, IconConsole,
 	IconRoute, IconLink, IconBraces, IconFileCode, IconImport, IconDeploy, IconCheckList, IconUser, IconKey,
 	IconBan, IconInfo, IconWarning, IconError, IconHistory, IconUpload, IconDownload,
+	IconIDCard, IconSend, IconPackage, IconTerminal, IconLock, IconFolder, IconTag,
 }
 
 // IconResources lists every icon resource the desktop programs load, in a

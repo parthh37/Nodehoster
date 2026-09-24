@@ -51,9 +51,21 @@ func setLabel(l *walk.Label, text string) {
 	}
 }
 
+// setVisible shows or hides w itself. Unlike walk's SetVisible, it works
+// while an ancestor is hidden: walk compares with IsWindowVisible, which is
+// false for every child of a hidden window, so hiding a child of a hidden
+// bar did nothing and the child came back with the bar. Windows reports
+// the change to walk (WM_WINDOWPOSCHANGED) as when walk makes it.
 func setVisible(w walk.Widget, on bool) {
-	if w != nil && w.Visible() != on {
-		w.SetVisible(on)
+	if w == nil || w.Handle() == 0 {
+		return
+	}
+	if shown := win.GetWindowLong(w.Handle(), win.GWL_STYLE)&win.WS_VISIBLE != 0; shown != on {
+		cmd := int32(win.SW_HIDE)
+		if on {
+			cmd = win.SW_SHOWNA
+		}
+		win.ShowWindow(w.Handle(), cmd)
 	}
 }
 
@@ -117,8 +129,45 @@ type commandView struct {
 	button *walk.PushButton
 }
 
+// commands are all the commands made, for syncCommands.
+var commands []*command
+
 func newCommand(text, icon string, run func()) *command {
-	return &command{text: text, icon: icon, run: run, enabled: true, visible: true}
+	c := &command{text: text, icon: icon, run: run, enabled: true, visible: true}
+	commands = append(commands, c)
+	return c
+}
+
+// syncCommands shows every command's state in every place it shows. While
+// the window is built, some commands change (a list's filter disables its
+// commands) before all their places exist: a context menu built later
+// would still show the state the command was declared with.
+func syncCommands() {
+	for _, c := range commands {
+		for _, a := range c.actions {
+			if *a != nil {
+				(*a).SetEnabled(c.enabled)
+				(*a).SetVisible(c.visible)
+				(*a).SetImage(c.currentIcon())
+			}
+		}
+		for _, v := range c.views {
+			if v.link != nil {
+				v.link.SetEnabled(c.enabled)
+			}
+			if v.image != nil {
+				v.image.SetImage(c.currentIcon())
+			}
+			if v.button != nil {
+				v.button.SetEnabled(c.enabled)
+				v.button.SetImage(c.currentIcon())
+				setVisible(v.button, c.visible)
+			}
+			if v.row != nil {
+				setVisible(v.row, c.visible)
+			}
+		}
+	}
 }
 
 // withShortcut sets the command's keyboard shortcut (its menu bar item
@@ -268,10 +317,10 @@ func (c *command) setVisible(on bool) {
 	c.visible = on
 	for _, v := range c.views {
 		if v.row != nil {
-			v.row.SetVisible(on)
+			setVisible(v.row, on)
 		}
 		if v.button != nil {
-			v.button.SetVisible(on)
+			setVisible(v.button, on)
 		}
 	}
 	for _, a := range c.actions {
