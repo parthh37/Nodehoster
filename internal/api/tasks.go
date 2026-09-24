@@ -173,11 +173,13 @@ func (a *API) runLogStream(w http.ResponseWriter, r *http.Request) {
 		finish()
 		return
 	}
+	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
+	defer stop()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case l := <-lines:
 			if stream.send("log", l) != nil {

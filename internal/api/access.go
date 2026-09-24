@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/parthh37/nodehoster/internal/auth"
@@ -171,4 +172,28 @@ func visibleSites(acc auth.Access, sites []*model.Site) []*model.Site {
 		}
 	}
 	return out
+}
+
+// siteStreamContext is the context of a long-lived stream of one site's
+// output (logs, a deployment's or a task run's log): it ends with the
+// request, or within two seconds of the caller losing role on the site (a
+// revoked grant, a disabled account), as /api/stream does.
+func (a *API) siteStreamContext(r *http.Request, siteID string, role model.Role) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if acc, ok := a.currentAccess(r); !ok || !acc.OnSite(siteID, role) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
 }

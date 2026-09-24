@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -592,4 +593,47 @@ func TestDeploymentLogStreamIsSiteBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, e.do(http.MethodGet, "/api/sites/"+a.ID+"/deployments/dep-c/log/stream", nil, admin...), http.StatusNotFound)
+}
+
+// TestSiteStreamsEndWhenAccessIsLost follows a site's output as a
+// site-scoped user: revoking the grant or disabling the account ends the
+// stream within seconds, as it does /api/stream, instead of whenever the
+// client goes away.
+func TestSiteStreamsEndWhenAccessIsLost(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	a, b, _ := threeSites(e, admin)
+	srv := httptest.NewServer(e.h)
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name, path string
+		change     map[string]any
+	}{
+		{"grant revoked", "/logs/stream", map[string]any{"sites": []model.SiteGrant{grant(b.ID, model.RoleViewer)}}},
+		{"account disabled", "/logs/stream?type=access", map[string]any{"disabled": true}},
+	} {
+		u := e.scoped("follower-"+strings.ReplaceAll(tc.name, " ", "-"), grant(a.ID, model.RoleViewer))
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/sites/"+a.ID+tc.path, nil)
+		req.Header.Set("Authorization", "Bearer "+e.token(u))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: stream status %d", tc.name, resp.StatusCode)
+		}
+		ended := make(chan struct{})
+		go func() { io.Copy(io.Discard, resp.Body); close(ended) }()
+		expect(t, e.do(http.MethodPut, "/api/users/"+u.ID, tc.change, admin...), http.StatusOK)
+		select {
+		case <-ended:
+		case <-time.After(8 * time.Second):
+			t.Errorf("%s: the stream went on", tc.name)
+		}
+		cancel()
+		resp.Body.Close()
+	}
 }

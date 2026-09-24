@@ -97,7 +97,9 @@ each on an existing site; `admin` is not a grant role. Grants use site IDs:
 renaming a site keeps them, deleting it removes them (from users and from
 restricted tokens). Changing a user's role or grants is audited
 (`user.update`, detail `access <before> -> <after>`) and applies to their
-sessions, tokens and open `/api/stream` connections at once.
+sessions and tokens at once; open `/api/stream` connections and a site's
+log, deployment log and task run log streams end or narrow within two
+seconds (also when the account is disabled).
 
 What a site-scoped caller gets:
 

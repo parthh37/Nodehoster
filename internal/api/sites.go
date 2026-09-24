@@ -179,18 +179,20 @@ func (a *API) siteLogStream(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
+	defer stop()
 	stream := newSSE(w)
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	if r.URL.Query().Get("type") == "access" {
-		a.followFile(r.Context(), stream, a.c.Proxy.AccessLogPath(s.ID), ping)
+		a.followFile(ctx, stream, a.c.Proxy.AccessLogPath(s.ID), ping)
 		return
 	}
 	ch, cancel := a.c.Procs.Logs(s.ID).Subscribe()
 	defer cancel()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case l := <-ch:
 			if stream.send("log", l) != nil {
@@ -466,11 +468,13 @@ func (a *API) deploymentLogStream(w http.ResponseWriter, r *http.Request) {
 		finish()
 		return
 	}
+	ctx, stop := a.siteStreamContext(r, s.ID, model.RoleViewer)
+	defer stop()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case l := <-lines:
 			if stream.send("log", l) != nil {
