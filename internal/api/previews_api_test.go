@@ -301,3 +301,41 @@ func TestPreviewSettingsMasked(t *testing.T) {
 		t.Errorf("field = %q", f)
 	}
 }
+
+// TestWebhookSlotLeavesPreviews: the webhook URL of a slot deploys the
+// slot on pushes to the production branch only; previews are created by
+// the site's own webhook URL, once.
+func TestWebhookSlotLeavesPreviews(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	parent := e.previewParent(admin, "shop")
+	in := parent.Site
+	in.Deploy.Previews.Branches = []string{"feature/*"}
+	expect(t, e.do(http.MethodPut, "/api/sites/"+parent.ID, in, admin...), http.StatusOK)
+	slotHook := func(event string, body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/hooks/deploy/"+parent.ID+"?slot=staging", bytes.NewReader(body))
+		req.Header.Set("X-GitHub-Event", event)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+sign(previewHookSecret, body))
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := slotHook("pull_request", prPayload("opened", 4, false))
+	expect(t, rec, http.StatusOK)
+	if got := decodeJSON[map[string]string](t, rec); got["status"] != "ignored" || !strings.Contains(got["reason"], "slot") {
+		t.Errorf("pull request on the slot's URL = %v", got)
+	}
+	rec = slotHook("push", []byte(`{"ref":"refs/heads/feature/x","after":"1111111111111111111111111111111111111111"}`))
+	expect(t, rec, http.StatusOK)
+	if got := decodeJSON[map[string]string](t, rec); got["status"] != "ignored" {
+		t.Errorf("branch push on the slot's URL = %v", got)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if list := e.previews(admin, parent.ID, 0); len(list) != 0 {
+		t.Errorf("the slot's webhook made previews: %+v", list)
+	}
+	if deps, _ := e.c.Store.ListDeployments(context.Background(), parent.ID, 10); len(deps) != 0 {
+		t.Errorf("deployments = %+v", deps)
+	}
+}
