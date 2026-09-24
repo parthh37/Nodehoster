@@ -107,6 +107,7 @@ type Settings struct {
 	Alerts             AlertSettings       `json:"alerts"`
 	SecretStores       []SecretStore       `json:"secretStores"`
 	Runtimes           RuntimeDefaults     `json:"runtimes"` // Bun, Deno, Python and .NET defaults
+	WAF                WAFSettings         `json:"waf"`
 }
 
 // MimeSettings are the server-wide MIME types (IIS "MIME Types" at the

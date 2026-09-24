@@ -21,6 +21,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
 	"github.com/parthh37/nodehoster/internal/rewrite"
+	"github.com/parthh37/nodehoster/internal/waf"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -65,6 +66,8 @@ type siteRuntime struct {
 	access    *lumberjack.Logger
 	affinity  *affinityRuntime // nil = no session affinity
 	cache     *responseCache   // nil = no response cache
+	waf       *waf.Engine      // nil = no web application firewall
+	wafStats  *waf.Counters
 }
 
 func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
@@ -111,6 +114,7 @@ func (s *Server) compileSite(site *model.Site, prev *siteRuntime) *siteRuntime {
 	if a := r.Affinity; a.Enabled && (site.Type == model.SiteNode || site.Type == model.SiteProxy) {
 		rt.affinity = newAffinity(s.affinityKey(), site.ID, a.CookieName, a.LifetimeSec)
 	}
+	s.compileWAF(rt)
 
 	timeout := time.Duration(r.TimeoutSec) * time.Second
 	insecure := (site.Type == model.SiteProxy && site.Proxy.InsecureSkipVerify) ||
@@ -323,6 +327,9 @@ func (rt *siteRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
+	}
+	if rt.waf != nil && !rt.inspectWAF(w, r, clientIP) {
+		return
 	}
 
 	// URL rewrite rules, in order.

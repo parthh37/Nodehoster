@@ -83,6 +83,7 @@ type manager struct {
 	updates  updatesPage
 	previews previewsPage
 	alerts   alertsPage
+	waf      wafPage
 }
 
 // page is what the middle and right panes show for a node of the tree.
@@ -146,6 +147,7 @@ func runManager(openSite string) {
 		{navUpdates, m.updates.init(m), m.updates.content(m), m.updates.actionsPane(m)},
 		{navPreviews, m.previews.init(m), m.previews.content(m), m.previews.actionsPane(m)},
 		{navAlerts, m.alerts.init(m), m.alerts.content(m), m.alerts.actionsPane(m)},
+		{navWAF, m.waf.init(m), m.waf.content(m), m.waf.actionsPane(m)},
 	}
 	m.pages = map[navKind]*page{}
 	var contents, actions []Widget
@@ -845,6 +847,7 @@ const (
 	navUpdates
 	navPreviews
 	navAlerts
+	navWAF
 )
 
 type navItem struct {
@@ -898,6 +901,7 @@ func newNavModel() *navModel {
 		{kind: navUsers, text: "Web console users", parent: root, image: ico(desktop.IconUsers)},
 		{kind: navBans, text: "Banned IP addresses", parent: root, image: ico(desktop.IconBans)},
 		{kind: navAlerts, text: "Alerts", parent: root, image: ico(desktop.IconWarning)},
+		{kind: navWAF, text: "Web application firewall", parent: root, image: ico(desktop.IconShield)},
 		{kind: navActivity, text: "Events and audit log", parent: root, image: ico(desktop.IconActivity)},
 		{kind: navBackups, text: "Backups", parent: root, image: ico(desktop.IconBackups)},
 		{kind: navUpdates, text: "Updates", parent: root, image: ico(desktop.IconDownload)},

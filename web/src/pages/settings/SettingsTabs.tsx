@@ -326,6 +326,7 @@ export const EVENT_TYPES = [
   'cert.stapling',
   'server.started',
   'security.banned',
+  'security.waf',
   'backup.completed',
   'backup.failed',
   'update.available',

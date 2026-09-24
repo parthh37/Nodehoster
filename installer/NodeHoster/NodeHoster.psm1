@@ -1345,6 +1345,167 @@ function Install-NHRuntime {
   Invoke-NHCli $cliArgs
 }
 
+Update-TypeData -TypeName NodeHoster.WafEvent -DefaultDisplayPropertySet Time, Action, ClientIp, Method, Path, Rules, Score, Id -Force
+
+<#
+.SYNOPSIS
+Gets requests the web application firewall blocked (or, in detect mode,
+would have blocked), newest first.
+.PARAMETER Name
+Only this site's events (name or ID). Accepts pipeline input.
+.PARAMETER Action
+Blocked or Detected.
+.PARAMETER ClientIP
+Only this client address.
+.PARAMETER Rule
+Only events that matched this rule ID.
+.PARAMETER RequestId
+The event of this request ID, as shown on the block page.
+.PARAMETER Count
+How many events (default 50).
+.EXAMPLE
+Get-NHWafEvent shop -Action Blocked -Count 20
+.EXAMPLE
+Get-NHWafEvent -RequestId 9f2c4e1ab37d0c55 | Select-Object -ExpandProperty matches
+.EXAMPLE
+Get-NHWafEvent | Group-Object ClientIp | Sort-Object Count -Descending | Select-Object -First 10
+#>
+function Get-NHWafEvent {
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name,
+    [ValidateSet('Blocked', 'Detected')]
+    [string] $Action,
+    [string] $ClientIP,
+    [int] $Rule,
+    [string] $RequestId,
+    [ValidateRange(1, 1000)]
+    [int] $Count = 50
+  )
+  process {
+    $filters = @('-n', "$Count")
+    if ($Action) { $filters += @('--action', $Action.ToLowerInvariant()) }
+    if ($ClientIP) { $filters += @('--ip', $ClientIP) }
+    if ($Rule) { $filters += @('--rule', "$Rule") }
+    if ($RequestId) { $filters += @('--id', $RequestId) }
+    $targets = if ($Name) { $Name } else { @($null) }
+    foreach ($n in $targets) {
+      $cliArgs = @('waf', 'events')
+      if ($n) { $cliArgs += $n }
+      try {
+        foreach ($e in @(Invoke-NHCli ($cliArgs + $filters))) {
+          if ($null -eq $e) { continue }
+          Add-Member -InputObject $e -NotePropertyName Time -NotePropertyValue ([datetime] $e.time) -Force
+          Add-Member -InputObject $e -NotePropertyName Rules -NotePropertyValue ((@($e.matches) | ForEach-Object { $_.ruleId }) -join ', ') -Force
+          Add-NHType $e 'NodeHoster.WafEvent'
+        }
+      } catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Sets a site's web application firewall mode: Off, Detect (log what would
+be blocked) or Block.
+.DESCRIPTION
+Keeps the site's exclusions. Returns the site's firewall configuration and
+counters.
+.PARAMETER Name
+The site's name or ID. Accepts sites from Get-NHSite on the pipeline.
+.PARAMETER Mode
+Off, Detect or Block.
+.PARAMETER ParanoiaLevel
+1 (standard) to 3 (paranoid); unchanged if not given.
+.PARAMETER Threshold
+The anomaly score that blocks; unchanged if not given.
+.EXAMPLE
+Set-NHWafMode shop Block
+.EXAMPLE
+Get-NHSite | Where-Object type -ne 'worker' | Set-NHWafMode -Mode Detect
+#>
+function Set-NHWafMode {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string] $Name,
+    [Parameter(Mandatory, Position = 1)]
+    [ValidateSet('Off', 'Detect', 'Block')]
+    [string] $Mode,
+    [ValidateRange(1, 3)]
+    [int] $ParanoiaLevel,
+    [ValidateRange(1, 1000)]
+    [int] $Threshold
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess($Name, "set the web application firewall to $Mode")) { return }
+    $cliArgs = @('waf', 'mode', $Name, $Mode.ToLowerInvariant())
+    if ($ParanoiaLevel) { $cliArgs += @('--paranoia', "$ParanoiaLevel") }
+    if ($Threshold) { $cliArgs += @('--threshold', "$Threshold") }
+    try { Invoke-NHCli $cliArgs } catch { $PSCmdlet.WriteError($_) }
+  }
+}
+
+<#
+.SYNOPSIS
+Adds a web application firewall exclusion to a site, for a false positive.
+.DESCRIPTION
+Turns rules (or categories) off under a path, or stops them inspecting
+named arguments, cookies or headers. With only -Path, the firewall is off
+under that path.
+.PARAMETER Name
+The site's name or ID.
+.PARAMETER Path
+Path prefix; the whole site if not given.
+.PARAMETER Rule
+Rule IDs to turn off.
+.PARAMETER Category
+Categories to turn off: sqli, xss, lfi, rfi, rce, nodejs, php, java, scanner, protocol.
+.PARAMETER Argument
+Form fields, query string arguments or JSON keys (dotted: post.body) not to inspect. A trailing * matches a prefix.
+.PARAMETER Cookie
+Cookies not to inspect.
+.PARAMETER Header
+Headers not to inspect.
+.PARAMETER Comment
+Why the exclusion exists.
+.EXAMPLE
+Add-NHWafExclusion blog -Path /wp-admin/ -Argument content -Comment 'The editor posts HTML'
+.EXAMPLE
+Add-NHWafExclusion api -Path /webhooks/stripe -Rule 942100, 942190
+#>
+function Add-NHWafExclusion {
+  [CmdletBinding(SupportsShouldProcess)]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string] $Name,
+    [string] $Path,
+    [int[]] $Rule,
+    [ValidateSet('sqli', 'xss', 'lfi', 'rfi', 'rce', 'nodejs', 'php', 'java', 'scanner', 'protocol')]
+    [string[]] $Category,
+    [string[]] $Argument,
+    [string[]] $Cookie,
+    [string[]] $Header,
+    [string] $Comment
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess($Name, 'add a web application firewall exclusion')) { return }
+    $cliArgs = @('waf', 'exclude', $Name)
+    if ($Path) { $cliArgs += @('--path', $Path) }
+    foreach ($r in $Rule) { $cliArgs += @('--rule', "$r") }
+    foreach ($c in $Category) { $cliArgs += @('--category', $c) }
+    foreach ($a in $Argument) { $cliArgs += @('--arg', $a) }
+    foreach ($c in $Cookie) { $cliArgs += @('--cookie', $c) }
+    foreach ($h in $Header) { $cliArgs += @('--header', $h) }
+    if ($Comment) { $cliArgs += @('--comment', $Comment) }
+    try { Invoke-NHCli $cliArgs } catch { $PSCmdlet.WriteError($_) }
+  }
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
   Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
@@ -1354,4 +1515,5 @@ Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHS
   Get-NHAlert, Set-NHAlertSilence, Clear-NHAlertSilence,
   Get-NHSecretStore, Test-NHSecretReference,
   Get-NHSlot, Switch-NHSlot,
-  Get-NHRuntime, Install-NHRuntime
+  Get-NHRuntime, Install-NHRuntime,
+  Get-NHWafEvent, Set-NHWafMode, Add-NHWafExclusion

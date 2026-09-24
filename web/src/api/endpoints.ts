@@ -72,6 +72,7 @@ import type {
   User,
   WebhookTarget,
 } from './types';
+import type { SiteWAF, WAFConfig, WAFEvent, WAFEventFilter, WAFExclusion, WAFRuleInfo } from './wafTypes';
 
 const enc = encodeURIComponent;
 
@@ -139,6 +140,17 @@ export const bansApi = {
   ban: (body: BanRequest) => http.post<Ban>('/api/bans', body),
   /** Also takes any address inside a banned range. */
   unban: (address: string) => http.del(`/api/bans/${enc(address)}`),
+};
+
+/** Web application firewall. A site's configuration is also saved with the site (routing.waf). */
+export const wafApi = {
+  rules: () => http.get<WAFRuleInfo[]>('/api/waf/rules'),
+  events: (f: WAFEventFilter = {}) => http.get<WAFEvent[]>(`/api/waf/events${qs({ ...f })}`),
+  siteEvents: (id: string, f: WAFEventFilter = {}) =>
+    http.get<WAFEvent[]>(`/api/sites/${enc(id)}/waf/events${qs({ ...f, siteId: undefined })}`),
+  site: (id: string) => http.get<SiteWAF>(`/api/sites/${enc(id)}/waf`),
+  setSite: (id: string, cfg: WAFConfig) => http.put<SiteWAF>(`/api/sites/${enc(id)}/waf`, cfg),
+  addExclusion: (id: string, x: WAFExclusion) => http.post<SiteWAF>(`/api/sites/${enc(id)}/waf/exclusions`, x),
 };
 
 export const sitesApi = {

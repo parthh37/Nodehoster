@@ -119,6 +119,8 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/alerts/history", a.alertHistory)
 		r.Post("/alerts/{alert}/silence", a.silenceAlert)
 		r.Delete("/alerts/{alert}/silence", a.unsilenceAlert)
+		r.Get("/waf/rules", a.wafRules)
+		r.Get("/waf/events", a.listWAFEvents)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleViewer))
@@ -140,6 +142,8 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/alert-rules", a.siteAlertRules)
 		r.Get("/sites/{id}/slots", a.listSlots)
 		r.Get("/sites/{id}/slots/{slot}/swap", a.swapPreview)
+		r.Get("/sites/{id}/waf", a.getSiteWAF)
+		r.Get("/sites/{id}/waf/events", a.siteWAFEvents)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))
@@ -169,6 +173,8 @@ func (a *API) routes(r chi.Router) {
 		r.Use(a.requireSite(model.RoleAdmin))
 		r.Put("/sites/{id}", a.updateSite)
 		r.Delete("/sites/{id}", a.deleteSite)
+		r.Put("/sites/{id}/waf", a.putSiteWAF)
+		r.Post("/sites/{id}/waf/exclusions", a.addWAFExclusion)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.require(model.RoleViewer))

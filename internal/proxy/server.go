@@ -28,6 +28,7 @@ import (
 	"github.com/parthh37/nodehoster/internal/logship"
 	"github.com/parthh37/nodehoster/internal/model"
 	"github.com/parthh37/nodehoster/internal/procmgr"
+	"github.com/parthh37/nodehoster/internal/waf"
 )
 
 type Deps struct {
@@ -44,6 +45,9 @@ type Deps struct {
 	// Bans is automatic IP banning; nil in tests that do not need it.
 	Bans *ipban.Manager
 	Ship *logship.Shipper // access log shipping; may be nil
+	// WAF records the web application firewall's events and counters;
+	// nil in tests that do not need them.
+	WAF *waf.Recorder
 }
 
 type route struct {

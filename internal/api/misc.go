@@ -366,6 +366,7 @@ func (a *API) prometheus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.prometheusAlerts(&b, access(r))
+	a.wafMetrics(&b, sites, access(r).SiteScoped())
 	if access(r).SiteScoped() {
 		// Certificates are server-wide.
 		io.WriteString(w, b.String())

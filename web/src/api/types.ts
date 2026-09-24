@@ -3,6 +3,7 @@
 // optional here.
 
 import type { AlertSettings, SiteAlerts } from './alerts';
+import type { WAFConfig, WAFSettings } from './wafTypes';
 
 export const SECRET = '__SECRET__';
 
@@ -339,6 +340,8 @@ export interface RoutingConfig {
   affinity: AffinityConfig;
   cache: CacheConfig;
   banning: SiteBanning;
+  /** Web application firewall; absent on sites saved before it existed (off). */
+  waf?: WAFConfig;
 }
 
 /** The site's part in automatic IP banning. */
@@ -744,6 +747,7 @@ export interface Settings {
   secretStores: SecretStore[];
   /** Defaults for sites of other runtimes that pin no version. */
   runtimes?: RuntimeDefaults;
+  waf: WAFSettings;
 }
 
 /** model.RuntimeDefaults. */
@@ -857,6 +861,8 @@ export interface IPBanSettings {
   authFailures: BanRule;
   notFound: BanRule;
   rateLimited: BanRule;
+  /** Requests the web application firewall blocked. */
+  wafBlocks: BanRule;
   trapPaths: string[] | null;
   banMinutes: number;
   maxBanMinutes: number;

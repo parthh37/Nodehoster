@@ -14,6 +14,7 @@ import { NodePage } from '@/pages/node/NodePage';
 import { RuntimesPage } from '@/pages/runtimes/RuntimesPage';
 import { EventsPage } from '@/pages/EventsPage';
 import { AlertsPage } from '@/pages/alerts/AlertsPage';
+import { WafEventsPage } from '@/pages/waf/WafEventsPage';
 import { MailPage } from '@/pages/mail/MailPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { UsersPage } from '@/pages/UsersPage';
@@ -160,6 +161,7 @@ const router = createBrowserRouter([
       },
       { path: 'events', element: <EventsPage /> },
       { path: 'alerts', element: <AlertsPage /> },
+      { path: 'firewall', element: <WafEventsPage /> },
       {
         path: 'settings/:tab?',
         element: (

@@ -92,6 +92,10 @@ const (
 	SlotSwapFailed = "slot.swap_failed"
 )
 
+// SecurityWAF: the web application firewall blocked a request (at most
+// 10 a minute; the rest are summarized).
+const SecurityWAF = "security.waf"
+
 var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteRecycled, SiteUnhealthy,
 	DeploySucceeded, DeployFailed, CertIssued, CertRenewed, CertFailed, CertExpiring, UpstreamDown, UpstreamUp, ServerStarted,
 	MailFailed, MailError, SecurityBanned, TaskFailed, TaskTimeout, BackupCompleted, BackupFailed,
@@ -100,7 +104,8 @@ var AllTypes = []string{SiteStarted, SiteStopped, SiteCrashed, SiteFailed, SiteR
 	RemoteDown, RemoteUp,
 	AlertFiring, AlertResolved,
 	SlotSwapped, SlotSwapFailed,
-	RuntimeInstalled, RuntimeFailed}
+	RuntimeInstalled, RuntimeFailed,
+	SecurityWAF}
 
 type Bus struct {
 	store    *store.Store

@@ -26,7 +26,8 @@
     'Get-NHAlert', 'Set-NHAlertSilence', 'Clear-NHAlertSilence',
     'Get-NHSecretStore', 'Test-NHSecretReference',
     'Get-NHSlot', 'Switch-NHSlot',
-    'Get-NHRuntime', 'Install-NHRuntime'
+    'Get-NHRuntime', 'Install-NHRuntime',
+    'Get-NHWafEvent', 'Set-NHWafMode', 'Add-NHWafExclusion'
   )
   CmdletsToExport = @()
   VariablesToExport = @()

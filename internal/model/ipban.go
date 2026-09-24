@@ -20,6 +20,8 @@ type IPBanSettings struct {
 	AuthFailures BanRule `json:"authFailures"`
 	NotFound     BanRule `json:"notFound"`    // 404 answers (vulnerability scanners)
 	RateLimited  BanRule `json:"rateLimited"` // 429 answers (a site's rate limit, or the application's)
+	// WAFBlocks counts requests the web application firewall blocked.
+	WAFBlocks BanRule `json:"wafBlocks"`
 	// TrapPaths ban on the first request: paths no site here serves, which
 	// only scanners ask for. Prefixes, not case-sensitive. Sites that do
 	// serve them (WordPress, PHP) opt out in their routing settings.
@@ -74,6 +76,7 @@ func DefaultIPBan() IPBanSettings {
 		AuthFailures:  BanRule{Threshold: 10, WindowSec: 300},
 		NotFound:      BanRule{Threshold: 50, WindowSec: 60},
 		RateLimited:   BanRule{Threshold: 30, WindowSec: 60},
+		WAFBlocks:     BanRule{Threshold: 5, WindowSec: 60},
 		TrapPaths:     []string{"/wp-login.php", "/xmlrpc.php", "/wp-admin", "/.env", "/.git/", "/phpmyadmin", "/pma", "/cgi-bin/", "/vendor/phpunit"},
 		BanMinutes:    15,
 		MaxBanMinutes: 24 * 60,
@@ -90,7 +93,12 @@ func (s *IPBanSettings) ApplyDefaults() {
 		return
 	}
 	d := DefaultIPBan()
-	for _, r := range []struct{ rule, def *BanRule }{{&s.AuthFailures, &d.AuthFailures}, {&s.NotFound, &d.NotFound}, {&s.RateLimited, &d.RateLimited}} {
+	if s.WAFBlocks == (BanRule{}) {
+		// Saved before the firewall existed. Its blocks count by default:
+		// a site only blocks when an administrator set it to.
+		s.WAFBlocks = d.WAFBlocks
+	}
+	for _, r := range []struct{ rule, def *BanRule }{{&s.AuthFailures, &d.AuthFailures}, {&s.NotFound, &d.NotFound}, {&s.RateLimited, &d.RateLimited}, {&s.WAFBlocks, &d.WAFBlocks}} {
 		if r.rule.WindowSec <= 0 {
 			r.rule.WindowSec = r.def.WindowSec
 		}
@@ -120,7 +128,7 @@ func (s *IPBanSettings) Validate() error {
 	for _, r := range []struct {
 		f    string
 		rule BanRule
-	}{{"authFailures", s.AuthFailures}, {"notFound", s.NotFound}, {"rateLimited", s.RateLimited}} {
+	}{{"authFailures", s.AuthFailures}, {"notFound", s.NotFound}, {"rateLimited", s.RateLimited}, {"wafBlocks", s.WAFBlocks}} {
 		if r.rule.Threshold > 100000 {
 			return verr("ipBan."+r.f+".threshold", "must be between 0 (off) and 100000")
 		}

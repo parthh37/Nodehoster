@@ -50,6 +50,9 @@ export const qk = {
   secretStores: ['secret-stores'] as const,
   slots: (id: string) => ['sites', id, 'slots'] as const,
   swapPreview: (id: string, slot: string) => ['sites', id, 'slots', slot, 'swap'] as const,
+  wafRules: ['waf', 'rules'] as const,
+  wafEvents: (filter: object) => ['waf', 'events', filter] as const,
+  siteWaf: (id: string) => ['sites', id, 'waf'] as const,
 };
 
 /** Query roots that are about this server whichever server the console operates. */

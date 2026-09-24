@@ -20,6 +20,7 @@ import { formatDateTime } from '@/lib/format';
 import { banAddressError, banLengthMinutes, banRemaining } from '@/lib/ipban';
 import { validateIP } from '../sites/editors/RoutingEditor';
 import type { SettingsTabProps } from './SettingsPage';
+import { FirewallSettings } from './FirewallSettings';
 
 function RuleFields({ label, path, rule, onChange, unit }: { label: string; path: string; rule: BanRule; onChange: (r: BanRule) => void; unit: string }) {
   return (
@@ -69,6 +70,8 @@ export function SecurityTab({ s, update }: SettingsTabProps) {
             </p>
             <RuleFields label="Missing pages (404)" path="ipBan.notFound" unit="×" rule={b.notFound} onChange={(r) => set({ notFound: r })} />
             <RuleFields label="Rate limited (429)" path="ipBan.rateLimited" unit="×" rule={b.rateLimited} onChange={(r) => set({ rateLimited: r })} />
+            <RuleFields label="Blocked by the firewall" path="ipBan.wafBlocks" unit="×" rule={b.wafBlocks} onChange={(r) => set({ wafBlocks: r })} />
+            <p className="-mt-2 text-xs text-zinc-500">Requests a site's web application firewall blocked (detect mode never counts).</p>
           </FormSection>
           <FormSection title="Trap paths" description="One request bans. Only scanners ask for these on a site that is not WordPress or PHP; such sites opt out on their Routing tab.">
             <Field path="ipBan.trapPaths" prefix hint="Path prefixes, not case-sensitive.">
@@ -97,6 +100,7 @@ export function SecurityTab({ s, update }: SettingsTabProps) {
         </Sections>
       </Card>
       <BannedAddresses />
+      <FirewallSettings s={s} update={update} />
     </div>
   );
 }
