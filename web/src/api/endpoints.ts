@@ -38,6 +38,8 @@ import type {
   MimeMap,
   NHEvent,
   NodeVersions,
+  PreviewDecision,
+  PreviewView,
   RewriteImport,
   RestoreResult,
   RewriteImportRequest,
@@ -150,6 +152,15 @@ export const sitesApi = {
   activate: (id: string, depId: string) =>
     http.post<Deployment>(`/api/sites/${enc(id)}/deployments/${enc(depId)}/activate`),
   deploymentLog: (id: string, depId: string) => http.text(`/api/sites/${enc(id)}/deployments/${enc(depId)}/log`),
+};
+
+/** Preview deployments of a site. Their settings are part of the site (deploy.previews). */
+export const previewsApi = {
+  list: (id: string) => http.get<PreviewView[]>(`/api/sites/${enc(id)}/previews`),
+  /** Deploys a branch as a preview (created if needed). */
+  deployBranch: (id: string, branch: string) => http.post<PreviewDecision>(`/api/sites/${enc(id)}/previews`, { branch }),
+  redeploy: (id: string, previewId: string) => http.post<PreviewView>(`/api/sites/${enc(id)}/previews/${enc(previewId)}/redeploy`),
+  remove: (id: string, previewId: string) => http.del(`/api/sites/${enc(id)}/previews/${enc(previewId)}`),
 };
 
 /** Scheduled tasks. Definitions are edited as part of the site (sitesApi.update). */

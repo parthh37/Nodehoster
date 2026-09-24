@@ -126,6 +126,7 @@ Update-TypeData -TypeName NodeHoster.Certificate -DefaultDisplayPropertySet Name
 Update-TypeData -TypeName NodeHoster.Task -DefaultDisplayPropertySet Site, Name, Schedule, Enabled, NextRunAt, LastStatus -Force
 Update-TypeData -TypeName NodeHoster.TaskRun -DefaultDisplayPropertySet Id, TaskName, Status, StartedAt, Trigger, ExitCode, Error -Force
 Update-TypeData -TypeName NodeHoster.BackupRun -DefaultDisplayPropertySet StartedAt, Trigger, Status, File, Size, Error -Force
+Update-TypeData -TypeName NodeHoster.Preview -DefaultDisplayPropertySet Site, PullRequest, Branch, State, Url, Id -Force
 
 <#
 .SYNOPSIS
@@ -628,6 +629,126 @@ function Start-NHBackup {
   Add-NHType $run 'NodeHoster.BackupRun'
 }
 
+<#
+.SYNOPSIS
+Gets the preview deployments of a NodeHoster site.
+.DESCRIPTION
+A site with previews enabled gets a temporary site per pull request (or
+previewed branch), created, redeployed and deleted by its push webhook.
+This lists them with their address, branch, pull request, commit and state
+(pending, deploying, ready, failed, deleting).
+.PARAMETER Name
+The parent site's name or ID. Accepts pipeline input.
+.EXAMPLE
+Get-NHPreview shop
+.EXAMPLE
+Get-NHPreview shop | Where-Object State -eq 'failed' | Publish-NHPreview
+#>
+function Get-NHPreview {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName')]
+    [string[]] $Name
+  )
+  process {
+    foreach ($n in $Name) {
+      try {
+        foreach ($p in @(Invoke-NHCli @('preview', 'list', $n))) {
+          if ($null -eq $p) { continue }
+          $pr = $null
+          if ($p.preview.kind -eq 'pr') { $pr = $p.preview.number }
+          Add-Member -InputObject $p -NotePropertyName Site -NotePropertyValue $n -Force
+          Add-Member -InputObject $p -NotePropertyName PullRequest -NotePropertyValue $pr -Force
+          Add-Member -InputObject $p -NotePropertyName Branch -NotePropertyValue $p.preview.branch -Force
+          Add-Member -InputObject $p -NotePropertyName Url -NotePropertyValue $p.preview.url -Force
+          Add-Member -InputObject $p -NotePropertyName Commit -NotePropertyValue $p.preview.commit -Force
+          Add-Member -InputObject $p -NotePropertyName LastPush -NotePropertyValue ([datetime] $p.preview.lastPush) -Force
+          Add-NHType $p 'NodeHoster.Preview'
+        }
+      } catch { $PSCmdlet.WriteError($_) }
+    }
+  }
+}
+
+<#
+.SYNOPSIS
+Deploys a branch as a preview of a NodeHoster site, or a preview again.
+.DESCRIPTION
+With -Branch, deploys that branch as a preview (created if it does not
+exist; the production branch is refused). With -Preview (or previews from
+Get-NHPreview on the pipeline), deploys a preview's head again. The
+deployment runs in the background: Get-NHPreview shows its state.
+.PARAMETER Name
+The parent site's name or ID.
+.PARAMETER Branch
+A branch to deploy as a preview.
+.PARAMETER Preview
+A preview: its ID, pull request number, host name or branch.
+.EXAMPLE
+Publish-NHPreview shop -Branch feature/checkout
+.EXAMPLE
+Publish-NHPreview shop -Preview 42
+#>
+function Publish-NHPreview {
+  [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Preview')]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName', 'Site')]
+    [string] $Name,
+    [Parameter(Mandatory, ParameterSetName = 'Branch')]
+    [string] $Branch,
+    [Parameter(Mandatory, Position = 1, ParameterSetName = 'Preview', ValueFromPipelineByPropertyName)]
+    [Alias('Id')]
+    [string] $Preview
+  )
+  process {
+    if ($PSCmdlet.ParameterSetName -eq 'Branch') {
+      if (-not $PSCmdlet.ShouldProcess("$Name/$Branch", 'deploy preview')) { return }
+      Invoke-NHCli @('preview', 'deploy', $Name, $Branch)
+      return
+    }
+    if (-not $PSCmdlet.ShouldProcess("$Name/$Preview", 'redeploy preview')) { return }
+    Add-NHType (Invoke-NHCli @('preview', 'redeploy', $Name, $Preview)) 'NodeHoster.Preview'
+  }
+}
+
+<#
+.SYNOPSIS
+Deletes a preview deployment of a NodeHoster site.
+.DESCRIPTION
+Deletes the preview's site with its releases, logs and automatic
+certificate, after any deployment of it in progress. Closing or merging a
+pull request and deleting a branch delete their previews on their own;
+this is for the others.
+.PARAMETER Name
+The parent site's name or ID.
+.PARAMETER Preview
+The preview: its ID, pull request number, host name or branch. Accepts
+previews from Get-NHPreview on the pipeline.
+.EXAMPLE
+Remove-NHPreview shop 42
+.EXAMPLE
+Get-NHPreview shop | Where-Object LastPush -lt (Get-Date).AddDays(-3) | Remove-NHPreview -Confirm:$false
+#>
+function Remove-NHPreview {
+  [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+  param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)]
+    [Alias('SiteName', 'Site')]
+    [string] $Name,
+    [Parameter(Mandatory, Position = 1, ValueFromPipelineByPropertyName)]
+    [Alias('Id')]
+    [string] $Preview
+  )
+  process {
+    if (-not $PSCmdlet.ShouldProcess("$Name/$Preview", 'delete preview')) { return }
+    try { Invoke-NHCli @('preview', 'delete', $Name, $Preview, '--yes') | Out-Null }
+    catch { $PSCmdlet.WriteError($_) }
+  }
+}
+
 Export-ModuleMember -Function Get-NHSite, Start-NHSite, Stop-NHSite, Restart-NHSite, Invoke-NHRecycle,
   Publish-NHSite, Get-NHRelease, Undo-NHDeployment, Get-NHLog, Get-NHEvent, Get-NHCertificate,
-  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup
+  Get-NHTask, Start-NHTask, Get-NHTaskRun, Start-NHBackup,
+  Get-NHPreview, Publish-NHPreview, Remove-NHPreview

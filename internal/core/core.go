@@ -77,6 +77,9 @@ type Core struct {
 
 	backups backupState
 	updates updateState
+
+	previews previewState // preview deployments' workers (previews.go)
+
 	// UpdateFeed is where new releases come from (tests replace it).
 	UpdateFeed *update.Feed
 
@@ -219,6 +222,7 @@ func (c *Core) Start() {
 	c.wg.Go(func() { c.invalidateCaches(ctx) })
 	c.wg.Go(func() { c.backupLoop(ctx) })
 	c.wg.Go(func() { c.updateLoop(ctx) })
+	c.wg.Go(func() { c.previewLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
@@ -227,6 +231,7 @@ func (c *Core) Shutdown() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	c.closePreviews() // before the processes: a preview worker may start or remove a site
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c.Proxy.Shutdown(ctx)
@@ -716,6 +721,9 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 	}
 	in.Deploy.Git.Token = seal(in.Deploy.Git.Token, ex.Deploy.Git.Token)
 	in.Deploy.WebhookSecret = seal(in.Deploy.WebhookSecret, ex.Deploy.WebhookSecret)
+	if err := c.preparePreviews(in, &ex); err != nil {
+		return err
+	}
 
 	// Basic auth: hash new passwords, keep existing hashes otherwise.
 	for i := range in.Routing.BasicAuth.Users {
@@ -743,6 +751,7 @@ func (c *Core) prepare(in *model.Site, existing *model.Site) error {
 // CreateSite validates, stores and applies a new site, starting it when
 // it is set to start automatically.
 func (c *Core) CreateSite(ctx context.Context, in *model.Site) (*model.Site, error) {
+	in.PreviewOf, in.Preview = "", nil // only the server makes previews
 	return c.createSite(ctx, in, in.AutoStart)
 }
 
@@ -775,6 +784,7 @@ func (c *Core) createSite(ctx context.Context, in *model.Site, start bool) (*mod
 func (c *Core) UpdateSite(ctx context.Context, id string, in *model.Site) (*model.Site, error) {
 	c.sitesMu.Lock()
 	defer c.sitesMu.Unlock()
+	c.keepPreviewFields(id, in)
 	return c.updateSite(ctx, id, in)
 }
 
@@ -880,14 +890,21 @@ func (c *Core) DeleteSite(ctx context.Context, id string, deleteFiles bool) erro
 		c.reload()
 		return err
 	}
+	if existing.IsPreview() {
+		deleteFiles = true // a preview's files are its own and temporary
+	}
 	if deleteFiles {
 		os.RemoveAll(filepath.Join(c.Paths.Sites, id))
 		os.RemoveAll(filepath.Join(c.Paths.SiteLogs, id))
 	}
+	c.previewSiteDeleted(existing)
 	return nil
 }
 
 func (c *Core) startSite(s *model.Site) error {
+	if err := previewStartable(s); err != nil {
+		return err
+	}
 	if s.RunsNode() {
 		return c.Procs.Start(s.ID)
 	}
@@ -1013,6 +1030,7 @@ func Masked(s *model.Site) *model.Site {
 	}
 	m.Deploy.Git.Token = mask(m.Deploy.Git.Token)
 	m.Deploy.WebhookSecret = mask(m.Deploy.WebhookSecret)
+	maskPreviews(m)
 	for i := range m.Routing.BasicAuth.Users {
 		m.Routing.BasicAuth.Users[i].PasswordHash = ""
 		m.Routing.BasicAuth.Users[i].Password = ""

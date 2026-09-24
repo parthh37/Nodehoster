@@ -9,6 +9,7 @@ export const qk = {
   siteMetrics: (id: string, minutes: number) => ['sites', id, 'metrics', minutes] as const,
   deployments: (id: string) => ['sites', id, 'deployments'] as const,
   siteTasks: (id: string) => ['sites', id, 'tasks'] as const,
+  sitePreviews: (id: string) => ['sites', id, 'previews'] as const,
   siteRuns: (id: string) => ['sites', id, 'runs'] as const,
   taskRuns: (id: string, task: string, limit: number) => ['sites', id, 'runs', task, limit] as const,
   certs: ['certificates'] as const,

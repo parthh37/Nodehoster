@@ -77,6 +77,7 @@ type manager struct {
 	bans     bansPage
 	backups  backupsPage
 	updates  updatesPage
+	previews previewsPage
 }
 
 // page is what the middle and right panes show for a node of the tree.
@@ -134,6 +135,7 @@ func runManager(openSite string) {
 		{navBans, m.bans.init(m), m.bans.content(m), m.bans.actionsPane(m)},
 		{navBackups, m.backups.init(m), m.backups.content(m), m.backups.actionsPane(m)},
 		{navUpdates, m.updates.init(m), m.updates.content(m), m.updates.actionsPane(m)},
+		{navPreviews, m.previews.init(m), m.previews.content(m), m.previews.actionsPane(m)},
 	}
 	m.pages = map[navKind]*page{}
 	var contents, actions []Widget
@@ -784,6 +786,7 @@ const (
 	navBans
 	navBackups
 	navUpdates
+	navPreviews
 )
 
 type navItem struct {
@@ -828,6 +831,7 @@ func newNavModel() *navModel {
 	m.sites = &navItem{kind: navSites, text: "Sites", parent: root, image: ico(desktop.IconSites)}
 	root.children = []*navItem{
 		m.sites,
+		{kind: navPreviews, text: "Preview deployments", parent: root, image: ico(desktop.IconEye)},
 		{kind: navCerts, text: "Certificates", parent: root, image: ico(desktop.IconCertificate)},
 		{kind: navMail, text: "SMTP E-mail", parent: root, image: ico(desktop.IconMail)},
 		{kind: navNode, text: "Node.js versions", parent: root, image: ico(desktop.IconNodeVersion)},

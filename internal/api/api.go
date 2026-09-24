@@ -130,6 +130,7 @@ func (a *API) routes(r chi.Router) {
 		r.Get("/sites/{id}/runs", a.listRuns)
 		r.Get("/sites/{id}/runs/{run}/log", a.runLog)
 		r.Get("/sites/{id}/runs/{run}/log/stream", a.runLogStream)
+		r.Get("/sites/{id}/previews", a.listPreviews)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireSite(model.RoleOperator))
@@ -144,6 +145,9 @@ func (a *API) routes(r chi.Router) {
 		r.Post("/sites/{id}/cache/purge", a.siteCachePurge)
 		r.Post("/sites/{id}/tasks/{task}/run", a.runTask)
 		r.Post("/sites/{id}/runs/{run}/cancel", a.cancelRun)
+		r.Post("/sites/{id}/previews", a.createPreview)
+		r.Post("/sites/{id}/previews/{preview}/redeploy", a.redeployPreview)
+		r.Delete("/sites/{id}/previews/{preview}", a.deletePreview)
 	})
 	r.Group(func(r chi.Router) {
 		// A site's configuration is a server administrator's: no grant
@@ -294,7 +298,7 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 		// The access is worked out once per request, from the user as
 		// stored now, so a changed role or grant applies immediately to
 		// sessions and tokens alike.
-		ctx = withAccess(ctx, auth.UserAccess(&u.User).Restrict(tok))
+		ctx = withAccess(ctx, auth.UserAccess(&u.User).Restrict(tok).WithPreviews(a.c.PreviewIDs))
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxUser, u)))
 	})
 }

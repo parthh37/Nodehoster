@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1057,6 +1058,15 @@ func fakeGit(record string) int {
 		fmt.Println("Cloning into '" + dest + "'...")
 	case len(args) > 2 && args[0] == "-C" && args[2] == "log":
 		fmt.Print("0123456789abcdef0123456789abcdef01234567\nInitial commit\n")
+	case len(args) > 0 && args[0] == "init": // DeployRef: git init -q <dir>
+		os.MkdirAll(filepath.Join(args[len(args)-1], ".git"), 0o750)
+	case len(args) > 2 && args[0] == "-C" && args[2] == "fetch":
+		if os.Getenv("NH_FAKE_GIT_FAIL_FETCH") != "" {
+			fmt.Fprintln(os.Stderr, "fatal: couldn't find remote ref")
+			return 128
+		}
+	case len(args) > 2 && args[0] == "-C" && slices.Contains(args, "checkout"):
+		os.WriteFile(filepath.Join(args[1], "index.html"), []byte("from ref"), 0o640)
 	}
 	return 0
 }

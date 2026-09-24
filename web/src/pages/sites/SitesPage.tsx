@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Boxes, Import, Plus, Search } from 'lucide-react';
+import { Boxes, GitPullRequest, Import, Plus, Search } from 'lucide-react';
 import { sitesApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import { qk } from '@/api/queryKeys';
@@ -16,6 +16,7 @@ import { SiteTypeBadge, StateBadge } from '@/components/StatusBadges';
 import { ErrorBox } from '@/components/Field';
 import { formatNumber } from '@/lib/format';
 import { runsNode, SITE_TYPES } from '@/lib/siteDefaults';
+import { groupSites } from '@/lib/previews';
 import { BindingList, SiteRowActions } from './shared';
 
 export function SitesPage() {
@@ -27,9 +28,11 @@ export function SitesPage() {
   const [type, setType] = useState('');
   const [state, setState] = useState('');
 
+  // Previews are listed under their site (its Previews tab), not as sites.
+  const grouped = useMemo(() => groupSites(q.data ?? []), [q.data]);
   const rows = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return (q.data ?? [])
+    return grouped.roots
       .map((s) => ({ site: s, status: statuses[s.id] ?? s.status }))
       .filter(({ site, status }) => {
         if (type && site.type !== type) return false;
@@ -42,9 +45,9 @@ export function SitesPage() {
         );
       })
       .sort((a, b) => a.site.name.localeCompare(b.site.name));
-  }, [q.data, statuses, search, type, state]);
+  }, [grouped, statuses, search, type, state]);
 
-  const total = q.data?.length ?? 0;
+  const total = grouped.roots.length;
 
   return (
     <div>
@@ -140,6 +143,17 @@ export function SitesPage() {
                     <Link to={`/sites/${site.id}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-100" onClick={(e) => e.stopPropagation()}>
                       {site.name}
                     </Link>
+                    {grouped.previews.has(site.id) && (
+                      <Link
+                        to={`/sites/${site.id}/previews`}
+                        className="ml-2 inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 text-2xs font-medium text-violet-700 hover:underline dark:bg-violet-500/10 dark:text-violet-300"
+                        title="Preview deployments of this site"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <GitPullRequest className="h-3 w-3" />
+                        {grouped.previews.get(site.id)!.length} preview{grouped.previews.get(site.id)!.length === 1 ? '' : 's'}
+                      </Link>
+                    )}
                     {site.description && <p className="truncate text-xs text-zinc-500">{site.description}</p>}
                   </Td>
                   <Td>

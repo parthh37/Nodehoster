@@ -121,6 +121,9 @@ func statusHandler(c *core.Core) http.Handler {
 func summary(c *core.Core) localapi.Summary {
 	out := localapi.Summary{Version: config.Version, StartedAt: c.StartedAt, AdminURL: c.AdminURL, AdminError: c.AdminError, Sites: []localapi.SiteSummary{}}
 	for _, s := range c.Sites() {
+		if s.IsPreview() {
+			continue // temporary sites: a failing pull request must not turn the server's icon red
+		}
 		st := c.Status(s)
 		ss := localapi.SiteSummary{ID: s.ID, Name: s.Name, Type: s.Type, AutoStart: s.AutoStart, State: st.State, Message: st.Message}
 		if s.Node != nil {
