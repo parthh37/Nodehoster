@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -261,6 +262,25 @@ func (s *Service) Session(ctx context.Context, token string) (*store.UserRecord,
 	return u, nil
 }
 
+// SessionAlive re-reads a session resolved earlier by Session, for a
+// long-lived stream that must end once the session is signed out, revoked
+// (a password change, a disabled account) or expired. Unlike Session it
+// does not slide the expiry: an open stream is not activity that keeps a
+// session alive.
+func (s *Service) SessionAlive(ctx context.Context, token string) (*store.UserRecord, error) {
+	if token == "" {
+		return nil, store.ErrNotFound
+	}
+	u, _, err := s.store.SessionUser(ctx, sha(token))
+	if err != nil {
+		return nil, err
+	}
+	if u.Disabled {
+		return nil, ErrDisabled
+	}
+	return u, nil
+}
+
 func (s *Service) Logout(ctx context.Context, token string) {
 	s.store.DeleteSession(ctx, sha(token))
 }
@@ -388,6 +408,32 @@ func (s *Service) Token(ctx context.Context, raw string) (*store.UserRecord, *mo
 	}
 	go s.store.TouchToken(context.Background(), t.ID)
 	return u, t, nil
+}
+
+// TokenAlive re-reads a token resolved earlier by Token, for a long-lived
+// stream that must end once the token is deleted or expires. A token whose
+// owner or restriction is no longer the one the request was authorized
+// with is treated as gone too. It returns the owner as stored now.
+func (s *Service) TokenAlive(ctx context.Context, t *model.APIToken) (*store.UserRecord, error) {
+	fresh, err := s.store.TokenByHash(ctx, t.Hash)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.ExpiresAt != nil && time.Now().After(*fresh.ExpiresAt) {
+		return nil, errors.New("token expired")
+	}
+	if fresh.ID != t.ID || fresh.UserID != t.UserID || fresh.Role != t.Role ||
+		(fresh.SiteIDs == nil) != (t.SiteIDs == nil) || !slices.Equal(fresh.SiteIDs, t.SiteIDs) {
+		return nil, errors.New("token changed")
+	}
+	u, err := s.store.GetUser(ctx, t.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if u.Disabled {
+		return nil, ErrDisabled
+	}
+	return u, nil
 }
 
 // Allowed reports whether a server-wide role may perform an action class.

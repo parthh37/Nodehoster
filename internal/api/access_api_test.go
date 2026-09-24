@@ -638,6 +638,73 @@ func TestSiteStreamsEndWhenAccessIsLost(t *testing.T) {
 	}
 }
 
+// TestStreamsEndWhenTheCredentialIsWithdrawn follows /api/stream and a
+// site's log stream with an API token and with a session: deleting the
+// token or signing the session out ends the stream within seconds, as a
+// revoked grant does, instead of whenever the client goes away.
+func TestStreamsEndWhenTheCredentialIsWithdrawn(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	a, _, _ := threeSites(e, admin)
+	srv := httptest.NewServer(e.h)
+	t.Cleanup(srv.Close) // after the parallel subtests
+
+	for stream, path := range map[string]string{"stream": "/api/stream", "logs": "/api/sites/" + a.ID + "/logs/stream"} {
+		for _, via := range []string{"token deleted", "signed out"} {
+			name := stream + "-" + strings.ReplaceAll(via, " ", "-")
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				e.scoped(name, grant(a.ID, model.RoleViewer))
+				sess := session(e.login(name))
+				rec := e.do(http.MethodPost, "/api/tokens", map[string]any{"name": "follow"}, sess...)
+				expect(t, rec, http.StatusCreated)
+				tok := decodeJSON[struct {
+					Token string         `json:"token"`
+					Info  model.APIToken `json:"info"`
+				}](t, rec)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+path, nil)
+				withdraw := func() { expect(t, e.do(http.MethodDelete, "/api/tokens/"+tok.Info.ID, nil, sess...), http.StatusNoContent) }
+				if via == "token deleted" {
+					req.Header.Set("Authorization", "Bearer "+tok.Token)
+				} else {
+					for _, o := range sess {
+						o(req)
+					}
+					withdraw = func() { expect(t, e.do(http.MethodPost, "/api/auth/logout", nil, sess...), http.StatusNoContent) }
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("stream status %d", resp.StatusCode)
+				}
+				ended := make(chan struct{})
+				go func() { io.Copy(io.Discard, resp.Body); close(ended) }()
+
+				// A credential still valid keeps the stream open past
+				// the periodic check.
+				select {
+				case <-ended:
+					t.Fatal("the stream ended with a valid credential")
+				case <-time.After(3 * time.Second):
+				}
+				withdraw()
+				select {
+				case <-ended:
+				case <-time.After(8 * time.Second):
+					t.Error("the stream went on")
+				}
+			})
+		}
+	}
+}
+
 // TestRestrictedTokenCannotChangeItsOwnUser: the users list is an
 // administrator's, but a restricted token must not use it to do to its
 // owner's account what the account endpoints refuse it.

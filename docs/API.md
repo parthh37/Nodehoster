@@ -99,7 +99,9 @@ restricted tokens). Changing a user's role or grants is audited
 (`user.update`, detail `access <before> -> <after>`) and applies to their
 sessions and tokens at once; open `/api/stream` connections and a site's
 log, deployment log and task run log streams end or narrow within two
-seconds (also when the account is disabled).
+seconds (also when the account is disabled, the API token they were
+opened with is deleted or expires, or the session is signed out, revoked
+or expires).
 
 What a site-scoped caller gets:
 

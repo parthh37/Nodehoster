@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/parthh37/nodehoster/internal/auth"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/store"
 )
 
 // Authorization. Every request carries an auth.Access, set by authenticate
@@ -145,18 +146,30 @@ func restrictedToken(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // currentAccess works the caller's access out again from the store, for a
-// long-lived stream that must notice a revoked grant or a disabled account
+// long-lived stream that must notice a revoked grant or a disabled account,
+// and also the credential the request came with being withdrawn: a deleted
+// or expired API token, a session signed out, revoked or expired
 // (ok=false: end the stream).
 func (a *API) currentAccess(r *http.Request) (acc auth.Access, ok bool) {
 	u := user(r)
 	if u == nil || r.Context().Value(localKey{}) != nil {
 		return access(r), true // the desktop manager's identity is not stored
 	}
-	fresh, err := a.c.Store.GetUser(r.Context(), u.ID)
-	if err != nil || fresh.Disabled {
+	var fresh *store.UserRecord
+	var err error
+	// The same credential authenticate accepted: the bearer token if
+	// there was one, the session cookie otherwise.
+	tok, _ := r.Context().Value(ctxToken).(*model.APIToken)
+	if tok != nil {
+		fresh, err = a.c.Auth.TokenAlive(r.Context(), tok)
+	} else if ck, cerr := r.Cookie(auth.SessionCookie); cerr == nil {
+		fresh, err = a.c.Auth.SessionAlive(r.Context(), ck.Value)
+	} else {
 		return auth.Access{}, false
 	}
-	tok, _ := r.Context().Value(ctxToken).(*model.APIToken)
+	if err != nil || fresh.Disabled || fresh.ID != u.ID {
+		return auth.Access{}, false
+	}
 	return auth.UserAccess(&fresh.User).Restrict(tok), true
 }
 
@@ -187,7 +200,8 @@ func visibleSites(acc auth.Access, sites []*model.Site) []*model.Site {
 // siteStreamContext is the context of a long-lived stream of one site's
 // output (logs, a deployment's or a task run's log): it ends with the
 // request, or within two seconds of the caller losing role on the site (a
-// revoked grant, a disabled account), as /api/stream does.
+// revoked grant, a disabled account, a deleted token, a signed-out
+// session), as /api/stream does.
 func (a *API) siteStreamContext(r *http.Request, siteID string, role model.Role) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(r.Context())
 	go func() {
