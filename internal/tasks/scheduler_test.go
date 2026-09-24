@@ -75,13 +75,21 @@ func (r *fakeRunner) StartTask(site *model.Site, task model.ScheduledTask, runID
 	return p, nil
 }
 
+// proc waits for the i-th process: a run is recorded as running a moment
+// before its process is started.
 func (r *fakeRunner) proc(i int) *fakeProc {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if i >= len(r.procs) {
-		return nil
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		r.mu.Lock()
+		if i < len(r.procs) {
+			p := r.procs[i]
+			r.mu.Unlock()
+			return p
+		}
+		r.mu.Unlock()
+		if time.Now().After(deadline) {
+			return nil
+		}
 	}
-	return r.procs[i]
 }
 
 func (r *fakeRunner) count() int {
