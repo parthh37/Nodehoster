@@ -227,7 +227,7 @@ forgets it.
 
 Every list can be searched (Ctrl+F) and sorted by clicking a column, and
 has the actions of its rows on a right-click; Delete removes, Enter opens,
-F5 refreshes, Ctrl+N adds a site, Ctrl+1…9 go to a section. The window
+F5 refreshes, Ctrl+N adds a site, Ctrl+0…9 go to a section. The window
 remembers its size, its panes and its lists' columns.
 
 It talks to the service over `\\.\pipe\NodeHoster.Admin`, which Windows only
