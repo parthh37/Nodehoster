@@ -364,3 +364,56 @@ func TestBanEventsAreRateLimited(t *testing.T) {
 		t.Fatalf("summary event %q", last)
 	}
 }
+
+// TestAutomaticBansAreCapped: one IPv6 /48 is 65,536 /64s, each banned by
+// a single trap-path request. Past the cap the automatic bans that expire
+// soonest are lifted; manual bans never are.
+func TestAutomaticBansAreCapped(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.Ban("198.51.100.1", 1, "", "admin"); err != nil { // expires before any automatic ban
+		t.Fatal(err)
+	}
+	const n = maxAutoBans + 2000
+	addr := func(i int) net.IP { return ip(fmt.Sprintf("2001:db8:1:%x::1", i)) }
+	for i := range n {
+		h.clock.advance(time.Millisecond)
+		if !h.Trap(addr(i), "/.env") {
+			t.Fatalf("ban %d refused", i)
+		}
+	}
+	auto := 0
+	for _, b := range h.List() {
+		if !b.Manual {
+			auto++
+		}
+	}
+	if auto == 0 || auto > maxAutoBans {
+		t.Fatalf("%d automatic bans in force, cap %d", auto, maxAutoBans)
+	}
+	if !h.Banned(ip("198.51.100.1")) {
+		t.Fatal("a manual ban was lifted")
+	}
+	if !h.Banned(addr(n-1)) || h.Banned(addr(0)) {
+		t.Fatal("not the soonest-expiring bans were lifted")
+	}
+	if err := h.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if saved := h.savedBans(); len(saved) != auto+1 {
+		t.Fatalf("saved %d bans, %d in force", len(saved), auto+1)
+	}
+
+	// Expired bans are kept for escalation, but not without bound either.
+	for round := range 3 {
+		h.clock.advance(time.Hour)
+		for i := range n {
+			h.Trap(ip(fmt.Sprintf("2001:db8:%x:%x::1", round+2, i)), "/.env")
+		}
+	}
+	h.Manager.mu.RLock()
+	total := len(h.bans)
+	h.Manager.mu.RUnlock()
+	if total > maxAutoBans+maxHistory+1 {
+		t.Fatalf("%d bans remembered", total)
+	}
+}

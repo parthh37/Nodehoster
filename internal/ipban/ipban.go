@@ -43,6 +43,12 @@ const (
 	// is longer.
 	historyFor = 7 * 24 * time.Hour
 	maxHistory = 20_000
+	// maxAutoBans caps the automatic bans in force. A trap path bans at the
+	// first request and IPv6 is banned by prefix, so a single /48 is 65,536
+	// bans, all saved every few seconds. Past the cap the automatic bans
+	// that expire soonest are lifted, a tenth of the cap at a time; manual
+	// bans are never lifted.
+	maxAutoBans = 10_000
 	// eventsPerMinute limits security.banned events (and webhook calls)
 	// during an attack by many addresses; the rest are summarized.
 	eventsPerMinute = 10
@@ -72,6 +78,10 @@ type Manager struct {
 	ranges  []rangeBan            // bans not found by key (manual ranges, other prefixes)
 	tracked map[string]*list.Element
 	lru     *list.List // of *tracker, front = most recent
+	// autoBans is the automatic bans in force at the last count plus those
+	// made since: at least as many as there are, so the cap is checked
+	// without counting on every ban.
+	autoBans int
 
 	saveMu  sync.Mutex
 	pending bool
@@ -312,11 +322,56 @@ func (m *Manager) banLocked(key, reason string) (model.Ban, string) {
 		m.lru.Remove(el)
 		delete(m.tracked, key)
 	}
+	if m.autoBans++; m.autoBans > maxAutoBans {
+		m.pruneLocked(now, key)
+	}
 	msg := fmt.Sprintf("%s banned for %s: %s", key, formatDuration(d), reason)
 	if strikes > 1 {
 		msg += fmt.Sprintf(" (ban %d)", strikes)
 	}
 	return *b, msg
+}
+
+// pruneLocked counts the automatic bans in force, lifts the ones that
+// expire soonest when there are too many (never keep, the ban just made),
+// and forgets the oldest expired ones beyond maxHistory.
+func (m *Manager) pruneLocked(now time.Time, keep string) {
+	var active, history []string
+	for key, b := range m.bans {
+		switch {
+		case b.Manual || b.ExpiresAt == nil || key == keep:
+		case b.Active(now):
+			active = append(active, key)
+		default:
+			history = append(history, key)
+		}
+	}
+	expires := func(a, b string) int { return m.bans[a].ExpiresAt.Compare(*m.bans[b].ExpiresAt) }
+	removed := 0
+	if target := maxAutoBans - maxAutoBans/10; len(active) > target {
+		slices.SortFunc(active, expires)
+		lift := active[:len(active)-target]
+		for _, key := range lift {
+			delete(m.bans, key)
+		}
+		active = active[len(lift):]
+		removed += len(lift)
+		m.opts.Log.Warn("too many automatic bans: lifted the ones that expire soonest", "lifted", len(lift), "limit", maxAutoBans)
+	}
+	if len(history) > maxHistory {
+		slices.SortFunc(history, expires)
+		for _, key := range history[:len(history)-maxHistory] {
+			delete(m.bans, key)
+		}
+		removed += len(history) - maxHistory
+	}
+	m.autoBans = len(active)
+	if keep != "" {
+		m.autoBans++
+	}
+	if removed > 0 {
+		m.reindexLocked()
+	}
 }
 
 // banned reports a new automatic ban and saves.
@@ -481,6 +536,7 @@ func (m *Manager) Load(bans []model.Ban) {
 		m.bans[b.Address] = &b
 	}
 	m.reindexLocked()
+	m.pruneLocked(now, "")
 }
 
 // reindexLocked rebuilds the list of range bans, which Banned checks by

@@ -479,7 +479,10 @@ Sites opt out with `routing.banning` = `{exempt, allowTrapPaths}`: `exempt`
 sites answer banned clients and never count; `allowTrapPaths` for sites
 that do serve those paths (WordPress, PHP). Counters are in memory, capped
 at 100,000 addresses (least recently seen forgotten); bans (and a week of
-history for escalation) are saved in the database and survive restarts.
+history for escalation, at most 20,000 expired bans) are saved in the
+database and survive restarts. At most 10,000 automatic bans are in force:
+past that, the ones that expire soonest are lifted, a thousand at a time
+(an IPv6 /48 alone is 65,536 /64s); manual bans are never lifted.
 Each ban raises a `security.banned` event (warning; at most 10 a minute,
 the rest summarized).
 
