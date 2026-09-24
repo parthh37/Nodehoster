@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -215,5 +216,59 @@ func TestAzureTargetSASAndBlocks(t *testing.T) {
 	cfg.SASToken = "sig=expired"
 	if _, err := newAzure(cfg, srv.Client()).List(context.Background()); err == nil || !strings.Contains(err.Error(), "Signature did not match") || strings.Contains(err.Error(), "RequestId") {
 		t.Errorf("bad SAS: %v", err)
+	}
+}
+
+// TestTargetErrorsHideSecrets: error texts go to the backup history and the
+// backup.failed event, which viewers, webhooks and log shipping see. A
+// transport error quotes the request URL, and a SAS token is its query.
+func TestTargetErrorsHideSecrets(t *testing.T) {
+	t.Parallel()
+	// An address nothing listens on: every request fails in the transport.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "http://" + l.Addr().String()
+	l.Close()
+	// A server that answers every request with an error.
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer denied.Close()
+
+	const secret = "t0pS3cretSig"
+	ctx := context.Background()
+	file := tempFile(t, "x")
+	check := func(what string, tg Target) {
+		t.Helper()
+		errs := []error{tg.Put(ctx, "x.zip", file), tg.Delete(ctx, "x.zip")}
+		_, err := tg.List(ctx)
+		errs = append(errs, err)
+		_, err = tg.Open(ctx, "x.zip")
+		errs = append(errs, err)
+		for _, err := range errs {
+			if err == nil {
+				t.Errorf("%s: no error", what)
+			} else if strings.Contains(err.Error(), secret) {
+				t.Errorf("%s: error shows the secret: %v", what, err)
+			}
+		}
+	}
+	for _, ep := range []string{dead, denied.URL} {
+		check("Azure SAS "+ep, newAzure(model.AzureDest{Account: azAccount, Container: "backups", Endpoint: ep,
+			SASToken: "sv=2022-11-02&ss=b&srt=co&sp=rwdlc&sig=" + secret}, httpClient))
+		check("Azure key "+ep, newAzure(model.AzureDest{Account: azAccount, Container: "backups", Endpoint: ep,
+			AccountKey: base64.StdEncoding.EncodeToString([]byte(secret))}, httpClient))
+		check("S3 "+ep, newS3(model.S3Dest{Endpoint: ep, Region: "eu-west-1", Bucket: "b", PathStyle: true,
+			AccessKeyID: "AK", SecretAccessKey: secret}, httpClient))
+	}
+
+	// SFTP: a refused password is not echoed.
+	srv := startSFTP(t, t.TempDir())
+	cfg := srv.dest(".")
+	cfg.Password = secret
+	if _, err := dialSFTP(ctx, cfg); err == nil || strings.Contains(err.Error(), secret) {
+		t.Errorf("SFTP wrong password: %v", err)
 	}
 }

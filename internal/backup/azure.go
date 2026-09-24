@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,7 +99,7 @@ func (t *azureTarget) do(ctx context.Context, method string, u *url.URL, body io
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactQuery(err)
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
@@ -231,6 +232,19 @@ func (t *azureTarget) Delete(ctx context.Context, name string) error {
 }
 
 func (t *azureTarget) Close() error { return nil }
+
+// redactQuery drops the query string from the URL a transport error
+// quotes ("Put \"https://…?sv=…&sig=…\": dial tcp …"): with a SAS token
+// the query is the credential, and the error text is kept in the backup
+// history and sent in the backup.failed event (webhooks, shipped logs).
+// Go only redacts a password in the URL's user info.
+func redactQuery(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL, _, _ = strings.Cut(ue.URL, "?")
+	}
+	return err
+}
 
 func azureError(resp *http.Response) error {
 	var e struct {
