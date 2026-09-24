@@ -37,6 +37,11 @@ import (
 // endpoints are refused, so that nobody mints tokens or changes the
 // account behind a connection. Every request that changes something is in
 // this server's audit log (who, which server, what).
+//
+// What comes back is served from this server's origin, so a remote server
+// (or someone who took it over) must not be able to send a page that runs
+// script here: only the media types the API answers pass, anything else
+// becomes a download, and every answer is sandboxed (proxyResponse).
 
 const (
 	// maxProxyRequest is the largest request body forwarded: the largest
@@ -68,6 +73,23 @@ var proxyResponseHeaders = []string{
 	"Content-Type", "Content-Length", "Content-Disposition", "Content-Range",
 	"Accept-Ranges", "Last-Modified", "ETag", "X-Accel-Buffering",
 }
+
+// proxyContentTypes are the media types relayed as they are: those the
+// API answers (JSON, event streams, logs, backups and other downloads).
+// Any other (text/html, image/svg+xml, …) is relayed as a download.
+var proxyContentTypes = map[string]bool{
+	"application/json": true, "text/event-stream": true, "text/plain": true,
+	"application/octet-stream": true, "application/zip": true, "application/gzip": true,
+	"application/x-pkcs12": true, "message/rfc822": true,
+}
+
+// proxyInline are the types of proxyContentTypes a browser may show rather
+// than download; the others are always sent as attachments.
+var proxyInline = map[string]bool{"application/json": true, "text/event-stream": true, "text/plain": true}
+
+// proxyCSP replaces this server's policy on proxied answers: nothing a
+// remote server sends runs or loads anything, even if opened as a page.
+const proxyCSP = "sandbox; default-src 'none'; frame-ancestors 'none'"
 
 // proxyServer forwards a request to a connection's server.
 func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +178,9 @@ func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(sw, r.Body, maxProxyRequest)
 	}
+	h := sw.Header()
+	h.Set("Content-Security-Policy", proxyCSP)
+	h.Set("X-Content-Type-Options", "nosniff")
 	if !readOnly {
 		// Deferred: a response broken off midway aborts the handler.
 		defer func() {
@@ -195,9 +220,10 @@ func tooOldForRoleLimits(name string) string {
 // console would take for its own session ending), redirects are not
 // followed, and only some headers pass. For a caller whose role the remote
 // server must limit, a successful answer must say it did (a server that
-// stopped applying the limit since its last check). An event stream ends
-// when the caller may no longer use the connection; any other body when it
-// stalls or grows past maxProxyResponse.
+// stopped applying the limit since its last check). Content types outside
+// proxyContentTypes become downloads. An event stream ends when the
+// caller may no longer use the connection; any other body when it stalls
+// or grows past maxProxyResponse.
 func (a *API) proxyResponse(resp *http.Response, r *http.Request, s model.ServerConnection, limit model.Role, cancel context.CancelFunc) error {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -217,6 +243,7 @@ func (a *API) proxyResponse(resp *http.Response, r *http.Request, s model.Server
 		}
 	}
 	resp.Header = h
+	safeContentType(resp)
 	ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if ct == "text/event-stream" {
 		go a.watchProxyStream(resp.Request.Context(), r, s.ID, cancel)
@@ -244,6 +271,32 @@ func (a *API) watchProxyStream(ctx context.Context, r *http.Request, id string, 
 				return
 			}
 		}
+	}
+}
+
+// safeContentType keeps the answer's media type if it is one of
+// proxyContentTypes, and makes it an application/octet-stream otherwise;
+// what is not shown inline is sent as an attachment.
+func safeContentType(resp *http.Response) {
+	h := resp.Header
+	raw := h.Get("Content-Type")
+	if raw == "" && (resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || resp.ContentLength == 0) {
+		return // no body
+	}
+	ct, _, err := mime.ParseMediaType(raw)
+	if err != nil || !proxyContentTypes[ct] {
+		ct = "application/octet-stream"
+		h.Set("Content-Type", ct)
+	}
+	if proxyInline[ct] {
+		return
+	}
+	disp, params, err := mime.ParseMediaType(h.Get("Content-Disposition"))
+	if err != nil || disp != "attachment" {
+		if disp = mime.FormatMediaType("attachment", params); disp == "" {
+			disp = "attachment"
+		}
+		h.Set("Content-Disposition", disp)
 	}
 }
 

@@ -539,3 +539,71 @@ func TestServerProxyOldServer(t *testing.T) {
 	}
 	expect(t, e.do("GET", "/api/servers/"+cid+"/proxy/settings", nil, admin...), http.StatusOK)
 }
+
+// TestServerProxyContentTypes: whatever a remote server answers, nothing
+// it sends runs as a page of this server's origin.
+func TestServerProxyContentTypes(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/api/") {
+		case "html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<script>alert(document.cookie)</script>`))
+		case "svg":
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.Header().Set("Content-Disposition", `inline; filename="x.svg"`)
+			w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`))
+		case "none":
+			w.Header()["Content-Type"] = nil // not sniffed by Go's server either
+			w.Write([]byte(`<html><script>alert(1)</script></html>`))
+		case "bad":
+			w.Header().Set("Content-Type", "text/html;;;")
+			w.Write([]byte(`<script>alert(1)</script>`))
+		case "zip":
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Disposition", `attachment; filename="backup.zip"`)
+			w.Write([]byte("PK"))
+		case "eml":
+			w.Header().Set("Content-Type", "message/rfc822")
+			w.Write([]byte("Subject: x\r\n\r\nhi"))
+		case "log":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="site-out.log"`)
+			w.Write([]byte("line"))
+		case "empty":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer fake.Close()
+	id := e.connect(admin, map[string]any{"name": "fake", "url": fake.URL, "token": "nh_fake"})
+	p := "/api/servers/" + id + "/proxy/"
+
+	for _, tc := range []struct{ path, ct, disp string }{
+		{"html", "application/octet-stream", "attachment"},
+		{"svg", "application/octet-stream", "attachment; filename=x.svg"},
+		{"none", "application/octet-stream", "attachment"},
+		{"bad", "application/octet-stream", "attachment"},
+		{"zip", "application/zip", `attachment; filename="backup.zip"`},
+		{"eml", "message/rfc822", "attachment"},
+		{"log", "text/plain; charset=utf-8", `attachment; filename="site-out.log"`},
+		{"json", "application/json; charset=utf-8", ""},
+		{"empty", "", ""},
+	} {
+		rec := e.do("GET", p+tc.path, nil, admin...)
+		h := rec.Header()
+		if h.Get("Content-Type") != tc.ct || h.Get("Content-Disposition") != tc.disp {
+			t.Errorf("%s: Content-Type %q, Content-Disposition %q; want %q, %q", tc.path, h.Get("Content-Type"), h.Get("Content-Disposition"), tc.ct, tc.disp)
+		}
+		if csp := h.Values("Content-Security-Policy"); len(csp) != 1 || !strings.HasPrefix(csp[0], "sandbox") {
+			t.Errorf("%s: Content-Security-Policy %q", tc.path, csp)
+		}
+		if h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options %q", tc.path, h.Get("X-Content-Type-Options"))
+		}
+	}
+}

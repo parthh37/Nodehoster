@@ -14,9 +14,12 @@ function formatHost(h: string): string {
   return h.includes(':') && !h.startsWith('[') ? `[${h}]` : h;
 }
 
-/** A browsable URL for a binding, or null for wildcard host names. */
+/**
+ * A browsable URL for a binding, or null for wildcard host names (and for
+ * a protocol other than http(s), which a connected server could send).
+ */
 export function bindingHref(b: Binding, fallbackHost = window.location.hostname): string | null {
-  if (b.host.startsWith('*')) return null;
+  if (b.host.startsWith('*') || (b.protocol !== 'http' && b.protocol !== 'https')) return null;
   const host = b.host || b.ip || fallbackHost;
   const port = b.port === defaultPort(b.protocol) ? '' : `:${b.port}`;
   return `${b.protocol}://${formatHost(host)}${port}/`;

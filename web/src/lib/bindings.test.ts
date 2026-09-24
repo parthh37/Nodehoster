@@ -69,6 +69,11 @@ describe('bindingHref', () => {
     expect(bindingHref(b({ host: '*' }))).toBeNull();
   });
 
+  it('returns null for a protocol other than http(s), as a connected server could send', () => {
+    expect(bindingHref(b({ protocol: 'javascript', host: '%0aalert(1)//' }))).toBeNull();
+    expect(bindingHref(b({ protocol: 'data', host: 'x' }))).toBeNull();
+  });
+
   it('uses the ip when there is no host name', () => {
     expect(bindingHref(b({ ip: '192.168.1.10', port: 3000 }))).toBe('http://192.168.1.10:3000/');
   });

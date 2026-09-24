@@ -21,6 +21,7 @@ import { useToast } from '@/components/Toast';
 import { usePermissions, useSitePermissions } from '@/hooks/useAuth';
 import { useNow } from '@/hooks/useNow';
 import { formatDateTime, relativeTime } from '@/lib/format';
+import { safeHref } from '@/lib/safeHref';
 import {
   branchPatternError,
   describePreview,
@@ -167,7 +168,7 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                       </Badge>
                     )}
                     {p.preview.prUrl && (
-                      <a href={p.preview.prUrl} target="_blank" rel="noreferrer" className="text-zinc-400 hover:text-zinc-700" title={`Open the ${pullRequestWord(p.preview.provider)}`}>
+                      <a href={safeHref(p.preview.prUrl)} target="_blank" rel="noreferrer" className="text-zinc-400 hover:text-zinc-700" title={`Open the ${pullRequestWord(p.preview.provider)}`}>
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     )}
@@ -180,7 +181,7 @@ function PreviewList({ site, dirty }: { site: Site; dirty: boolean }) {
                   )}
                 </Td>
                 <Td>
-                  <a href={p.preview.url} target="_blank" rel="noreferrer" className="font-mono text-[12.5px] text-accent-700 hover:underline dark:text-accent-400">
+                  <a href={safeHref(p.preview.url)} target="_blank" rel="noreferrer" className="font-mono text-[12.5px] text-accent-700 hover:underline dark:text-accent-400">
                     {p.preview.host}
                   </a>
                 </Td>

@@ -1354,8 +1354,10 @@ headers travel: `Accept`, `Accept-Language`, `Content-Type`,
 CSRF and forwarding headers never do. Only `Content-Type`,
 `Content-Length`, `Content-Disposition`, `Content-Range`, `Accept-Ranges`,
 `Last-Modified`, `ETag` and `X-Accel-Buffering` come back (never
-`Set-Cookie`); this server's own security and caching headers apply.
-Rules:
+`Set-Cookie`); this server's own security and caching headers apply, with
+`Content-Security-Policy: sandbox; default-src 'none'` and
+`X-Content-Type-Options: nosniff` instead of the console's policy, so
+nothing a remote server sends runs as a page of this server. Rules:
 
 - The path stays under the remote `/api`: segments `.` and `..`, a
   backslash or NUL (also percent-encoded) and empty segments are refused
@@ -1378,6 +1380,12 @@ Rules:
   found the server does not echo the limit (a connection not checked yet
   is checked first; 502 when that fails), and 502 when a successful
   answer does not carry the echo.
+- Only the media types the API answers pass as they are:
+  `application/json`, `text/event-stream`, `text/plain`,
+  `application/octet-stream`, `application/zip`, `application/gzip`,
+  `application/x-pkcs12`, `message/rfc822`. Any other (or none, with a
+  body) becomes `application/octet-stream`, and every type but JSON, event
+  streams and plain text is sent with `Content-Disposition: attachment`.
 - The remote server's 401 becomes a 502 of this server (the token was
   revoked or expired), so that the console does not take it for its own
   session ending; redirects are not followed (502). Other answers,
