@@ -86,6 +86,7 @@ func runDialogAs(self **walk.Dialog, owner walk.Form, title string, size Size, c
 		},
 	}.Create(owner)
 	if err != nil {
+		createdHooks(true)
 		walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError)
 		return false
 	}
@@ -164,6 +165,7 @@ func textDialog(owner walk.Form, title, icon, text string) {
 		},
 	}.Create(owner)
 	if err != nil {
+		createdHooks(true)
 		walk.MsgBox(owner, title, err.Error(), walk.MsgBoxIconError)
 		return
 	}
@@ -697,17 +699,17 @@ func addSiteDialog(m *manager) {
 		typeIcon.SetImage(asImage(tileIcon(desktop.SiteTypeIcon(string(t)))))
 		node := t == model.SiteNode || t == model.SiteWorker
 		hasPath := node || t == model.SiteStatic
-		pathLabel.SetVisible(hasPath)
-		pathBox.SetVisible(hasPath)
-		entryLabel.SetVisible(node)
-		entry.SetVisible(node)
-		rtLabel.SetVisible(node)
-		rtBox.SetVisible(node)
+		setVisible(pathLabel, hasPath)
+		setVisible(pathBox, hasPath)
+		setVisible(entryLabel, node)
+		setVisible(entry, node)
+		setVisible(rtLabel, node)
+		setVisible(rtBox, node)
 		// A worker serves no HTTP, so it has no binding.
-		bindingBox.SetVisible(t != model.SiteWorker)
-		httpsNote.SetVisible(t != model.SiteWorker)
-		targetLabel.SetVisible(!hasPath)
-		target.SetVisible(!hasPath)
+		setVisible(bindingBox, t != model.SiteWorker)
+		setVisible(httpsNote, t != model.SiteWorker)
+		setVisible(targetLabel, !hasPath)
+		setVisible(target, !hasPath)
 		if t == model.SiteProxy {
 			targetLabel.SetText("Upstream URL:")
 			target.SetCueBanner("http://127.0.0.1:3000")
@@ -734,6 +736,7 @@ func addSiteDialog(m *manager) {
 
 	var created *localapi.Site
 	var startNow bool
+	whenCreated(onType) // the fields of the first type only
 	ok := runDialog(m.mw, "Add site", Size{Width: 600}, []Widget{
 		Composite{Layout: HBox{MarginsZero: true, Spacing: 12, Alignment: AlignHNearVCenter}, Children: []Widget{
 			ImageView{AssignTo: &typeIcon, Image: asImage(tileIcon(desktop.IconNode)), MinSize: Size{Width: 32, Height: 32}, MaxSize: Size{Width: 32, Height: 32}},

@@ -199,7 +199,11 @@ func runManager(openSite string) {
 				Children: []Widget{
 					Composite{
 						StretchFactor: 1,
-						Layout:        VBox{Margins: Margins{Left: 8, Top: 14, Right: 4, Bottom: 8}, Spacing: 8},
+						// Wide enough for "Web application firewall" (a
+						// truncated label shows its full text in a tip over
+						// the panes whenever the pointer rests on it).
+						MinSize: Size{Width: 240},
+						Layout:  VBox{Margins: Margins{Left: 8, Top: 14, Right: 4, Bottom: 8}, Spacing: 8},
 						Children: []Widget{
 							Composite{Layout: HBox{Margins: Margins{Left: 8}}, Children: []Widget{heading("Connections"), HSpacer{}}},
 							TreeView{
@@ -246,8 +250,18 @@ func runManager(openSite string) {
 			{AssignTo: &m.sbActivity, Width: 360},
 		},
 	}.Create()
+	createdHooks(err != nil)
 	if err != nil {
 		fatal(err)
+	}
+	// Every page was declared hidden, which walk could not do while the
+	// window was being built: all of them showed at once, stacked, with
+	// all their actions. The tree may have selected one already.
+	for _, p := range m.pages {
+		if p != m.cur {
+			setVisible(p.content, false)
+			setVisible(p.actions, false)
+		}
 	}
 	styleForm(m.mw, colorSurface)
 	modernizeTree(m.tree, colorSurface)
@@ -267,6 +281,9 @@ func runManager(openSite string) {
 
 	m.tree.SetExpanded(m.nav.root, true)
 	m.tree.SetCurrentItem(m.nav.root)
+	if m.cur == nil { // it was current already: no change to show it
+		m.navigate()
+	}
 	m.updateActivity()
 	go m.poll()
 	app.Run()
@@ -644,12 +661,12 @@ func (m *manager) show(p *page) {
 			if m.cur.hide != nil {
 				m.cur.hide()
 			}
-			m.cur.content.SetVisible(false)
-			m.cur.actions.SetVisible(false)
+			setVisible(m.cur.content, false)
+			setVisible(m.cur.actions, false)
 		}
 		m.cur = p
-		p.content.SetVisible(true)
-		p.actions.SetVisible(true)
+		setVisible(p.content, true)
+		setVisible(p.actions, true)
 	}
 	m.updateHeader()
 	m.updateCommands()

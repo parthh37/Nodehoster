@@ -77,6 +77,30 @@ func setVisible(w walk.Widget, on bool) {
 	}
 }
 
+// A widget declared Visible: false still shows: walk applies the property
+// while the form is being built, when the form is hidden, so its
+// SetVisible sees the widget as hidden already and does nothing. What
+// starts hidden registers with whenCreated, and the form's builder runs
+// createdHooks once the widgets exist (the main window after Create, a
+// dialog in runModal), which hide it with setVisible.
+var pendingCreated []func()
+
+// whenCreated runs fn once the form now being declared exists.
+func whenCreated(fn func()) { pendingCreated = append(pendingCreated, fn) }
+
+// createdHooks runs what whenCreated deferred; failed is true when the
+// form could not be created, and the hooks are dropped.
+func createdHooks(failed bool) {
+	hooks := pendingCreated
+	pendingCreated = nil
+	if failed {
+		return
+	}
+	for _, fn := range hooks {
+		fn()
+	}
+}
+
 func setColor(l *walk.Label, c walk.Color) {
 	if l != nil && l.TextColor() != c {
 		l.SetTextColor(c)
@@ -393,6 +417,12 @@ type infoBar struct {
 }
 
 func (b *infoBar) widget() Widget {
+	whenCreated(func() {
+		if b.box != nil && b.link != nil && b.text.Text() == "" { // not shown meanwhile
+			setVisible(b.link, false)
+			setVisible(b.box, false)
+		}
+	})
 	return Composite{
 		AssignTo:   &b.box,
 		Visible:    false,

@@ -76,6 +76,7 @@ func (f *runtimeFields) widgets(n *model.NodeConfig) []Widget {
 		py = &model.PythonConfig{}
 	}
 	l := layoutFor(rt, py.Server != "")
+	whenCreated(f.update) // Visible below cannot hide while the dialog is built
 	return []Widget{
 		Label{Text: "Runtime:"}, ComboBox{AssignTo: &f.runtime, Model: desktop.RuntimeOptions(),
 			CurrentIndex: max(slices.Index(model.Runtimes, rt), 0), OnCurrentIndexChanged: f.update},
@@ -105,17 +106,17 @@ func (f *runtimeFields) update() {
 	f.entry.SetCueBanner(l.entryCue)
 	f.npmLabel.SetText(l.npmLabel)
 	for _, w := range []walk.Widget{f.npmLabel, f.npm} {
-		w.SetVisible(l.pkg)
+		setVisible(w, l.pkg)
 	}
 	for _, w := range []walk.Widget{f.moduleLabel, f.module, f.serverLabel, f.server} {
-		w.SetVisible(l.python)
+		setVisible(w, l.python)
 	}
-	f.appLabel.SetVisible(l.app)
-	f.app.SetVisible(l.app)
+	setVisible(f.appLabel, l.app)
+	setVisible(f.app, l.app)
 	f.versionLabel.SetText(l.versionLabel)
 	f.version.SetCueBanner(l.versionCue)
-	f.versionLabel.SetVisible(l.versioned)
-	f.version.SetVisible(l.versioned)
+	setVisible(f.versionLabel, l.versioned)
+	setVisible(f.version, l.versioned)
 }
 
 // apply writes the fields into the site, switching its runtime the way the

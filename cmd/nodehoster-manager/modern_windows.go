@@ -74,6 +74,7 @@ func runModal(dlg *walk.Dialog, owner walk.Form, size Size, body, footer *walk.C
 	cloak(dlg, true)
 	styleForm(dlg, colorCard)
 	dlg.Show()
+	createdHooks(false) // before measuring: what starts hidden takes no room
 	placeDialog(dlg, owner, size, body, footer)
 	cloak(dlg, false)
 	walk.App().RunModal(dlg)
@@ -183,7 +184,9 @@ func modernizeTree(tv *walk.TreeView, bg walk.Color) {
 	win.SetWindowTheme(h, syscall.StringToUTF16Ptr("Explorer"), nil)
 	style := win.GetWindowLong(h, win.GWL_STYLE)
 	win.SetWindowLong(h, win.GWL_STYLE, style&^win.TVS_HASLINES|win.TVS_FULLROWSELECT)
-	ex := uintptr(win.TVS_EX_FADEINOUTEXPANDOS | win.TVS_EX_AUTOHSCROLL)
+	// Not TVS_EX_AUTOHSCROLL: it slides a long label sideways under the
+	// pointer, and the pane with it.
+	ex := uintptr(win.TVS_EX_FADEINOUTEXPANDOS)
 	tv.SendMessage(win.TVM_SETEXTENDEDSTYLE, ex, ex)
 	tv.SendMessage(win.TVM_SETBKCOLOR, 0, uintptr(bg))
 	tv.SetItemHeight(walk.IntFrom96DPI(treeRowHeight, tv.DPI()))
@@ -196,10 +199,20 @@ func modernizeTree(tv *walk.TreeView, bg walk.Color) {
 // ---- tool bars
 
 // roomyToolBar gives the tool bar's buttons the padding of current
-// Windows tools, so that they are easy targets.
+// Windows tools, so that they are easy targets, on one row.
+//
+// walk makes the tool bar wrap its buttons. With the padding, a window
+// narrower than the buttons wrapped them onto a second row whenever it was
+// resized, the tool bar grew over the top of the panes, which walk had
+// laid out under a one-row bar, and it drew clipped or overlapping. The
+// buttons that do not fit are cut off instead; each is in the menu bar.
 func roomyToolBar(tb *walk.ToolBar) {
 	if tb == nil {
 		return
+	}
+	h := tb.Handle()
+	if style := win.GetWindowLong(h, win.GWL_STYLE); style&win.TBSTYLE_WRAPABLE != 0 {
+		win.SetWindowLong(h, win.GWL_STYLE, style&^win.TBSTYLE_WRAPABLE)
 	}
 	dpi := tb.DPI()
 	cx, cy := walk.IntFrom96DPI(14, dpi), walk.IntFrom96DPI(10, dpi)
