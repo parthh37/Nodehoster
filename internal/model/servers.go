@@ -33,9 +33,9 @@ type ServerConnection struct {
 	// certificate must be valid for the host name.
 	Fingerprint string `json:"fingerprint,omitempty"`
 	// MinRole is the least local role allowed to use the connection:
-	// admin (the default), operator or viewer. Viewers only ever read
-	// through it, and a remote server of this version or later also caps
-	// the token at the caller's local role (see RoleLimitHeader).
+	// admin (the default), operator or viewer. The remote server caps the
+	// token at the caller's local role (see RoleLimitHeader); one too old
+	// to do so can only be used by administrators.
 	MinRole   Role      `json:"minRole"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -47,6 +47,12 @@ type ServerConnection struct {
 // user's role, so a local operator cannot act as an administrator on the
 // remote server even with an administrator's token.
 const RoleLimitHeader = "X-NodeHoster-Role-Limit"
+
+// RoleLimitAppliedHeader is the answer to RoleLimitHeader: a server that
+// applied the limit echoes the role in it. A server too old to know the
+// limit ignores it and answers without, so the proxy of a connection
+// relays a non-administrator's request only to a server that echoes it.
+const RoleLimitAppliedHeader = "X-NodeHoster-Role-Limit-Applied"
 
 // ServerHealth is what the last check of a connection found.
 type ServerHealth struct {
@@ -80,6 +86,10 @@ type ServerHealth struct {
 	// (RoleSites for a token limited to some sites).
 	User string `json:"user,omitempty"`
 	Role Role   `json:"role,omitempty"`
+	// RoleLimits: the server applies RoleLimitHeader. Known when User is
+	// set (the check read who the token is); a server without it can
+	// only be used by this server's administrators.
+	RoleLimits bool `json:"roleLimits"`
 }
 
 // ServerView is a connection as the API lists it: the token masked, with

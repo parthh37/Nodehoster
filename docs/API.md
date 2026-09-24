@@ -1328,11 +1328,12 @@ fingerprint?, minRole, createdAt, updatedAt}`:
 each), and right after a connection is added or changed: `{reachable,
 error?, checkedAt?, latencyMs, since?, version?, commit?, hostname?, os?,
 cpuPercent, cpuCount, memTotal, memUsed, sites, running, degraded, failed,
-stopped, user?, role?}` (the sites the token can see, by state; who the
-token is there). `checkedAt` absent: not checked yet. A server that answers
-but refuses the token is not reachable. After two failed checks in a row a
-`remote.down` event (warning) is raised, and `remote.up` (info) when it
-answers again, once each.
+stopped, user?, role?, roleLimits}` (the sites the token can see, by state;
+who the token is there; whether the server applies
+`X-NodeHoster-Role-Limit`, known once `user` is set). `checkedAt` absent:
+not checked yet. A server that answers but refuses the token is not
+reachable. After two failed checks in a row a `remote.down` event (warning)
+is raised, and `remote.up` (info) when it answers again, once each.
 
 `POST /api/servers/test` is for setting a connection up (trust on first
 use): `ServerTestResult` = `{certificate?: {fingerprint, subject, issuer,
@@ -1369,7 +1370,14 @@ Rules:
   a local operator cannot act as an administrator there even with an
   administrator's token (`auth/me` shows the capped access). Any client
   may send the header to narrow its own access; an unknown role is 400.
-  An older remote server ignores it: the token's role applies.
+  The server answers `X-NodeHoster-Role-Limit-Applied: <role>` when it
+  applied it.
+- An older remote server ignores the header, which would give the token's
+  full rights to anyone: only administrators may use it. For others the
+  proxy answers 403 (`… is too old for role limits`) when the last check
+  found the server does not echo the limit (a connection not checked yet
+  is checked first; 502 when that fails), and 502 when a successful
+  answer does not carry the echo.
 - The remote server's 401 becomes a 502 of this server (the token was
   revoked or expired), so that the console does not take it for its own
   session ending; redirects are not followed (502). Other answers,

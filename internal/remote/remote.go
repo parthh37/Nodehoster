@@ -227,11 +227,15 @@ func Check(ctx context.Context, c *http.Client, base, token string) model.Server
 			Role model.Role `json:"role"`
 		} `json:"access"`
 	}
-	if err := GetJSON(ctx, c, base, token, "/api/auth/me", &me); err == nil {
+	// With the limit set to admin, which takes nothing away: a server
+	// that echoes it applies the limits the proxy sends for other roles.
+	limit := http.Header{model.RoleLimitHeader: {string(model.RoleAdmin)}}
+	if hdr, err := getJSON(ctx, c, base, token, "/api/auth/me", limit, &me); err == nil {
 		h.User, h.Role = me.User.Username, me.Access.Role
 		if h.Role == "" {
 			h.Role = me.User.Role // servers from before per-site permissions
 		}
+		h.RoleLimits = hdr.Get(model.RoleLimitAppliedHeader) == string(model.RoleAdmin)
 	}
 	return h
 }
@@ -254,21 +258,30 @@ const maxJSON = 32 << 20
 
 // GetJSON GETs base+path with the token and decodes the JSON answer.
 func GetJSON(ctx context.Context, c *http.Client, base, token, path string, out any) error {
+	_, err := getJSON(ctx, c, base, token, path, nil, out)
+	return err
+}
+
+// getJSON is GetJSON with more request headers, returning the answer's.
+func getJSON(ctx context.Context, c *http.Client, base, token, path string, hdr http.Header, out any) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	for k, v := range hdr {
+		req.Header[k] = v
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return ReadError(resp)
+		return resp.Header, ReadError(resp)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxJSON)).Decode(out)
+	return resp.Header, json.NewDecoder(io.LimitReader(resp.Body, maxJSON)).Decode(out)
 }
 
 // ReadError turns an error answer into a StatusError, with the API's

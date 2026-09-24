@@ -45,6 +45,9 @@ func newFakeRemote(t *testing.T) *fakeRemote {
 			w.Write([]byte(`{"version":"2.0.0","hostname":"WEB02"}`))
 		case "/api/sites":
 			w.Write([]byte(`[{"status":{"state":"running"}}]`))
+		case "/api/auth/me":
+			w.Header().Set(model.RoleLimitAppliedHeader, r.Header.Get(model.RoleLimitHeader))
+			w.Write([]byte(`{"user":{"username":"hub"},"access":{"role":"admin"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -142,8 +145,11 @@ func TestServerHealthAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, known := c.ServerRoleLimits(v.ID); known {
+		t.Fatal("role limits known before any check")
+	}
 	h, err := c.CheckServer(ctx, v.ID)
-	if err != nil || !h.Reachable || h.Version != "2.0.0" || h.Running != 1 || h.Since == nil {
+	if err != nil || !h.Reachable || h.Version != "2.0.0" || h.Running != 1 || h.Since == nil || !h.RoleLimits {
 		t.Fatalf("health %+v, %v", h, err)
 	}
 	since := *h.Since
@@ -161,6 +167,10 @@ func TestServerHealthAndEvents(t *testing.T) {
 	}
 	if n := countEvents(t, c, events.RemoteDown); n != 1 {
 		t.Fatalf("remote.down raised %d times, want once", n)
+	}
+	// What the server applies is remembered while it is down.
+	if limits, known := c.ServerRoleLimits(v.ID); !limits || !known {
+		t.Fatalf("role limits of a server down: %v, %v", limits, known)
 	}
 	f.down.Store(false)
 	c.CheckServer(ctx, v.ID)

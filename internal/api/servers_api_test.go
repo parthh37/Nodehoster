@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -159,7 +160,7 @@ func TestServerProxy(t *testing.T) {
 	// The health check reads the same server.
 	rec := e.do("POST", "/api/servers/"+id+"/check", nil, viewer...)
 	expect(t, rec, http.StatusOK)
-	if h := decodeJSON[model.ServerView](t, rec).Health; !h.Reachable || h.Sites != 1 || h.Version == "" {
+	if h := decodeJSON[model.ServerView](t, rec).Health; !h.Reachable || h.Sites != 1 || h.Version == "" || !h.RoleLimits {
 		t.Fatalf("health %+v", h)
 	}
 
@@ -409,4 +410,132 @@ func TestRoleLimitHeader(t *testing.T) {
 	expect(t, e.do("GET", "/api/server/metrics", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer")), http.StatusOK)
 	expect(t, e.do("GET", "/api/settings", nil, withBearer(tok), withHeader(model.RoleLimitHeader, "admin")), http.StatusForbidden)
 	expect(t, e.do("GET", "/api/sites", nil, withBearer(tok), withHeader(model.RoleLimitHeader, "root")), http.StatusBadRequest)
+
+	// A limited request says the limit was applied (the proxy relays a
+	// non-administrator's request only then); others say nothing.
+	rec := e.do("GET", "/api/sites", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer"))
+	expect(t, rec, http.StatusOK)
+	if got := rec.Header().Get(model.RoleLimitAppliedHeader); got != "viewer" {
+		t.Errorf("applied limit %q, want viewer", got)
+	}
+	if got := e.do("GET", "/api/sites", nil, withBearer(adminTok)).Header().Get(model.RoleLimitAppliedHeader); got != "" {
+		t.Errorf("applied limit %q without one asked", got)
+	}
+}
+
+// oldServer is a fake remote console that answers like a NodeHoster server
+// with the token's full (administrator) rights; echo decides whether it
+// says it applied the role limit: never (a server older than the limit),
+// always, or only to the health check (one that stopped applying it
+// since).
+type oldServer struct {
+	*httptest.Server
+	mu    sync.Mutex
+	echo  string // "never", "always", "check"
+	paths []string
+}
+
+func newOldServer(t *testing.T, echo string) *oldServer {
+	t.Helper()
+	o := &oldServer{echo: echo}
+	o.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		o.mu.Lock()
+		o.paths = append(o.paths, r.Method+" "+r.URL.Path)
+		echo := o.echo
+		o.mu.Unlock()
+		if lim := r.Header.Get(model.RoleLimitHeader); lim != "" && (echo == "always" || echo == "check" && r.URL.Path == "/api/auth/me") {
+			w.Header().Set(model.RoleLimitAppliedHeader, lim)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/server/info":
+			w.Write([]byte(`{"version":"1.0.0","hostname":"OLD"}`))
+		case "/api/auth/me":
+			w.Write([]byte(`{"user":{"username":"hub","role":"admin"},"access":{"role":"admin"}}`))
+		case "/api/sites":
+			w.Write([]byte(`[]`))
+		case "/api/settings":
+			w.Write([]byte(`{"secret":"admin-only"}`))
+		default:
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	t.Cleanup(o.Close)
+	return o
+}
+
+func (o *oldServer) setEcho(echo string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.echo = echo
+}
+
+// reached reports whether a request for method and path reached the server.
+func (o *oldServer) reached(method, path string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Contains(o.paths, method+" "+path)
+}
+
+// TestServerProxyOldServer: a remote server that ignores the role limit
+// would give the connection token's full rights to anyone, so only
+// administrators may use it.
+func TestServerProxyOldServer(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	e.user("viewer", model.RoleViewer, false)
+	e.user("operator", model.RoleOperator, false)
+	viewer, operator := session(e.login("viewer")), session(e.login("operator"))
+
+	old := newOldServer(t, "never")
+	id := e.connect(admin, map[string]any{"name": "old", "url": old.URL, "token": "nh_old", "minRole": "viewer"})
+	p := "/api/servers/" + id + "/proxy"
+
+	// Not checked yet: the proxy checks it first, and refuses.
+	rec := e.do("GET", p+"/settings", nil, viewer...)
+	expect(t, rec, http.StatusForbidden)
+	if !strings.Contains(rec.Body.String(), "too old for role limits") {
+		t.Fatalf("viewer on an old server: %s", rec.Body)
+	}
+	expect(t, e.do("GET", p+"/backup", nil, viewer...), http.StatusForbidden)
+	expect(t, e.do("PUT", p+"/users/x", map[string]any{"role": "admin"}, operator...), http.StatusForbidden)
+	expect(t, e.do("POST", p+"/restore", "{}", operator...), http.StatusForbidden)
+	for _, r := range []string{"GET /api/settings", "GET /api/backup", "PUT /api/users/x", "POST /api/restore"} {
+		method, path, _ := strings.Cut(r, " ")
+		if old.reached(method, path) {
+			t.Errorf("%s of a non-administrator reached the old server", r)
+		}
+	}
+	// The health says so, for the console to explain.
+	v := decodeJSON[model.ServerView](t, e.do("GET", "/api/servers/"+id, nil, viewer...))
+	if !v.Health.Reachable || v.Health.User != "hub" || v.Health.RoleLimits {
+		t.Fatalf("health of an old server: %+v", v.Health)
+	}
+	// Administrators, whom the token's rights are meant for, still use it.
+	rec = e.do("GET", p+"/settings", nil, admin...)
+	expect(t, rec, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), "admin-only") {
+		t.Fatalf("admin: %s", rec.Body)
+	}
+	expect(t, e.do("PUT", p+"/users/x", map[string]any{"role": "admin"}, admin...), http.StatusOK)
+
+	// A server that applies the limit: its users get through, capped there.
+	cur := newOldServer(t, "always")
+	cid := e.connect(admin, map[string]any{"name": "current", "url": cur.URL, "token": "nh_cur", "minRole": "viewer"})
+	expect(t, e.do("GET", "/api/servers/"+cid+"/proxy/sites", nil, viewer...), http.StatusOK)
+	expect(t, e.do("POST", "/api/servers/"+cid+"/proxy/sites/x/start", nil, operator...), http.StatusOK)
+	if v := decodeJSON[model.ServerView](t, e.do("GET", "/api/servers/"+cid, nil, viewer...)); !v.Health.RoleLimits {
+		t.Fatalf("health of a current server: %+v", v.Health)
+	}
+
+	// One that stopped applying it since its last check: the answer does
+	// not say the limit was applied, and is not relayed.
+	cur.setEcho("check")
+	rec = e.do("GET", "/api/servers/"+cid+"/proxy/settings", nil, viewer...)
+	expect(t, rec, http.StatusBadGateway)
+	if strings.Contains(rec.Body.String(), "admin-only") || !strings.Contains(rec.Body.String(), "too old for role limits") {
+		t.Fatalf("unlimited answer relayed: %s", rec.Body)
+	}
+	expect(t, e.do("GET", "/api/servers/"+cid+"/proxy/settings", nil, admin...), http.StatusOK)
 }

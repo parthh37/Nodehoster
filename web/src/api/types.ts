@@ -1685,6 +1685,11 @@ export interface ServerHealth {
   /** The token's user there, and its role ('sites' when limited to some sites). */
   user?: string;
   role?: Role;
+  /**
+   * The server caps the token at each local user's role. Known once `user`
+   * is set; without it only administrators can use the connection.
+   */
+  roleLimits?: boolean;
 }
 
 export interface ServerView extends ServerConnection {

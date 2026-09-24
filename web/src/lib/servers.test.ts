@@ -8,6 +8,7 @@ import {
   healthState,
   isLocalApiPath,
   isProxiedUrl,
+  lacksRoleLimits,
   mayUseServer,
   memoryPercent,
   missingEndpointMessage,
@@ -107,6 +108,14 @@ describe('health', () => {
   it('computes memory use', () => {
     expect(memoryPercent({ memTotal: 8, memUsed: 2 })).toBe(25);
     expect(memoryPercent({ memTotal: 0, memUsed: 2 })).toBeUndefined();
+  });
+  it('tells a server too old for role limits, once known', () => {
+    expect(lacksRoleLimits(health({ user: 'hub', roleLimits: false }))).toBe(true);
+    expect(lacksRoleLimits(health({ user: 'hub' }))).toBe(true);
+    expect(lacksRoleLimits(health({ user: 'hub', roleLimits: true }))).toBe(false);
+    expect(lacksRoleLimits(health({}))).toBe(false); // who the token is was not read
+    expect(lacksRoleLimits(health({ reachable: false, user: 'hub' }))).toBe(false);
+    expect(lacksRoleLimits(undefined)).toBe(false);
   });
 });
 

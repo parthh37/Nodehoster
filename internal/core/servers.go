@@ -51,6 +51,11 @@ type serverHealth struct {
 	h        model.ServerHealth
 	failures int  // consecutive failed checks
 	down     bool // remote.down was raised and not yet remote.up
+	// Whether the server applies the role limit, as the last check that
+	// read the token's identity found (limitsKnown), kept while the server
+	// is unreachable: the proxy relays non-administrators' requests only
+	// to a server that does.
+	limitsKnown, roleLimits bool
 }
 
 // serverConn is the HTTP client of a connection, rebuilt when its URL or
@@ -345,6 +350,9 @@ func (c *Core) recordServerHealth(s model.ServerConnection, h model.ServerHealth
 	if prev.CheckedAt == nil || prev.Reachable != h.Reachable || h.Since == nil {
 		h.Since = h.CheckedAt
 	}
+	if h.Reachable && h.User != "" {
+		st.limitsKnown, st.roleLimits = true, h.RoleLimits
+	}
 	var up, down bool
 	if h.Reachable {
 		st.failures = 0
@@ -365,6 +373,18 @@ func (c *Core) recordServerHealth(s model.ServerConnection, h model.ServerHealth
 		c.Bus.Info(events.RemoteUp, "", "Server %s (%s) is reachable again", s.Name, s.URL)
 	}
 	return h
+}
+
+// ServerRoleLimits reports whether a connection's server applies the role
+// limit (model.RoleLimitHeader); known is false until a check has read it
+// since the connection last changed.
+func (c *Core) ServerRoleLimits(id string) (limits, known bool) {
+	c.servers.mu.Lock()
+	defer c.servers.mu.Unlock()
+	if st := c.servers.health[id]; st != nil {
+		return st.roleLimits, st.limitsKnown
+	}
+	return false, false
 }
 
 // TestServer tries a connection being set up: the certificate the server
