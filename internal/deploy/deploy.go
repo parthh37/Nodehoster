@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -272,16 +273,7 @@ func (d *Deployer) DeployGit(ctx context.Context, site *model.Site, branch, sour
 		}
 		args = append(args, g.Repo, dep.ReleaseDir)
 		l.printf("git clone %s%s", redact(g.Repo), map[bool]string{true: " (" + branch + ")", false: ""}[branch != ""])
-		env := os.Environ()
-		env = append(env, "GIT_TERMINAL_PROMPT=0")
-		if token != "" {
-			// The token travels in an HTTP header set through git's
-			// environment config, so it never appears in the process list
-			// or in the clone's .git/config.
-			basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-			env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader",
-				"GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
-		}
+		env := gitEnv(token)
 		if err := runCmd(context.Background(), l, "", env, git, args...); err != nil {
 			return fmt.Errorf("git clone failed: %w", err)
 		}
@@ -304,6 +296,29 @@ func (d *Deployer) findGit() (string, error) {
 		return p, nil
 	}
 	return "", errors.New("git is not installed on the server; install it with: nodehoster deps install git")
+}
+
+// gitEnv is the environment NodeHoster runs git in. git never asks for
+// anything: not on a terminal (GIT_TERMINAL_PROMPT), and not through a
+// credential helper, which the machine's git configuration may name (Git
+// for Windows sets Git Credential Manager, which can wait for someone to
+// sign in); credentials are the site's token or nothing. The token
+// travels in an HTTP header set through git's environment config, so it
+// never appears in the process list or in the repository's .git/config.
+func gitEnv(token string) []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
+	var keys [][2]string
+	if token != "" {
+		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+		keys = append(keys, [2]string{"http.extraHeader", "Authorization: Basic " + basic})
+	}
+	keys = append(keys, [2]string{"credential.helper", ""}) // an empty value clears the configured helpers
+	env = append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(len(keys)))
+	for i, kv := range keys {
+		n := strconv.Itoa(i)
+		env = append(env, "GIT_CONFIG_KEY_"+n+"="+kv[0], "GIT_CONFIG_VALUE_"+n+"="+kv[1])
+	}
+	return env
 }
 
 func redact(repo string) string {

@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -64,14 +63,7 @@ func (d *Deployer) DeployRef(ctx context.Context, site *model.Site, ref, commit,
 				}
 				token = t
 			}
-			env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-			if token != "" {
-				// As in DeployGit: the token never reaches the arguments
-				// or the repository's config.
-				basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-				env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader",
-					"GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
-			}
+			env := gitEnv(token) // as in DeployGit
 			cctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 			defer cancel()
 			dir := dep.ReleaseDir

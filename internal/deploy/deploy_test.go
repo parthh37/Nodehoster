@@ -1153,6 +1153,9 @@ func TestDeployGitKeepsTokenOutOfArgsAndLogs(t *testing.T) {
 	if env["GIT_CONFIG_KEY_0"] != "http.extraHeader" || env["GIT_CONFIG_VALUE_0"] != "Authorization: Basic "+basic {
 		t.Errorf("token was not passed through git's environment config: %v", env)
 	}
+	if env["GIT_CONFIG_KEY_1"] != "credential.helper" || env["GIT_CONFIG_VALUE_1"] != "" {
+		t.Errorf("credential helpers are not cleared (they may wait for a sign-in): %v", env)
+	}
 	if env["GIT_TERMINAL_PROMPT"] != "0" {
 		t.Errorf("GIT_TERMINAL_PROMPT = %q, want 0 (never prompt)", env["GIT_TERMINAL_PROMPT"])
 	}
@@ -1195,7 +1198,7 @@ func TestDeployGitWithoutTokenSetsNoAuthHeader(t *testing.T) {
 		t.Fatalf("status = %s (%s)", got.Status, got.Message)
 	}
 	calls := readFile(t, record)
-	if strings.Contains(calls, "GIT_CONFIG_VALUE_0") || strings.Contains(calls, "Authorization") {
+	if strings.Contains(calls, "http.extraHeader") || strings.Contains(calls, "Authorization") {
 		t.Errorf("an auth header was configured without a token:\n%q", calls)
 	}
 	if !strings.Contains(calls, "--branch\x00feature/x") {
