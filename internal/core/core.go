@@ -204,16 +204,16 @@ func (c *Core) Start() {
 	c.Tasks.Start()
 	c.Bus.Info(events.ServerStarted, "", "NodeHoster %s started", config.Version)
 
-	c.wg.Add(4)
-	go func() { defer c.wg.Done(); c.Certs.Run(ctx) }()
-	go func() { defer c.wg.Done(); c.metricsLoop(ctx) }()
-	go func() { defer c.wg.Done(); c.housekeeping(ctx) }()
-	go func() { defer c.wg.Done(); c.invalidateCaches(ctx) }()
-	go func() { defer c.wg.Done(); c.backupLoop(ctx) }()
+	c.wg.Go(func() { c.Certs.Run(ctx) })
+	c.wg.Go(func() { c.metricsLoop(ctx) })
+	c.wg.Go(func() { c.housekeeping(ctx) })
+	c.wg.Go(func() { c.invalidateCaches(ctx) })
+	c.wg.Go(func() { c.backupLoop(ctx) })
 }
 
 // Shutdown stops listeners, then processes, then closes the database.
 func (c *Core) Shutdown() {
+	c.backups.close() // before Wait: a manual backup adds itself to c.wg
 	if c.cancel != nil {
 		c.cancel()
 	}

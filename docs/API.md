@@ -571,7 +571,7 @@ to 5 GiB); Azure uses blocks above 64 MiB.
 | Method | Path | Body | Response |
 |---|---|---|---|
 | GET | `/api/backups` | | `BackupStatus` `{enabled, running, runningSince?, runningWhat?, nextRun?, encrypted, hostname, history: BackupRun[]}` (last 50 runs, newest first) |
-| POST | `/api/backups/run` | | 202 `BackupStatus`; 409 while a backup or restore runs |
+| POST | `/api/backups/run` | | 202 `BackupStatus`; 409 while a backup or restore runs; 503 while the service stops |
 | POST | `/api/backups/test` | `BackupDestination` (masked secrets are taken from the saved destination with the same `id`) | `{ok, error?, hostKey?}` — lists, writes and deletes a small file. SFTP without a matching `hostKey` connects no further and returns the server's `hostKey` to confirm |
 | GET | `/api/backups/shared-sizes` | | `[{siteId, siteName, bytes, files, partial}]` (bounded walk; `partial` = stopped counting) |
 | GET | `/api/backups/destinations/{id}/files` | | `[{name, size, modified, host, created}]` — archives from every server, newest first |

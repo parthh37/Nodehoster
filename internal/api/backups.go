@@ -91,6 +91,10 @@ func (a *API) backupFail(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	if errors.Is(err, core.ErrShuttingDown) {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	a.fail(w, err)
 }
 

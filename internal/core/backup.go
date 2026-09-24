@@ -36,21 +36,43 @@ const (
 // ErrBackupBusy is returned while another backup or restore runs.
 var ErrBackupBusy = errors.New("a backup or restore is already running")
 
+// ErrShuttingDown is returned for a backup or restore asked for while the
+// service stops.
+var ErrShuttingDown = errors.New("the service is shutting down")
+
 type backupState struct {
 	mu      sync.Mutex
 	running bool
+	closed  bool // Shutdown started: no new runs
 	since   time.Time
 	what    string // schedule | manual | restore | download
 }
 
-func (b *backupState) begin(what string) bool {
+// begin claims the single backup/restore slot. A run that goes on in its
+// own goroutine passes the WaitGroup Shutdown waits on: it is added under
+// the same lock close takes, so a run is either refused or added before
+// Shutdown starts waiting, never during the wait.
+func (b *backupState) begin(what string, wg *sync.WaitGroup) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return ErrShuttingDown
+	}
 	if b.running {
-		return false
+		return ErrBackupBusy
 	}
 	b.running, b.since, b.what = true, time.Now(), what
-	return true
+	if wg != nil {
+		wg.Add(1)
+	}
+	return nil
+}
+
+// close refuses every later begin.
+func (b *backupState) close() {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
 }
 
 func (b *backupState) end() {
@@ -121,14 +143,13 @@ func (c *Core) backupLoop(ctx context.Context) {
 // StartBackup runs a backup in the background, for the API. The run is
 // cancelled when the service stops (Shutdown waits for it).
 func (c *Core) StartBackup() error {
-	if !c.backups.begin("manual") {
-		return ErrBackupBusy
+	if err := c.backups.begin("manual", &c.wg); err != nil {
+		return err
 	}
 	ctx := c.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		defer c.backups.end()
@@ -139,8 +160,8 @@ func (c *Core) StartBackup() error {
 
 // RunBackup makes an archive and copies it to every enabled destination.
 func (c *Core) RunBackup(ctx context.Context, trigger string) (*model.BackupRun, error) {
-	if !c.backups.begin(trigger) {
-		return nil, ErrBackupBusy
+	if err := c.backups.begin(trigger, nil); err != nil {
+		return nil, err
 	}
 	defer c.backups.end()
 	return c.runBackup(ctx, trigger), nil
@@ -459,8 +480,8 @@ func walkStrings(v any, fn func(string) string) any {
 // BackupArchive builds an archive for download with the configured
 // contents and passphrase. The caller removes the file.
 func (c *Core) BackupArchive(ctx context.Context) (path, name string, err error) {
-	if !c.backups.begin("download") {
-		return "", "", ErrBackupBusy
+	if err := c.backups.begin("download", nil); err != nil {
+		return "", "", err
 	}
 	defer c.backups.end()
 	a, err := c.buildArchive(ctx, c.Settings().Backup)
@@ -797,8 +818,8 @@ func (c *Core) RestoreFromDestination(ctx context.Context, destID, name, passphr
 //     current folder is kept as shared.pre-restore (replacing an older
 //     one), and the site is started again.
 func (c *Core) RestoreFile(ctx context.Context, path, passphrase string) (*model.RestoreResult, error) {
-	if !c.backups.begin("restore") {
-		return nil, ErrBackupBusy
+	if err := c.backups.begin("restore", nil); err != nil {
+		return nil, err
 	}
 	defer c.backups.end()
 	head := make([]byte, 512)
