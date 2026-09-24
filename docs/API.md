@@ -585,8 +585,11 @@ destinations: [{id, name, ok, error?, pruned}]}`.
 sites, certificates, sharedSites[], warnings[]}`. A restore replaces the
 settings and the sites in the backup (others are kept; a backup without
 `settings.backup` keeps the current backup settings); secrets sealed with
-another server's key are re-sealed from `secrets.json` or cleared (with a
-warning); certificate files are written only for certificates this server
+another server's key are re-sealed from `secrets.json`; lacking that, they
+keep this server's current value for the same setting (sites, destinations
+and other list entries matched by ID, or name for entries without one; a
+backup destination also by type, location and account) or are cleared, and
+every such field is named in `warnings`; certificate files are written only for certificates this server
 lacks or has no files for; each restored shared folder is unpacked beside
 the current one, the site is stopped if running, the current folder is kept
 as `shared.pre-restore` and the site is started again. Entry names are

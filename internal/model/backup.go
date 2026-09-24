@@ -207,6 +207,12 @@ func (b *BackupSettings) Validate() error {
 		}
 		ids[d.ID] = true
 		if err := d.Validate(f); err != nil {
+			// Settings are saved whole: name the destination, since the
+			// error may come from saving another page (a secret cleared
+			// by restoring a backup made on another server).
+			if ve, ok := err.(*ValidationError); ok {
+				ve.Message = fmt.Sprintf("backup destination %q: %s", d.Name, ve.Message)
+			}
 			return err
 		}
 	}

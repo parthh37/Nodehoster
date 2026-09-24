@@ -347,6 +347,76 @@ func TestBackupRestoresOnAnotherMachine(t *testing.T) {
 	}
 }
 
+// An archive without a passphrase restored on a server that is already
+// set up: secrets it cannot read keep this server's value for the same
+// setting (or a destination reaching the same bucket as the same account)
+// instead of being blanked, so the settings can still be saved; the rest
+// are cleared and every one is named in the warnings.
+func TestBackupRestoreKeepsThisServersSecrets(t *testing.T) {
+	t.Parallel()
+	offsite := func(name, secret string) map[string]any {
+		return map[string]any{"name": name, "type": "s3", "enabled": false, "s3": map[string]any{
+			"endpoint": "https://acc.r2.cloudflarestorage.com", "region": "auto", "bucket": "nh", "accessKeyId": "AKID", "secretAccessKey": secret}}
+	}
+	sso := func(e *env, admin []opt, secret string) {
+		rec := e.do(http.MethodGet, "/api/settings", nil, admin...)
+		s := decodeJSON[map[string]any](t, rec)
+		s["sso"].(map[string]any)["clientSecret"] = secret
+		expect(t, e.do(http.MethodPut, "/api/settings", s, admin...), http.StatusOK)
+	}
+
+	a := newEnv(t)
+	adminA := a.adminSession()
+	body := redirectSite("portable", 0)
+	body["deploy"] = map[string]any{"git": map[string]any{"repo": "https://x.invalid/r.git", "token": "git-token-a"}}
+	a.createSite(adminA, body)
+	sso(a, adminA, "sso-secret-a")
+	dest := t.TempDir()
+	a.backupSettings(adminA, func(b map[string]any) {
+		b["destinations"] = []any{folderDest(dest), offsite("Offsite", "s3-secret-a")}
+	})
+	if run := a.runBackup(adminA); run.Status != model.BackupSuccess || run.Encrypted {
+		t.Fatalf("run = %+v", run)
+	}
+	data, _ := os.ReadFile(onlyArchive(t, dest))
+
+	// The new server already has the SSO secret and a destination for the
+	// same bucket (with its own ID), e.g. to read the archive from.
+	c := newEnv(t)
+	adminC := c.adminSession()
+	sso(c, adminC, "sso-secret-c")
+	c.backupSettings(adminC, func(b map[string]any) { b["destinations"] = []any{offsite("Offsite here", "s3-secret-c")} })
+
+	rec := c.upload("/api/restore", "file", "x.zip", data, adminC...)
+	expect(t, rec, http.StatusOK)
+	warnings := strings.Join(decodeJSON[model.RestoreResult](t, rec).Warnings, "\n")
+	for _, want := range []string{"current value was kept for settings.backup.destinations[Offsite].s3.secretAccessKey, settings.sso.clientSecret.", "cleared. Enter them again: sites[portable].deploy.git.token."} {
+		if !strings.Contains(warnings, want) {
+			t.Errorf("warnings do not contain %q:\n%s", want, warnings)
+		}
+	}
+	st := c.c.Settings()
+	if len(st.Backup.Destinations) != 2 || c.c.Box.MustUnseal(st.Backup.Destinations[1].S3.SecretAccessKey) != "s3-secret-c" {
+		t.Errorf("destinations after the restore = %+v", st.Backup.Destinations)
+	}
+	if got := c.c.Box.MustUnseal(st.SSO.ClientSecret); got != "sso-secret-c" {
+		t.Errorf("SSO client secret = %q", got)
+	}
+	// The settings can be saved as they are.
+	c.backupSettings(adminC, func(b map[string]any) {})
+
+	// A destination without its secret is named when saving fails.
+	rec = c.do(http.MethodGet, "/api/settings", nil, adminC...)
+	s := decodeJSON[map[string]any](t, rec)
+	b := s["backup"].(map[string]any)
+	b["destinations"] = append(b["destinations"].([]any), offsite("Second", ""))
+	rec = c.do(http.MethodPut, "/api/settings", s, adminC...)
+	expect(t, rec, http.StatusUnprocessableEntity)
+	if e := decodeJSON[map[string]string](t, rec); e["field"] != "backup.destinations[2].s3.secretAccessKey" || !strings.Contains(e["error"], `"Second"`) {
+		t.Errorf("error = %v", e)
+	}
+}
+
 func TestBackupRestoreRejectsZipSlip(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

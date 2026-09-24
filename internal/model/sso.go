@@ -146,7 +146,7 @@ func (s *SSOSettings) Validate() error {
 		return verr("sso.clientId", "enter the application (client) ID")
 	}
 	if s.ClientSecret == "" {
-		return verr("sso.clientSecret", "enter the client secret")
+		return verr("sso.clientSecret", "enter the single sign-on client secret")
 	}
 	if s.AutoCreate && s.DefaultRole == "" && !s.MapsRoles() {
 		return verr("sso.defaultRole", "new users need a role: choose a default role or map roles from a claim")

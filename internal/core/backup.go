@@ -809,7 +809,8 @@ func (c *Core) RestoreFromDestination(ctx context.Context, destID, name, passphr
 //     same ID; other sites are kept (as with the JSON restore).
 //   - Secrets sealed with another server's master key are re-sealed with
 //     this one's from the archive's portable copy (passphrase-protected
-//     archives); without that copy they are cleared, to be re-entered.
+//     archives); without that copy they keep this server's current value
+//     for the same setting or ID, or are cleared, to be re-entered.
 //   - Certificate files are written for certificates that are missing
 //     here or have no files; a certificate this server already has is
 //     kept, since it may have been renewed since the backup.
@@ -836,11 +837,15 @@ func (c *Core) RestoreFile(ctx context.Context, path, passphrase string) (*model
 		if err != nil {
 			return nil, err
 		}
+		data, warnings, err := c.resealSecrets(data, nil)
+		if err != nil {
+			return nil, err
+		}
 		b, err := c.restoreConfig(ctx, data, nil)
 		if err != nil {
 			return nil, err
 		}
-		return &model.RestoreResult{Format: "json", Hostname: b.Hostname, Sites: len(b.Sites), SharedSites: []string{}, Warnings: []string{}}, nil
+		return &model.RestoreResult{Format: "json", Hostname: b.Hostname, Sites: len(b.Sites), SharedSites: []string{}, Warnings: append([]string{}, warnings...)}, nil
 	case bytes.HasPrefix(head, []byte("PK")):
 		return c.restoreArchive(ctx, path, passphrase)
 	}
@@ -909,13 +914,11 @@ func (c *Core) restoreArchive(ctx context.Context, path, passphrase string) (*mo
 			return nil, fmt.Errorf("secrets.json: %w", err)
 		}
 	}
-	data, lost, err := c.resealSecrets(data, portable)
+	data, warnings, err := c.resealSecrets(data, portable)
 	if err != nil {
 		return nil, err
 	}
-	if lost > 0 {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("%d secret(s) were encrypted with another server's key and the backup has no passphrase-protected copy: they were cleared. Enter them again (secret environment variables, DNS provider credentials, passwords, tokens).", lost))
-	}
+	res.Warnings = append(res.Warnings, warnings...)
 
 	// Certificate files go in before the configuration, so the records
 	// that reference them are restored as issued.
@@ -961,38 +964,184 @@ func (c *Core) restoreArchive(ctx context.Context, path, passphrase string) (*mo
 
 // resealSecrets makes every secret in a configuration export readable by
 // this server: values sealed with this master key are kept, others are
-// re-sealed from their portable copy or, lacking one, cleared.
-func (c *Core) resealSecrets(data []byte, portable map[string]string) ([]byte, int, error) {
+// re-sealed from their portable copy. A secret that cannot be recovered
+// keeps this server's current value at the same place, if it has one
+// (the same setting; the same site, destination, provider… by ID), and is
+// cleared otherwise: without that, restoring an archive from another
+// server would also blank the backup destination the admin just set up
+// here and the SSO client secret, and every later settings save would
+// fail until they were entered again. Both cases are reported by name.
+func (c *Core) resealSecrets(data []byte, portable map[string]string) ([]byte, []string, error) {
 	var doc any
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&doc); err != nil {
-		return nil, 0, fmt.Errorf("not a NodeHoster backup: %w", err)
+		return nil, nil, fmt.Errorf("not a NodeHoster backup: %w", err)
 	}
-	lost := 0
-	var sealErr error
-	doc = walkStrings(doc, func(s string) string {
-		if !secrets.IsSealed(s) {
-			return s
-		}
-		if _, err := c.Box.Unseal(s); err == nil {
-			return s
-		}
-		if plain, ok := portable[s]; ok {
-			v, err := c.Box.Seal(plain)
-			if err != nil {
-				sealErr = err
-			}
-			return v
-		}
-		lost++
-		return ""
-	})
-	if sealErr != nil {
-		return nil, 0, sealErr
+	var cur any
+	here, err := json.Marshal(Backup{Settings: c.Settings(), Sites: c.Sites()})
+	if err != nil {
+		return nil, nil, err
+	}
+	dec = json.NewDecoder(bytes.NewReader(here))
+	dec.UseNumber()
+	if err := dec.Decode(&cur); err != nil {
+		return nil, nil, err
+	}
+	r := resealer{c: c, portable: portable}
+	doc = r.walk(doc, cur, "")
+	if r.err != nil {
+		return nil, nil, r.err
+	}
+	var warnings []string
+	if len(r.kept) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d secret(s) were encrypted with another server's key and the backup has no passphrase-protected copy: this server's current value was kept for %s.", len(r.kept), fieldList(r.kept)))
+	}
+	if len(r.cleared) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d secret(s) were encrypted with another server's key and the backup has no passphrase-protected copy: they were cleared. Enter them again: %s.", len(r.cleared), fieldList(r.cleared)))
 	}
 	out, err := json.Marshal(doc)
-	return out, lost, err
+	return out, warnings, err
+}
+
+// resealer walks a configuration export next to this server's current
+// configuration (see resealSecrets).
+type resealer struct {
+	c             *Core
+	portable      map[string]string
+	kept, cleared []string // where, e.g. sites[Shop].env[API_KEY].value
+	err           error
+}
+
+func (r *resealer) walk(v, cur any, path string) any {
+	switch t := v.(type) {
+	case string:
+		if !secrets.IsSealed(t) {
+			return t
+		}
+		if _, err := r.c.Box.Unseal(t); err == nil {
+			return t
+		}
+		if plain, ok := r.portable[t]; ok {
+			sealed, err := r.c.Box.Seal(plain)
+			if err != nil {
+				r.err = err
+			}
+			return sealed
+		}
+		if here, ok := cur.(string); ok && secrets.IsSealed(here) {
+			if _, err := r.c.Box.Unseal(here); err == nil {
+				r.kept = append(r.kept, path)
+				return here
+			}
+		}
+		r.cleared = append(r.cleared, path)
+		return ""
+	case map[string]any:
+		curMap, _ := cur.(map[string]any)
+		for k, x := range t {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			t[k] = r.walk(x, curMap[k], p)
+		}
+	case []any:
+		curList, _ := cur.([]any)
+		for i, x := range t {
+			t[i] = r.walk(x, sameEntry(path, x, curList), fmt.Sprintf("%s[%s]", path, entryLabel(x, i)))
+		}
+	}
+	return v
+}
+
+// sameEntry finds the entry of this server's list that x stands for: the
+// one with the same ID, or for entries without one (environment variables,
+// headers, DKIM keys) the same name. Position is never used: another
+// entry's secret must not end up in x. A backup destination also matches
+// one of this server's that reaches the same place with the same account,
+// since a destination set up here to read the archive has a new ID.
+func sameEntry(path string, x any, list []any) any {
+	m, ok := x.(map[string]any)
+	if !ok {
+		return nil
+	}
+	keys := []func(map[string]any) string{func(m map[string]any) string { return str(m["id"]) }}
+	if str(m["id"]) == "" {
+		keys = []func(map[string]any) string{
+			func(m map[string]any) string {
+				if str(m["domain"]) == "" {
+					return ""
+				}
+				return str(m["domain"]) + "\x00" + str(m["selector"])
+			},
+			func(m map[string]any) string { return str(m["name"]) },
+			func(m map[string]any) string { return str(m["username"]) },
+		}
+	}
+	if path == "settings.backup.destinations" {
+		keys = append(keys, destLocation)
+	}
+	for _, key := range keys {
+		k := key(m)
+		if k == "" {
+			continue
+		}
+		for _, y := range list {
+			if n, ok := y.(map[string]any); ok && key(n) == k {
+				return n
+			}
+		}
+	}
+	return nil
+}
+
+// destLocation identifies where a backup destination writes and as whom.
+func destLocation(m map[string]any) string {
+	t := str(m["type"])
+	sub, _ := m[t].(map[string]any)
+	if sub == nil {
+		return ""
+	}
+	var parts []string
+	switch t {
+	case model.BackupS3:
+		parts = []string{str(sub["endpoint"]), str(sub["region"]), str(sub["bucket"]), str(sub["accessKeyId"])}
+	case model.BackupAzure:
+		parts = []string{str(sub["endpoint"]), str(sub["account"]), str(sub["container"])}
+	case model.BackupSFTP:
+		parts = []string{str(sub["host"]), fmt.Sprint(sub["port"]), str(sub["username"])}
+	default:
+		return ""
+	}
+	return t + "\x00" + strings.Join(parts, "\x00")
+}
+
+// entryLabel names a list entry for the admin: by name, else ID, else
+// position.
+func entryLabel(x any, i int) string {
+	if m, ok := x.(map[string]any); ok {
+		for _, k := range []string{"name", "username", "domain", "id"} {
+			if v := str(m[k]); v != "" {
+				return v
+			}
+		}
+	}
+	return fmt.Sprint(i)
+}
+
+func str(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// fieldList joins field paths for a warning, sorted, at most ten.
+func fieldList(fields []string) string {
+	slices.Sort(fields)
+	if len(fields) > 10 {
+		return strings.Join(fields[:10], ", ") + fmt.Sprintf(" and %d more", len(fields)-10)
+	}
+	return strings.Join(fields, ", ")
 }
 
 // restoreCertFiles writes a certificate's PEM files from the archive.
