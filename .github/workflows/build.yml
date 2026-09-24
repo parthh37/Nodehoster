@@ -291,8 +291,14 @@ jobs:
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           Compress-Archive -Path dist\nodehoster.exe, dist\nodehoster-manager.exe, dist\README.md -DestinationPath "dist\NodeHoster-$v-windows-x64.zip" -Force
-          Get-FileHash dist\*.exe, dist\*.zip -Algorithm SHA256 | Where-Object { (Split-Path $_.Path -Leaf) -ne "nodehoster.exe" } | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          # Only the files that are published (the same globs as the S3
+          # step), with LF line endings: sha256sum -c and shasum -c on
+          # Linux and macOS take a trailing CR as part of the file name.
+          $sums = Get-FileHash dist\*-setup.exe, dist\*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)`n" }
+          [IO.File]::WriteAllText("$pwd\dist\SHA256SUMS.txt", -join $sums)
           Get-Content dist\SHA256SUMS.txt
+          $text = [IO.File]::ReadAllText("$pwd\dist\SHA256SUMS.txt")
+          if ($text.Contains("`r") -or $text -notmatch "-setup\.exe`n" -or $text -notmatch "\.zip`n" -or $sums.Count -ne 2) { throw "unexpected SHA256SUMS.txt" }
 
       - name: Publish to S3
         id: s3
