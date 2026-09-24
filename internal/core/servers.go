@@ -51,6 +51,11 @@ type serverHealth struct {
 	h        model.ServerHealth
 	failures int  // consecutive failed checks
 	down     bool // remote.down was raised and not yet remote.up
+	// Whether the server applies the role limit, as the last check that
+	// read the token's identity found (limitsKnown), kept while the server
+	// is unreachable: the proxy relays non-administrators' requests only
+	// to a server that does.
+	limitsKnown, roleLimits bool
 }
 
 // serverConn is the HTTP client of a connection, rebuilt when its URL or
@@ -345,6 +350,9 @@ func (c *Core) recordServerHealth(s model.ServerConnection, h model.ServerHealth
 	if prev.CheckedAt == nil || prev.Reachable != h.Reachable || h.Since == nil {
 		h.Since = h.CheckedAt
 	}
+	if h.Reachable && h.User != "" {
+		st.limitsKnown, st.roleLimits = true, h.RoleLimits
+	}
 	var up, down bool
 	if h.Reachable {
 		st.failures = 0
@@ -360,11 +368,42 @@ func (c *Core) recordServerHealth(s model.ServerConnection, h model.ServerHealth
 
 	switch {
 	case down:
-		c.Bus.Warn(events.RemoteDown, "", "Server %s (%s) is unreachable: %s", s.Name, s.URL, h.Error)
+		c.Bus.Warn(events.RemoteDown, "", "%s: %s", serverDownPrefix(s), h.Error)
 	case up:
 		c.Bus.Info(events.RemoteUp, "", "Server %s (%s) is reachable again", s.Name, s.URL)
 	}
 	return h
+}
+
+// ServerRoleLimits reports whether a connection's server applies the role
+// limit (model.RoleLimitHeader); known is false until a check has read it
+// since the connection last changed.
+func (c *Core) ServerRoleLimits(id string) (limits, known bool) {
+	c.servers.mu.Lock()
+	defer c.servers.mu.Unlock()
+	if st := c.servers.health[id]; st != nil {
+		return st.roleLimits, st.limitsKnown
+	}
+	return false, false
+}
+
+// serverDownPrefix begins the message of remote.down.
+func serverDownPrefix(s model.ServerConnection) string {
+	return fmt.Sprintf("Server %s (%s) is unreachable", s.Name, s.URL)
+}
+
+// ServerDownNotice shortens the message of remote.down to the server's
+// name, for the status pipe: every interactive user of the computer reads
+// it, not only administrators, so it tells neither the server's URL nor
+// why it cannot be reached (addresses, certificates), which the web
+// console shows those who may use the connection.
+func (c *Core) ServerDownNotice(msg string) string {
+	for _, s := range c.ServerConnections() {
+		if strings.HasPrefix(msg, serverDownPrefix(s)+":") {
+			return fmt.Sprintf("Server %s is unreachable", s.Name)
+		}
+	}
+	return "A connected server is unreachable"
 }
 
 // TestServer tries a connection being set up: the certificate the server

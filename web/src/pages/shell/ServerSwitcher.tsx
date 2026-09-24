@@ -13,7 +13,7 @@ import { Menu, type MenuItem } from '@/components/Menu';
 import { useLocalPermissions } from '@/hooks/useAuth';
 import { useServerTarget } from '@/hooks/useServerTarget';
 import { cn } from '@/lib/cn';
-import { healthState, mayUseServer, versionNote } from '@/lib/servers';
+import { healthState, lacksRoleLimits, mayUseServer, ROLE_LIMITS_NOTE, versionNote } from '@/lib/servers';
 
 const dot: Record<ReturnType<typeof healthState>, string> = {
   online: 'bg-emerald-500',
@@ -135,6 +135,7 @@ export function RemoteBanner() {
         {version && <> · NodeHoster {version}</>}
         {note && <span className="opacity-80"> ({note})</span>}
         {offline && <> · unreachable: {s.health.error}</>}
+        {!local.isAdmin && lacksRoleLimits(s?.health) && <> · {ROLE_LIMITS_NOTE}</>}
       </span>
       <button type="button" onClick={() => void switchTo(null)} className="ml-auto inline-flex items-center gap-1 font-medium underline-offset-2 hover:underline">
         <ArrowLeft className="h-3.5 w-3.5" /> Back to this server

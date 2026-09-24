@@ -125,6 +125,37 @@ func TestCheckUnreachableAndNotNodeHoster(t *testing.T) {
 	}
 }
 
+// TestCheckRoleLimits: a server that echoes the role limit applies it; an
+// older one ignores it.
+func TestCheckRoleLimits(t *testing.T) {
+	t.Parallel()
+	for _, echo := range []bool{true, false} {
+		var sent string
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/server/info":
+				w.Write([]byte(`{"version":"1.0.0"}`))
+			case "/api/auth/me":
+				sent = r.Header.Get(model.RoleLimitHeader)
+				if echo && sent != "" {
+					w.Header().Set(model.RoleLimitAppliedHeader, sent)
+				}
+				w.Write([]byte(`{"user":{"username":"hub","role":"admin"},"access":{"role":"admin"}}`))
+			default:
+				w.Write([]byte(`[]`))
+			}
+		}))
+		h := Check(context.Background(), clientFor(t, s.URL, ""), s.URL, "t")
+		s.Close()
+		if !h.Reachable || h.User != "hub" || h.Role != model.RoleAdmin || h.RoleLimits != echo {
+			t.Errorf("echo %v: %+v", echo, h)
+		}
+		if sent != string(model.RoleAdmin) {
+			t.Errorf("the check sent the limit %q, want admin (which takes nothing away)", sent)
+		}
+	}
+}
+
 func TestSavedConnections(t *testing.T) {
 	t.Parallel()
 	p := filepath.Join(t.TempDir(), "NodeHoster", "connections.json")

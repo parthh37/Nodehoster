@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -230,6 +231,11 @@ func (b *Bus) Send(ctx context.Context, w model.WebhookTarget, e model.Event) er
 	return last
 }
 
+// payload is the body of a webhook in its format. Chat formats show the
+// event's message and site name, which can hold text from anyone (a
+// blocked request's path, a site named by a site-scoped user): it is
+// escaped for the chat so that it cannot mention everyone, link somewhere
+// or format the message.
 func (b *Bus) payload(format string, e model.Event) any {
 	site := ""
 	if e.SiteID != "" && b.siteName != nil {
@@ -237,17 +243,30 @@ func (b *Bus) payload(format string, e model.Event) any {
 	}
 	icon := map[string]string{"info": "ℹ️", "warning": "⚠️", "error": "🛑"}[e.Level]
 	title := fmt.Sprintf("%s %s", icon, e.Type)
-	text := e.Message
-	if site != "" {
-		text = fmt.Sprintf("[%s] %s", site, e.Message)
+	text := func(esc func(string) string) string {
+		if site != "" {
+			return fmt.Sprintf("[%s] %s", esc(site), esc(e.Message))
+		}
+		return esc(e.Message)
 	}
 	switch strings.ToLower(format) {
 	case "slack":
-		return map[string]any{"text": fmt.Sprintf("*%s*\n%s", title, text)}
+		return map[string]any{"text": fmt.Sprintf("*%s*\n%s", title, text(slackEscape))}
 	case "discord":
-		return map[string]any{"content": fmt.Sprintf("**%s**\n%s", title, text)}
+		return map[string]any{
+			"content": fmt.Sprintf("**%s**\n%s", title, text(discordEscape)),
+			// No pings, whatever the text says.
+			"allowed_mentions": map[string]any{"parse": []string{}},
+		}
 	case "teams":
 		color := map[string]string{"info": "Good", "warning": "Warning", "error": "Attention"}[e.Level]
+		// The text is a TextRun of a RichTextBlock, which Teams shows as
+		// it is: a TextBlock would render it as Markdown.
+		run := func(text string, style map[string]any) map[string]any {
+			tr := map[string]any{"type": "TextRun", "text": text}
+			maps.Copy(tr, style)
+			return map[string]any{"type": "RichTextBlock", "inlines": []any{tr}}
+		}
 		return map[string]any{
 			"type": "message",
 			"attachments": []any{map[string]any{
@@ -256,8 +275,8 @@ func (b *Bus) payload(format string, e model.Event) any {
 					"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
 					"type":    "AdaptiveCard", "version": "1.4",
 					"body": []any{
-						map[string]any{"type": "TextBlock", "text": title, "weight": "Bolder", "color": color},
-						map[string]any{"type": "TextBlock", "text": text, "wrap": true},
+						run(title, map[string]any{"weight": "Bolder", "color": color}),
+						run(text(func(s string) string { return s }), nil),
 					},
 				},
 			}},
@@ -265,4 +284,26 @@ func (b *Bus) payload(format string, e model.Event) any {
 	default:
 		return map[string]any{"event": e, "site": site, "source": "nodehoster"}
 	}
+}
+
+// slackEscape escapes text for a Slack message: &, < and > as entities, as
+// Slack asks, which leaves no <!channel>, <@user> or <url|link>.
+var slackEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
+
+// discordMarkdown are the characters Discord's Markdown gives a meaning.
+const discordMarkdown = "\\*_~`|<>[]()#-:"
+
+// discordEscape escapes text for a Discord message: a backslash before
+// every Markdown character (no formatting, masked links, headings or
+// mentions) and a zero-width space in @everyone and @here, which
+// allowed_mentions already keeps from pinging.
+func discordEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(discordMarkdown, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return strings.NewReplacer("@everyone", "@\u200beveryone", "@here", "@\u200bhere").Replace(b.String())
 }

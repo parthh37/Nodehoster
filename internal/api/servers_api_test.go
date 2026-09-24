@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -159,7 +160,7 @@ func TestServerProxy(t *testing.T) {
 	// The health check reads the same server.
 	rec := e.do("POST", "/api/servers/"+id+"/check", nil, viewer...)
 	expect(t, rec, http.StatusOK)
-	if h := decodeJSON[model.ServerView](t, rec).Health; !h.Reachable || h.Sites != 1 || h.Version == "" {
+	if h := decodeJSON[model.ServerView](t, rec).Health; !h.Reachable || h.Sites != 1 || h.Version == "" || !h.RoleLimits {
 		t.Fatalf("health %+v", h)
 	}
 
@@ -409,4 +410,215 @@ func TestRoleLimitHeader(t *testing.T) {
 	expect(t, e.do("GET", "/api/server/metrics", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer")), http.StatusOK)
 	expect(t, e.do("GET", "/api/settings", nil, withBearer(tok), withHeader(model.RoleLimitHeader, "admin")), http.StatusForbidden)
 	expect(t, e.do("GET", "/api/sites", nil, withBearer(tok), withHeader(model.RoleLimitHeader, "root")), http.StatusBadRequest)
+
+	// A limited request says the limit was applied (the proxy relays a
+	// non-administrator's request only then); others say nothing.
+	rec := e.do("GET", "/api/sites", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer"))
+	expect(t, rec, http.StatusOK)
+	if got := rec.Header().Get(model.RoleLimitAppliedHeader); got != "viewer" {
+		t.Errorf("applied limit %q, want viewer", got)
+	}
+	if got := e.do("GET", "/api/sites", nil, withBearer(adminTok)).Header().Get(model.RoleLimitAppliedHeader); got != "" {
+		t.Errorf("applied limit %q without one asked", got)
+	}
+
+	// The account behind a limited request is out of reach, even at the
+	// admin limit: nothing mints a token or changes the sign-in through a
+	// connection, whether or not its proxy's own check holds.
+	adm, _ := e.c.Store.GetUserByName(context.Background(), "adm")
+	for _, lim := range []string{"admin", "viewer"} {
+		limited := []opt{withBearer(adminTok), withHeader(model.RoleLimitHeader, lim)}
+		expect(t, e.do("POST", "/api/tokens", map[string]any{"name": "more"}, limited...), http.StatusForbidden)
+		expect(t, e.do("GET", "/api/tokens", nil, limited...), http.StatusForbidden)
+		expect(t, e.do("POST", "/api/auth/password", map[string]any{"current": testPassword, "new": "Another-passw0rd!"}, limited...), http.StatusForbidden)
+		expect(t, e.do("POST", "/api/auth/totp/setup", nil, limited...), http.StatusForbidden)
+		expect(t, e.do("PUT", "/api/users/"+adm.ID, map[string]any{"role": "admin"}, limited...), http.StatusForbidden)
+	}
+	expect(t, e.do("GET", "/api/tokens", nil, withBearer(adminTok)), http.StatusOK)
+	expect(t, e.do("GET", "/api/auth/me", nil, withBearer(adminTok), withHeader(model.RoleLimitHeader, "viewer")), http.StatusOK)
+}
+
+// oldServer is a fake remote console that answers like a NodeHoster server
+// with the token's full (administrator) rights; echo decides whether it
+// says it applied the role limit: never (a server older than the limit),
+// always, or only to the health check (one that stopped applying it
+// since).
+type oldServer struct {
+	*httptest.Server
+	mu    sync.Mutex
+	echo  string // "never", "always", "check"
+	paths []string
+}
+
+func newOldServer(t *testing.T, echo string) *oldServer {
+	t.Helper()
+	o := &oldServer{echo: echo}
+	o.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		o.mu.Lock()
+		o.paths = append(o.paths, r.Method+" "+r.URL.Path)
+		echo := o.echo
+		o.mu.Unlock()
+		if lim := r.Header.Get(model.RoleLimitHeader); lim != "" && (echo == "always" || echo == "check" && r.URL.Path == "/api/auth/me") {
+			w.Header().Set(model.RoleLimitAppliedHeader, lim)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/server/info":
+			w.Write([]byte(`{"version":"1.0.0","hostname":"OLD"}`))
+		case "/api/auth/me":
+			w.Write([]byte(`{"user":{"username":"hub","role":"admin"},"access":{"role":"admin"}}`))
+		case "/api/sites":
+			w.Write([]byte(`[]`))
+		case "/api/settings":
+			w.Write([]byte(`{"secret":"admin-only"}`))
+		default:
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	t.Cleanup(o.Close)
+	return o
+}
+
+func (o *oldServer) setEcho(echo string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.echo = echo
+}
+
+// reached reports whether a request for method and path reached the server.
+func (o *oldServer) reached(method, path string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Contains(o.paths, method+" "+path)
+}
+
+// TestServerProxyOldServer: a remote server that ignores the role limit
+// would give the connection token's full rights to anyone, so only
+// administrators may use it.
+func TestServerProxyOldServer(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	e.user("viewer", model.RoleViewer, false)
+	e.user("operator", model.RoleOperator, false)
+	viewer, operator := session(e.login("viewer")), session(e.login("operator"))
+
+	old := newOldServer(t, "never")
+	id := e.connect(admin, map[string]any{"name": "old", "url": old.URL, "token": "nh_old", "minRole": "viewer"})
+	p := "/api/servers/" + id + "/proxy"
+
+	// Not checked yet: the proxy checks it first, and refuses.
+	rec := e.do("GET", p+"/settings", nil, viewer...)
+	expect(t, rec, http.StatusForbidden)
+	if !strings.Contains(rec.Body.String(), "too old for role limits") {
+		t.Fatalf("viewer on an old server: %s", rec.Body)
+	}
+	expect(t, e.do("GET", p+"/backup", nil, viewer...), http.StatusForbidden)
+	expect(t, e.do("PUT", p+"/users/x", map[string]any{"role": "admin"}, operator...), http.StatusForbidden)
+	expect(t, e.do("POST", p+"/restore", "{}", operator...), http.StatusForbidden)
+	for _, r := range []string{"GET /api/settings", "GET /api/backup", "PUT /api/users/x", "POST /api/restore"} {
+		method, path, _ := strings.Cut(r, " ")
+		if old.reached(method, path) {
+			t.Errorf("%s of a non-administrator reached the old server", r)
+		}
+	}
+	// The health says so, for the console to explain.
+	v := decodeJSON[model.ServerView](t, e.do("GET", "/api/servers/"+id, nil, viewer...))
+	if !v.Health.Reachable || v.Health.User != "hub" || v.Health.RoleLimits {
+		t.Fatalf("health of an old server: %+v", v.Health)
+	}
+	// Administrators, whom the token's rights are meant for, still use it.
+	rec = e.do("GET", p+"/settings", nil, admin...)
+	expect(t, rec, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), "admin-only") {
+		t.Fatalf("admin: %s", rec.Body)
+	}
+	expect(t, e.do("PUT", p+"/users/x", map[string]any{"role": "admin"}, admin...), http.StatusOK)
+
+	// A server that applies the limit: its users get through, capped there.
+	cur := newOldServer(t, "always")
+	cid := e.connect(admin, map[string]any{"name": "current", "url": cur.URL, "token": "nh_cur", "minRole": "viewer"})
+	expect(t, e.do("GET", "/api/servers/"+cid+"/proxy/sites", nil, viewer...), http.StatusOK)
+	expect(t, e.do("POST", "/api/servers/"+cid+"/proxy/sites/x/start", nil, operator...), http.StatusOK)
+	if v := decodeJSON[model.ServerView](t, e.do("GET", "/api/servers/"+cid, nil, viewer...)); !v.Health.RoleLimits {
+		t.Fatalf("health of a current server: %+v", v.Health)
+	}
+
+	// One that stopped applying it since its last check: the answer does
+	// not say the limit was applied, and is not relayed.
+	cur.setEcho("check")
+	rec = e.do("GET", "/api/servers/"+cid+"/proxy/settings", nil, viewer...)
+	expect(t, rec, http.StatusBadGateway)
+	if strings.Contains(rec.Body.String(), "admin-only") || !strings.Contains(rec.Body.String(), "too old for role limits") {
+		t.Fatalf("unlimited answer relayed: %s", rec.Body)
+	}
+	expect(t, e.do("GET", "/api/servers/"+cid+"/proxy/settings", nil, admin...), http.StatusOK)
+}
+
+// TestServerProxyContentTypes: whatever a remote server answers, nothing
+// it sends runs as a page of this server's origin.
+func TestServerProxyContentTypes(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	admin := e.adminSession()
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/api/") {
+		case "html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<script>alert(document.cookie)</script>`))
+		case "svg":
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.Header().Set("Content-Disposition", `inline; filename="x.svg"`)
+			w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`))
+		case "none":
+			w.Header()["Content-Type"] = nil // not sniffed by Go's server either
+			w.Write([]byte(`<html><script>alert(1)</script></html>`))
+		case "bad":
+			w.Header().Set("Content-Type", "text/html;;;")
+			w.Write([]byte(`<script>alert(1)</script>`))
+		case "zip":
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Disposition", `attachment; filename="backup.zip"`)
+			w.Write([]byte("PK"))
+		case "eml":
+			w.Header().Set("Content-Type", "message/rfc822")
+			w.Write([]byte("Subject: x\r\n\r\nhi"))
+		case "log":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="site-out.log"`)
+			w.Write([]byte("line"))
+		case "empty":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer fake.Close()
+	id := e.connect(admin, map[string]any{"name": "fake", "url": fake.URL, "token": "nh_fake"})
+	p := "/api/servers/" + id + "/proxy/"
+
+	for _, tc := range []struct{ path, ct, disp string }{
+		{"html", "application/octet-stream", "attachment"},
+		{"svg", "application/octet-stream", "attachment; filename=x.svg"},
+		{"none", "application/octet-stream", "attachment"},
+		{"bad", "application/octet-stream", "attachment"},
+		{"zip", "application/zip", `attachment; filename="backup.zip"`},
+		{"eml", "message/rfc822", "attachment"},
+		{"log", "text/plain; charset=utf-8", `attachment; filename="site-out.log"`},
+		{"json", "application/json; charset=utf-8", ""},
+		{"empty", "", ""},
+	} {
+		rec := e.do("GET", p+tc.path, nil, admin...)
+		h := rec.Header()
+		if h.Get("Content-Type") != tc.ct || h.Get("Content-Disposition") != tc.disp {
+			t.Errorf("%s: Content-Type %q, Content-Disposition %q; want %q, %q", tc.path, h.Get("Content-Type"), h.Get("Content-Disposition"), tc.ct, tc.disp)
+		}
+		if csp := h.Values("Content-Security-Policy"); len(csp) != 1 || !strings.HasPrefix(csp[0], "sandbox") {
+			t.Errorf("%s: Content-Security-Policy %q", tc.path, csp)
+		}
+		if h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options %q", tc.path, h.Get("X-Content-Type-Options"))
+		}
+	}
 }

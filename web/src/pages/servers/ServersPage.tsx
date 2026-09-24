@@ -15,7 +15,7 @@ import { useLocalPermissions } from '@/hooks/useAuth';
 import { useNow } from '@/hooks/useNow';
 import { useServerTarget } from '@/hooks/useServerTarget';
 import { formatBytes, formatPercent, relativeTime } from '@/lib/format';
-import { healthLabel, healthState, memoryPercent, versionNote, type HealthState } from '@/lib/servers';
+import { healthLabel, healthState, lacksRoleLimits, memoryPercent, ROLE_LIMITS_NOTE, versionNote, type HealthState } from '@/lib/servers';
 import { useServerConnections, useSwitchServer } from '../shell/ServerSwitcher';
 import { ServerDialog } from './ServerDialog';
 
@@ -211,6 +211,7 @@ function ServerCard({
               Token user {h.user} ({h.role === 'sites' ? 'limited to some sites' : h.role})
             </p>
           )}
+          {lacksRoleLimits(h) && <p className="text-xs text-amber-700 dark:text-amber-400">{ROLE_LIMITS_NOTE}</p>}
         </div>
       )}
     </Card>

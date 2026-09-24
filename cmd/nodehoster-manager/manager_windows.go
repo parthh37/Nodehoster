@@ -280,18 +280,31 @@ func (m *manager) initCommands() {
 	m.cmdDisconnect = newCommand("Remove connection…", desktop.IconRemove, m.disconnect)
 }
 
+// viewShortcuts are the View menu's Ctrl+digit shortcuts, given by page
+// rather than by position so that a new page does not move them: the
+// pages the manager started with keep theirs, later ones have none (all
+// ten digits are taken).
+var viewShortcuts = map[navKind]walk.Key{
+	navServer: walk.Key1, navSites: walk.Key2, navCerts: walk.Key3, navMail: walk.Key4,
+	navNode: walk.Key5, navUsers: walk.Key6, navBans: walk.Key7, navActivity: walk.Key8,
+	navBackups: walk.Key9, navUpdates: walk.Key0,
+}
+
+func viewShortcut(k navKind) Shortcut {
+	if key, ok := viewShortcuts[k]; ok {
+		return Shortcut{Modifiers: walk.ModControl, Key: key}
+	}
+	return Shortcut{}
+}
+
 func (m *manager) menuBar() []MenuItem {
 	var view []MenuItem
-	for i, it := range m.nav.root.children {
+	for _, it := range m.nav.root.children {
 		kind := it.kind
-		a := Action{Text: it.text, Image: asImage(it.image), OnTriggered: func() { m.showKind(kind) }}
-		if i < 9 {
-			a.Shortcut = Shortcut{Modifiers: walk.ModControl, Key: walk.Key1 + walk.Key(i+1)}
-		}
-		view = append(view, a)
+		view = append(view, Action{Text: it.text, Image: asImage(it.image), OnTriggered: func() { m.showKind(kind) }, Shortcut: viewShortcut(kind)})
 	}
 	serverView := Action{Text: "Server home", Image: img(desktop.IconServer), OnTriggered: func() { m.showKind(navServer) },
-		Shortcut: Shortcut{Modifiers: walk.ModControl, Key: walk.Key1}}
+		Shortcut: viewShortcut(navServer)}
 	view = append([]MenuItem{serverView}, view...)
 	view = append(view, Separator{}, m.cmdFind.barItem())
 

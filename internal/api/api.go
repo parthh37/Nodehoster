@@ -347,6 +347,9 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 				writeErr(w, http.StatusBadRequest, "invalid "+model.RoleLimitHeader)
 				return
 			}
+			// The proxy relays a non-administrator's request only
+			// when the limit is known to be applied.
+			w.Header().Set(model.RoleLimitAppliedHeader, lim)
 		}
 		ctx = withAccess(ctx, acc.WithPreviews(a.c.PreviewIDs))
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, ctxUser, u)))

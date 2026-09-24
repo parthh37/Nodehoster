@@ -31,10 +31,17 @@ import (
 // It only ever reaches a configured connection, and only under its /api.
 // Nothing of the caller's credentials travels (cookies, Authorization, the
 // CSRF header): the request carries a few allowed headers, the token and
-// the caller's role as a limit (model.RoleLimitHeader). The remote
-// server's account endpoints are refused, so that nobody mints tokens or
-// changes the account behind a connection. Every request that changes
-// something is in this server's audit log (who, which server, what).
+// the caller's role as a limit (model.RoleLimitHeader). A server too old
+// to apply the limit would give anyone the token's full rights, so only
+// administrators' requests reach one. The remote server's account
+// endpoints are refused, so that nobody mints tokens or changes the
+// account behind a connection. Every request that changes something is in
+// this server's audit log (who, which server, what).
+//
+// What comes back is served from this server's origin, so a remote server
+// (or someone who took it over) must not be able to send a page that runs
+// script here: only the media types the API answers pass, anything else
+// becomes a download, and every answer is sandboxed (proxyResponse).
 
 const (
 	// maxProxyRequest is the largest request body forwarded: the largest
@@ -67,6 +74,23 @@ var proxyResponseHeaders = []string{
 	"Accept-Ranges", "Last-Modified", "ETag", "X-Accel-Buffering",
 }
 
+// proxyContentTypes are the media types relayed as they are: those the
+// API answers (JSON, event streams, logs, backups and other downloads).
+// Any other (text/html, image/svg+xml, …) is relayed as a download.
+var proxyContentTypes = map[string]bool{
+	"application/json": true, "text/event-stream": true, "text/plain": true,
+	"application/octet-stream": true, "application/zip": true, "application/gzip": true,
+	"application/x-pkcs12": true, "message/rfc822": true,
+}
+
+// proxyInline are the types of proxyContentTypes a browser may show rather
+// than download; the others are always sent as attachments.
+var proxyInline = map[string]bool{"application/json": true, "text/event-stream": true, "text/plain": true}
+
+// proxyCSP replaces this server's policy on proxied answers: nothing a
+// remote server sends runs or loads anything, even if opened as a page.
+const proxyCSP = "sandbox; default-src 'none'; frame-ancestors 'none'"
+
 // proxyServer forwards a request to a connection's server.
 func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.usableServer(w, r)
@@ -91,10 +115,18 @@ func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 	}
 	readOnly := r.Method == http.MethodGet || r.Method == http.MethodHead
 	if !readOnly && !acc.Server(model.RoleOperator) {
-		// Viewers only read, whatever the connection's token may do (a
-		// remote server older than the role limit would not stop them).
+		// Viewers only read, whatever the connection's token may do.
 		writeErr(w, http.StatusForbidden, "your role only allows viewing a connected server")
 		return
+	}
+	// The role the remote server must cap the token at: none for an
+	// administrator, whom the token's rights are meant for.
+	var limit model.Role
+	if !acc.Server(model.RoleAdmin) {
+		limit = acc.Role
+		if !a.appliesRoleLimits(w, r, s) {
+			return
+		}
 	}
 	s, client, token, err := a.c.ServerClient(s.ID)
 	if err != nil {
@@ -128,7 +160,7 @@ func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Header.Set("User-Agent", "NodeHoster/"+config.Version+" (server connection)")
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			return a.proxyResponse(resp, r, s, cancel)
+			return a.proxyResponse(resp, r, s, limit, cancel)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			var mbe *http.MaxBytesError
@@ -146,6 +178,9 @@ func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(sw, r.Body, maxProxyRequest)
 	}
+	h := sw.Header()
+	h.Set("Content-Security-Policy", proxyCSP)
+	h.Set("X-Content-Type-Options", "nosniff")
 	if !readOnly {
 		// Deferred: a response broken off midway aborts the handler.
 		defer func() {
@@ -156,19 +191,49 @@ func (a *API) proxyServer(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(sw, r.WithContext(ctx))
 }
 
+// appliesRoleLimits refuses a non-administrator's request to a server that
+// does not apply the role limit: one older than the limit would give them
+// the token's full rights. A connection not checked yet is checked first.
+func (a *API) appliesRoleLimits(w http.ResponseWriter, r *http.Request, s model.ServerConnection) bool {
+	limits, known := a.c.ServerRoleLimits(s.ID)
+	if !known {
+		a.c.CheckServer(r.Context(), s.ID)
+		limits, known = a.c.ServerRoleLimits(s.ID)
+	}
+	switch {
+	case !known:
+		writeErr(w, http.StatusBadGateway, "cannot tell whether "+s.Name+" limits your role: it could not be checked. Try again once Servers shows it online.")
+		return false
+	case !limits:
+		writeErr(w, http.StatusForbidden, tooOldForRoleLimits(s.Name))
+		return false
+	}
+	return true
+}
+
+func tooOldForRoleLimits(name string) string {
+	return name + " is too old for role limits: only administrators can use it until it is updated"
+}
+
 // proxyResponse checks and trims the remote server's answer before it is
 // returned: its credentials problems are this server's (502, not a 401 the
 // console would take for its own session ending), redirects are not
-// followed, and only some headers pass. An event stream ends when the
+// followed, and only some headers pass. For a caller whose role the remote
+// server must limit, a successful answer must say it did (a server that
+// stopped applying the limit since its last check). Content types outside
+// proxyContentTypes become downloads. An event stream ends when the
 // caller may no longer use the connection; any other body when it stalls
 // or grows past maxProxyResponse.
-func (a *API) proxyResponse(resp *http.Response, r *http.Request, s model.ServerConnection, cancel context.CancelFunc) error {
+func (a *API) proxyResponse(resp *http.Response, r *http.Request, s model.ServerConnection, limit model.Role, cancel context.CancelFunc) error {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		replaceBody(resp, http.StatusBadGateway, s.Name+" refused the connection's API token: it was revoked or has expired. An administrator can enter a new one under Servers.")
 		return nil
 	case resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified:
 		replaceBody(resp, http.StatusBadGateway, s.Name+" answered with a redirect: check the connection's URL")
+		return nil
+	case limit != "" && resp.StatusCode < 400 && resp.Header.Get(model.RoleLimitAppliedHeader) != string(limit):
+		replaceBody(resp, http.StatusBadGateway, tooOldForRoleLimits(s.Name))
 		return nil
 	}
 	h := http.Header{}
@@ -178,6 +243,7 @@ func (a *API) proxyResponse(resp *http.Response, r *http.Request, s model.Server
 		}
 	}
 	resp.Header = h
+	safeContentType(resp)
 	ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if ct == "text/event-stream" {
 		go a.watchProxyStream(resp.Request.Context(), r, s.ID, cancel)
@@ -205,6 +271,32 @@ func (a *API) watchProxyStream(ctx context.Context, r *http.Request, id string, 
 				return
 			}
 		}
+	}
+}
+
+// safeContentType keeps the answer's media type if it is one of
+// proxyContentTypes, and makes it an application/octet-stream otherwise;
+// what is not shown inline is sent as an attachment.
+func safeContentType(resp *http.Response) {
+	h := resp.Header
+	raw := h.Get("Content-Type")
+	if raw == "" && (resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified || resp.ContentLength == 0) {
+		return // no body
+	}
+	ct, _, err := mime.ParseMediaType(raw)
+	if err != nil || !proxyContentTypes[ct] {
+		ct = "application/octet-stream"
+		h.Set("Content-Type", ct)
+	}
+	if proxyInline[ct] {
+		return
+	}
+	disp, params, err := mime.ParseMediaType(h.Get("Content-Disposition"))
+	if err != nil || disp != "attachment" {
+		if disp = mime.FormatMediaType("attachment", params); disp == "" {
+			disp = "attachment"
+		}
+		h.Set("Content-Disposition", disp)
 	}
 }
 

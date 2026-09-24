@@ -31,9 +31,9 @@ const RANK: Record<string, number> = { viewer: 1, operator: 2, admin: 3 };
 
 /**
  * What the console may offer on a connected server: the token's access
- * there, never above the local user's role. A remote server of this
- * version applies the same cap itself; for an older one, the proxy still
- * keeps local viewers read-only.
+ * there, never above the local user's role. The remote server applies the
+ * same cap itself; one too old to do so is for administrators only (the
+ * proxy refuses the others, see lacksRoleLimits).
  */
 export function capAccess(remote: Access | undefined, localRole: Role | undefined): Access | undefined {
   if (!remote || !localRole) return undefined;
@@ -45,6 +45,17 @@ export function capAccess(remote: Access | undefined, localRole: Role | undefine
   }
   return { role: cap(remote.role) };
 }
+
+/**
+ * Whether a connected server is too old to cap the token at the local
+ * user's role (known once a check read who the token is): the proxy then
+ * only relays administrators' requests.
+ */
+export function lacksRoleLimits(h: ServerHealth | undefined): boolean {
+  return !!h && h.reachable && !!h.user && !h.roleLimits;
+}
+
+export const ROLE_LIMITS_NOTE = 'This server is too old for role limits: only admins can use it.';
 
 /** Whether a local role may use a connection (its minimum role). */
 export function mayUseServer(localRole: Role | undefined, s: Pick<ServerConnection, 'minRole'>): boolean {

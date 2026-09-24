@@ -110,7 +110,10 @@ What a site-scoped caller gets:
 | `/api/sites/{id}/...` | authorized against the grant for that site: read routes need `viewer`, actions and deployments `operator`, `PUT`/`DELETE` a server `admin` (403). Sites without a grant answer **404**, like sites that do not exist |
 | `GET /api/sites`, `/api/events`, `/api/stream`, `/metrics` | only the granted sites (their status, their events); server-wide events and certificate metrics are left out |
 | `GET /api/server/info` | only `version`, `commit` and `hostname` |
-| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| `GET /api/node/versions`, `/api/runtimes`, `/api/mime/defaults`, `/api/settings/dns-catalog`, `/api/waf/rules` | allowed: catalogs the site pages show, nothing server-specific that matters |
+| `GET /api/alerts`, `/api/alerts/history` | only the granted sites' alerts; server alerts are left out, `?siteId=` of another site answers 404 and `?server=1` 403 |
+| `POST`/`DELETE /api/alerts/{alert}/silence` | `operator` on the alert's site (403 with `viewer`); server alerts and other sites' alerts answer 404 |
+| `GET /api/waf/events` | only the granted sites' events; `?siteId=` of another site returns none |
 | everything else (certificates, Node.js and runtime installs, settings, mail, users, audit, backup and backups, updates, log shipping, secret stores, server log search, rewrite import, server metrics) | 403 |
 | `/api/auth/*`, `/api/tokens` | their own account, as for anyone |
 | `/api/servers/*` | 403: a connection is the whole of another server |
@@ -1387,11 +1390,12 @@ fingerprint?, minRole, createdAt, updatedAt}`:
 each), and right after a connection is added or changed: `{reachable,
 error?, checkedAt?, latencyMs, since?, version?, commit?, hostname?, os?,
 cpuPercent, cpuCount, memTotal, memUsed, sites, running, degraded, failed,
-stopped, user?, role?}` (the sites the token can see, by state; who the
-token is there). `checkedAt` absent: not checked yet. A server that answers
-but refuses the token is not reachable. After two failed checks in a row a
-`remote.down` event (warning) is raised, and `remote.up` (info) when it
-answers again, once each.
+stopped, user?, role?, roleLimits}` (the sites the token can see, by state;
+who the token is there; whether the server applies
+`X-NodeHoster-Role-Limit`, known once `user` is set). `checkedAt` absent:
+not checked yet. A server that answers but refuses the token is not
+reachable. After two failed checks in a row a `remote.down` event (warning)
+is raised, and `remote.up` (info) when it answers again, once each.
 
 `POST /api/servers/test` is for setting a connection up (trust on first
 use): `ServerTestResult` = `{certificate?: {fingerprint, subject, issuer,
@@ -1412,8 +1416,10 @@ headers travel: `Accept`, `Accept-Language`, `Content-Type`,
 CSRF and forwarding headers never do. Only `Content-Type`,
 `Content-Length`, `Content-Disposition`, `Content-Range`, `Accept-Ranges`,
 `Last-Modified`, `ETag` and `X-Accel-Buffering` come back (never
-`Set-Cookie`); this server's own security and caching headers apply.
-Rules:
+`Set-Cookie`); this server's own security and caching headers apply, with
+`Content-Security-Policy: sandbox; default-src 'none'` and
+`X-Content-Type-Options: nosniff` instead of the console's policy, so
+nothing a remote server sends runs as a page of this server. Rules:
 
 - The path stays under the remote `/api`: segments `.` and `..`, a
   backslash or NUL (also percent-encoded) and empty segments are refused
@@ -1428,7 +1434,22 @@ Rules:
   a local operator cannot act as an administrator there even with an
   administrator's token (`auth/me` shows the capped access). Any client
   may send the header to narrow its own access; an unknown role is 400.
-  An older remote server ignores it: the token's role applies.
+  The server answers `X-NodeHoster-Role-Limit-Applied: <role>` when it
+  applied it, and refuses a limited request to the account endpoints
+  (`auth/*` other than `auth/me`, `tokens`, and a change to the token's
+  own user through `/users/{id}`) with 403.
+- An older remote server ignores the header, which would give the token's
+  full rights to anyone: only administrators may use it. For others the
+  proxy answers 403 (`… is too old for role limits`) when the last check
+  found the server does not echo the limit (a connection not checked yet
+  is checked first; 502 when that fails), and 502 when a successful
+  answer does not carry the echo.
+- Only the media types the API answers pass as they are:
+  `application/json`, `text/event-stream`, `text/plain`,
+  `application/octet-stream`, `application/zip`, `application/gzip`,
+  `application/x-pkcs12`, `message/rfc822`. Any other (or none, with a
+  body) becomes `application/octet-stream`, and every type but JSON, event
+  streams and plain text is sent with `Content-Disposition: attachment`.
 - The remote server's 401 becomes a 502 of this server (the token was
   revoked or expired), so that the console does not take it for its own
   session ending; redirects are not followed (502). Other answers,
@@ -1479,3 +1500,10 @@ service is stopped.
 
 `adminError` is set when the web console could not start (its port is in
 use, or its certificate is missing): the server keeps running without it.
+
+What the status pipe tells every interactive user of the computer is what
+the icon shows: this server's sites and their state, its resource alerts,
+its web console's URL. A connected server going down (`remote.down`) is a
+notice naming the server only (`Server web02 is unreachable`), without its
+URL or the error, which the web console shows those who may use the
+connection. Nothing about the connections or their tokens travels there.

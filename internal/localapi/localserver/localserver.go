@@ -148,7 +148,7 @@ var noticeTypes = map[string]bool{
 	events.CertRevoked: true, events.CertStapling: true,
 	events.MailFailed: true, events.MailError: true,
 	events.UpdateAvailable: true, events.UpdateInstalled: true, events.UpdateFailed: true,
-	events.RemoteDown: true,
+	events.RemoteDown:  true,
 	events.AlertFiring: true, events.AlertResolved: true,
 	events.SlotSwapped: true, events.SlotSwapFailed: true,
 }
@@ -158,6 +158,10 @@ func notice(c *core.Core, e model.Event) (localapi.Notice, bool) {
 		return localapi.Notice{}, false
 	}
 	n := localapi.Notice{Time: e.Time, Level: e.Level, Type: e.Type, Message: e.Message}
+	if e.Type == events.RemoteDown {
+		// Every interactive user reads this pipe: the server's name only.
+		n.Message = c.ServerDownNotice(e.Message)
+	}
 	if e.SiteID != "" {
 		if s, err := c.Site(e.SiteID); err == nil {
 			n.Site = s.Name
