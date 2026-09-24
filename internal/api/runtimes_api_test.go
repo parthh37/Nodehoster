@@ -159,6 +159,35 @@ func TestRuntimeEndpoints(t *testing.T) {
 	if rep := decodeJSON[runtimes.Report](t, rec); len(rep.Deno.Installed) != 1 || rep.Deno.Installed[0].Version != "2.1.0" {
 		t.Fatalf("installed deno: %s", rec.Body)
 	}
+	// Where runtimes are installed is not for a site-scoped user; the
+	// server's own users see it.
+	for who, want := range map[string]bool{"admin": true, "ops": true, "agency": false} {
+		creds := map[string][]opt{"admin": admin, "ops": ops, "agency": agency}[who]
+		rec = e.do(http.MethodGet, "/api/runtimes", nil, creds...)
+		expect(t, rec, http.StatusOK)
+		rep := decodeJSON[runtimes.Report](t, rec)
+		if len(rep.Deno.Installed) != 1 || rep.Deno.Installed[0].Version != "2.1.0" {
+			t.Fatalf("%s: installed deno: %s", who, rec.Body)
+		}
+		if shown := rep.Deno.Installed[0].Path != ""; shown != want {
+			t.Errorf("%s: paths shown %v, want %v: %s", who, shown, want, rec.Body)
+		}
+		for _, p := range rep.Python {
+			if !want && p.Path != "" {
+				t.Errorf("%s: interpreter path %s", who, p.Path)
+			}
+		}
+	}
+	// Only an administrator's request looks for interpreters (runs them):
+	// the others get what was found last, here nothing.
+	e.c.Runtimes.Refresh()
+	for _, creds := range [][]opt{ops, agency} {
+		rec = e.do(http.MethodGet, "/api/runtimes", nil, creds...)
+		if rep := decodeJSON[runtimes.Report](t, rec); len(rep.Python) != 0 || rep.Dotnet != nil || rep.Bun.System != nil {
+			t.Fatalf("a detection ran for a non-administrator: %s", rec.Body)
+		}
+	}
+
 	expect(t, e.do(http.MethodDelete, "/api/runtimes/deno/versions/2.1.0", nil, admin...), http.StatusNoContent)
 	if !contains(e.auditActions(), "root:runtime.remove") {
 		t.Fatalf("audit %v", e.auditActions())

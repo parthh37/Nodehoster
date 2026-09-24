@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/winacl"
 )
 
 func TestParseChecksum(t *testing.T) {
@@ -118,12 +119,20 @@ func TestPickPython(t *testing.T) {
 	}
 }
 
-// fakeTools stands in for the programs detection runs.
+// fakeTools stands in for the programs detection runs, and the server's
+// files and their permissions.
 type fakeTools struct {
-	mu    sync.Mutex
-	paths map[string]string // name -> path (lookPath)
-	out   map[string]string // "exe args" -> output
-	calls int
+	mu        sync.Mutex
+	paths     map[string]string   // name -> path (lookPath)
+	out       map[string]string   // "exe args" -> output
+	env       map[string]string   // getenv
+	globs     map[string][]string // pattern -> matches
+	registry  []string            // registryPythons
+	files     map[string]bool     // exist besides those in paths and out
+	untrusted map[string]bool     // programs other accounts can change
+	calls     int
+	patterns  []string // globbed
+	ran       []string // exes run
 }
 
 func (f *fakeTools) lookPath(name string) (string, error) {
@@ -136,11 +145,56 @@ func (f *fakeTools) lookPath(name string) (string, error) {
 func (f *fakeTools) output(_ context.Context, exe string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	f.calls++
+	f.ran = append(f.ran, exe)
 	f.mu.Unlock()
 	if out, ok := f.out[exe+" "+strings.Join(args, " ")]; ok {
 		return []byte(out), nil
 	}
 	return nil, errors.New("exit status 1")
+}
+
+func (f *fakeTools) stat(p string) error {
+	if f.files[p] {
+		return nil
+	}
+	for _, v := range f.paths {
+		if v == p {
+			return nil
+		}
+	}
+	for k := range f.out {
+		if strings.HasPrefix(k, p+" ") {
+			return nil
+		}
+	}
+	return os.ErrNotExist
+}
+
+func (f *fakeTools) trusted(exe string, dirs ...string) error {
+	if f.untrusted[exe] {
+		return &winacl.UntrustedError{Path: filepath.Dir(exe), Who: []string{`NT AUTHORITY\Authenticated Users`}}
+	}
+	return nil
+}
+
+func (f *fakeTools) glob(pattern string) ([]string, error) {
+	f.mu.Lock()
+	f.patterns = append(f.patterns, pattern)
+	f.mu.Unlock()
+	return f.globs[pattern], nil
+}
+
+// ranAny reports whether one of the programs was run.
+func (f *fakeTools) ranAny(exes map[string]bool) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.ran {
+		if exes[e] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func newTestManager(t *testing.T, goos string, f *fakeTools) *Manager {
@@ -150,11 +204,152 @@ func newTestManager(t *testing.T, goos string, f *fakeTools) *Manager {
 	m.goos, m.goarch = goos, "amd64"
 	m.baseline = func() bool { return false }
 	if f != nil {
-		m.lookPath, m.output = f.lookPath, f.output
-		m.getenv = func(string) string { return "" }
-		m.glob = func(string) ([]string, error) { return nil, nil }
+		m.lookPath, m.output, m.glob, m.stat, m.trusted = f.lookPath, f.output, f.glob, f.stat, f.trusted
+		m.getenv = func(k string) string { return f.env[k] }
+		m.registryPythons = func() []string { return f.registry }
 	}
 	return m
+}
+
+// TestDetectionRunsOnlyProtectedPrograms: NodeHoster runs what it detects
+// as SYSTEM, so a program any local user can change is never run, not
+// even to ask its version. Here a user has created C:\Python399 (every
+// user may create folders in C:\) with a python.exe that claims to be the
+// newest Python, and put a py.exe and a bun.exe in a folder they can
+// write that is on the machine's PATH.
+func TestDetectionRunsOnlyProtectedPrograms(t *testing.T) {
+	const (
+		planted   = `C:\Python399\python.exe`
+		userPy    = `C:\Tools\py.exe`
+		userBun   = `C:\Tools\bun.exe`
+		userDeno  = `C:\Users\dev\.deno\bin\deno.exe`
+		userNet   = `C:\Tools\dotnet.exe`
+		py313     = `C:\Program Files\Python313\python.exe`
+		py312     = `C:\Program Files\Python312\python.exe`
+		py311user = `C:\Python311\python.exe` // registered, but made in C:\
+	)
+	// Joined the way detection joins them (with / when the tests do not
+	// run on Windows).
+	var (
+		launcher  = filepath.Join(`C:\Windows`, "py.exe")
+		dotnet    = filepath.Join(`C:\Program Files`, "dotnet", "dotnet.exe")
+		pfPattern = filepath.Join(`C:\Program Files`, "Python3*", "python.exe")
+		sdPattern = filepath.Join(`C:\`, "Python3*", "python.exe")
+	)
+	f := &fakeTools{
+		paths:    map[string]string{"py": userPy, "python": planted, "bun": userBun, "deno": userDeno, "dotnet": userNet},
+		env:      map[string]string{"SystemRoot": `C:\Windows`, "SystemDrive": `C:`, "ProgramFiles": `C:\Program Files`},
+		globs:    map[string][]string{pfPattern: {py312}, sdPattern: {planted}},
+		registry: []string{py313, py311user},
+		files:    map[string]bool{launcher: true, dotnet: true},
+		out: map[string]string{
+			launcher + ` -0p`:            " -V:3.13 *        C:\\Program Files\\Python313\\python.exe\r\n",
+			userPy + ` -0p`:              " -V:3.99 *        C:\\Python399\\python.exe\r\n",
+			planted + ` --version`:       "Python 3.99.0\r\n",
+			py313 + ` --version`:         "Python 3.13.1\r\n",
+			py312 + ` --version`:         "Python 3.12.8\r\n",
+			py311user + ` --version`:     "Python 3.11.9\r\n",
+			userBun + ` --version`:       "1.1.30\n",
+			userDeno + ` --version`:      "deno 2.1.4\n",
+			userNet + ` --list-runtimes`: "Microsoft.NETCore.App 99.0.0 [C:\\Tools\\shared\\Microsoft.NETCore.App]\r\n",
+			dotnet + ` --list-runtimes`:  "Microsoft.NETCore.App 9.0.0 [C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App]\r\n",
+		},
+		untrusted: map[string]bool{planted: true, userPy: true, userBun: true, userDeno: true, userNet: true, py311user: true},
+	}
+	m := newTestManager(t, "windows", f)
+	list := m.Python()
+	var got []string
+	for _, in := range list {
+		got = append(got, in.Version+" "+in.Source)
+	}
+	if !slices.Equal(got, []string{"3.13.1 py", "3.12.8 folder"}) {
+		t.Errorf("detected %q", got)
+	}
+	if len(f.patterns) != 1 || f.patterns[0] != pfPattern {
+		t.Error("the root of the system drive was searched")
+	}
+	if m.System(model.RuntimeBun) != nil || m.System(model.RuntimeDeno) != nil {
+		t.Error("a Bun or Deno any user can change was offered")
+	}
+	if d := m.Dotnet(); d == nil || d.Host != dotnet || newestNetCore(d.Runtimes) != "9.0.0" {
+		t.Errorf("dotnet %+v", d)
+	}
+	if ran := f.ranAny(f.untrusted); len(ran) > 0 {
+		t.Fatalf("ran programs other accounts can change: %q", ran)
+	}
+
+	// An interpreter or host set by path is refused the same way.
+	f.files[planted] = true
+	if _, err := m.Resolve(model.RuntimePython, planted); err == nil || !strings.Contains(err.Error(), "Authenticated Users") {
+		t.Errorf("resolve by path: %v", err)
+	}
+	if _, err := m.Resolve(model.RuntimeDotnet, userNet); err == nil || !strings.Contains(err.Error(), "not only by administrators") {
+		t.Errorf("resolve .NET by path: %v", err)
+	}
+	if exe, err := m.Resolve(model.RuntimePython, py312); err != nil || exe.Version != "3.12.8" {
+		t.Errorf("resolve a protected interpreter by path: %+v %v", exe, err)
+	}
+	if ran := f.ranAny(f.untrusted); len(ran) > 0 {
+		t.Fatalf("ran programs other accounts can change: %q", ran)
+	}
+
+	// No launcher in the Windows folder: the one on PATH is used only if
+	// it is protected.
+	f2 := &fakeTools{
+		paths:     map[string]string{"py": userPy},
+		out:       map[string]string{userPy + ` -0p`: " -V:3.99 *        C:\\Python399\\python.exe\r\n"},
+		untrusted: map[string]bool{userPy: true},
+	}
+	if list := newTestManager(t, "windows", f2).Python(); len(list) != 0 || len(f2.ran) != 0 {
+		t.Errorf("used a py launcher any user can change: %+v, ran %q", list, f2.ran)
+	}
+}
+
+// TestCachedReport: a report for someone who may not make the server run
+// programs uses what the last detection found and runs nothing.
+func TestCachedReport(t *testing.T) {
+	f := &fakeTools{
+		paths: map[string]string{"python3": "/usr/bin/python3", "bun": "/usr/local/bin/bun", "dotnet": "/usr/share/dotnet/dotnet"},
+		out: map[string]string{
+			"/usr/bin/python3 --version":               "Python 3.12.3\n",
+			"/usr/local/bin/bun --version":             "1.1.30\n",
+			"/usr/share/dotnet/dotnet --list-runtimes": "Microsoft.NETCore.App 9.0.0 [/usr/share/dotnet/shared/Microsoft.NETCore.App]\n",
+		},
+	}
+	m := newTestManager(t, "linux", f)
+	r := m.CachedReport(model.RuntimeDefaults{})
+	if len(r.Python) != 0 || r.Bun.System != nil || r.Dotnet != nil || f.calls != 0 {
+		t.Fatalf("before any detection: %+v (%d runs)", r, f.calls)
+	}
+	full := m.Report(model.RuntimeDefaults{Python: "/usr/bin/python3"})
+	calls := f.calls
+	r = m.CachedReport(model.RuntimeDefaults{})
+	if f.calls != calls {
+		t.Fatal("the cached report ran programs")
+	}
+	if len(r.Python) != 1 || r.Python[0].Path != "/usr/bin/python3" || !r.Python[0].IsDefault || r.Bun.System == nil || r.Dotnet == nil {
+		t.Fatalf("cached %+v", r)
+	}
+	// However old: a stale detection is served, not redone.
+	m.detected[model.RuntimePython].last.at = time.Now().Add(-time.Hour)
+	if r = m.CachedReport(model.RuntimeDefaults{}); len(r.Python) != 1 || f.calls != calls {
+		t.Fatalf("stale: %+v", r)
+	}
+
+	// Without paths, for callers who see some sites only.
+	bare := full.WithoutPaths()
+	b, _ := json.Marshal(bare)
+	for _, p := range []string{"/usr/bin", "/usr/local/bin", "/usr/share/dotnet"} {
+		if strings.Contains(string(b), p) {
+			t.Errorf("%s left in %s", p, b)
+		}
+	}
+	if bare.Python[0].Version != "3.12.3" || bare.Bun.System.Version != "1.1.30" || bare.Dotnet.Runtimes[0].Version != "9.0.0" {
+		t.Errorf("versions lost: %s", b)
+	}
+	if full.Python[0].Path == "" || full.Defaults.Python == "" {
+		t.Error("WithoutPaths changed the report it was given")
+	}
 }
 
 func TestDetectPythonOnWindows(t *testing.T) {

@@ -34,7 +34,7 @@ IIS Manager, with a status icon in the notification area.
 - **Scheduled tasks** per site, like cron inside the site's sandbox: 5-field cron, `@daily`, `@every 15m` in server local time (DST-safe: a skipped hour does not run, a repeated one runs once), overlap policy (skip / queue / allow), timeout that kills the process tree, run now / cancel, history with per-run logs, `task.failed` / `task.timeout` notifications
 - **Node.js version manager**: install any version from nodejs.org (SHA-256 verified), pin per site
 - **Other runtimes** under the same process manager, like IIS hosting more than ASP.NET: **Bun**, **Deno**, **Python** (a script, `python -m` a module, or an ASGI/WSGI app on uvicorn, Hypercorn or Waitress), **.NET** (ASP.NET Core on Kestrel: `dotnet app.dll` or a self-contained `.exe`, like the ASP.NET Core Module's out-of-process hosting) and any **custom command** that listens on `PORT`. Instances, restarts, rapid-fail protection, recycling, Job Objects, run-as identity, secrets, logs, CPU/memory, deployments and scheduled tasks work the same for all of them — see [Runtimes](#runtimes)
-- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 verified), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, PATH, standard folders) and picked per site
+- **Bun and Deno versions** installed side by side from their GitHub releases (SHA-256 verified), pinned per site with a server default; **Python interpreters and .NET runtimes** found where they are installed (py launcher, registry, PATH, Program Files) and picked per site; only programs no one but administrators can change are ever run
 - Environment variables with **secrets encrypted at rest** (AES-256-GCM, master key protected by DPAPI)
 - **Secret stores** like Azure App Service's Key Vault references: a variable (or a git deploy token) can come from **HashiCorp Vault / OpenBao** (KV v1/v2, token or AppRole with automatic renewal, namespaces), **Infisical** (cloud or self-hosted, Universal Auth) or **Bitwarden Secrets Manager** (cloud US/EU or self-hosted; pure Go, no SDK to install). Read at every instance start, recycle, task run and build, cached in memory for a few minutes, never written anywhere; the last known value keeps sites starting while a store is down; optional zero-downtime recycle when a secret changes
 
@@ -466,6 +466,19 @@ processes is the same for all of them; what differs is how they start:
   the ASP.NET Core Hosting Bundle from dotnet.microsoft.com; the Runtimes
   page shows what was found and links there when nothing was.
   `nodehoster deps` lists every runtime a site uses as required.
+- **Only programs administrators control are run.** The service runs as
+  SYSTEM, and runs what it finds (to ask an interpreter its version, and in
+  deployments). So an interpreter, `dotnet.exe`, or a `bun`/`deno` on PATH
+  is used only when no account but SYSTEM, Administrators and
+  TrustedInstaller can change it, its folder (for Python also `Lib`,
+  `site-packages` and `DLLs`) or the folders leading to it. Python in
+  `C:\Python312` fails this (a folder made in `C:\` lets every signed-in
+  user change what it holds), as does a runtime in a user's profile on the
+  machine's PATH: install for all users, into Program Files, or remove the
+  other accounts' write access. What is refused is left off the Runtimes
+  page with the reason in the server log; a site that names it by path
+  (`runtimeVersion`, or the server default) fails to start and deploy with
+  that reason. Only administrators can set either.
 
 ### Migrating from IIS/iisnode or PM2
 

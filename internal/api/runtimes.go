@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/parthh37/nodehoster/internal/model"
+	"github.com/parthh37/nodehoster/internal/runtimes"
 )
 
 // ---- runtimes other than Node.js: Bun, Deno (installed), Python, .NET (found)
@@ -24,9 +25,23 @@ func managedRuntime(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return rt, true
 }
 
-// runtimes is a catalog the site pages show, like /node/versions.
+// runtimes is a catalog the site pages show, like /node/versions. Finding
+// interpreters runs every one found, so only a server administrator's
+// request may start a detection; everyone else gets what the last one
+// found. A caller with access to some sites only learns which runtimes and
+// versions the server has, not where they are installed.
 func (a *API) runtimes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.c.RuntimeReport())
+	acc := access(r)
+	var report runtimes.Report
+	if acc.Server(model.RoleAdmin) {
+		report = a.c.RuntimeReport()
+	} else {
+		report = a.c.Runtimes.CachedReport(a.c.Settings().Runtimes)
+	}
+	if acc.SiteScoped() {
+		report = report.WithoutPaths()
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 // refreshRuntimes looks for interpreters again at once (an administrator
