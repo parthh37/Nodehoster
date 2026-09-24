@@ -29,6 +29,9 @@ func benchInspect(b *testing.B, e *Engine, mk func() *http.Request) {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		e.Inspect(r)
+		if r.Body != nil {
+			r.Body.Close() // gives the buffered body's share of the budget back
+		}
 	}
 }
 
@@ -78,4 +81,21 @@ func BenchmarkLargeJSONBody(b *testing.B) {
 	sb.WriteString(`]}`)
 	body := sb.String()
 	benchInspect(b, pl1(), func() *http.Request { return browser("POST", "/api/import", body, "application/json") })
+}
+
+// A JSON body that is all nesting ({"a":{"a":... to 128 KB): inspection
+// stops at maxJSONDepth, its cost does not grow with the depth.
+func BenchmarkDeepJSONBody(b *testing.B) {
+	body := strings.Repeat(`{"a":`, (128<<10)/5)
+	benchInspect(b, pl1(), func() *http.Request { return browser("POST", "/api", body, "application/json") })
+}
+
+// A gzip-compressed JSON body, inflated for inspection.
+func BenchmarkGzipJSONPost(b *testing.B) {
+	body := `{"order":{"id":"ord_123","items":[{"sku":"A-1","qty":2,"price":19.99},{"sku":"B-2","qty":1,"price":5}],"shipping":{"name":"Siobhán O'Connor","street":"12 Main St.","city":"Dublin","notes":"Leave at door; ring bell 2x"},"coupon":null,"gift":true}}`
+	benchInspect(b, pl1(), func() *http.Request {
+		r := browser("POST", "/api/orders", gzipped(body), "application/json")
+		r.Header.Set("Content-Encoding", "gzip")
+		return r
+	})
 }

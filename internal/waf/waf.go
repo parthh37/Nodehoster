@@ -15,12 +15,18 @@
 // decoded leniently, as Node.js does), cookies, the User-Agent and Referer
 // (and, for a few rules such as Log4Shell and Shellshock, every other
 // header but Authorization), and bodies that are form-encoded, JSON,
-// multipart (text fields and file names) or text, up to a limit; the rest
-// of a body streams to the application uninspected.
+// multipart (fields and file names) or text, gzip- or deflate-compressed
+// or not, up to a limit; the rest of a body streams to the application
+// uninspected.
+//
+// Inspection fails closed: a request the engine cannot inspect completely
+// (too many values, too costly, a body in an encoding it cannot read) is
+// refused in block mode whatever its score, and logged in detect mode.
 package waf
 
 import (
 	"net/http"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,9 +35,14 @@ import (
 )
 
 const (
-	// maxValues bounds the values inspected per request (arguments,
-	// cookies, headers, JSON strings): rule 920210 fires beyond it.
-	maxValues = 1024
+	// maxArgs bounds the argument names and values inspected per request
+	// (query string, form fields, JSON keys and strings, multipart fields),
+	// maxHeaderValues the headers and cookies, counted apart so that one
+	// cannot use up the other. Beyond either, rule 920210 fires and the
+	// request fails closed, unless the rule is excluded: then every value
+	// is inspected (the work budget still applies).
+	maxArgs         = 2048
+	maxHeaderValues = 1024
 	// maxValueLen bounds what is inspected of one value outside the body
 	// (a header or cookie can be up to the server's header limit).
 	maxValueLen = 64 << 10
@@ -84,7 +95,7 @@ type Engine struct {
 }
 
 type exclusion struct {
-	path                   string
+	path                   string  // cleaned and lowercase (cleanPrefix); "" = everywhere
 	off                    bool    // nothing listed: the firewall is off under path
 	rules                  ruleSet // the rules turned off (for names: not applied to them)
 	args, cookies, headers []namePattern
@@ -160,7 +171,7 @@ func Compile(cfg model.WAFConfig) *Engine {
 		}
 	}
 	for _, x := range cfg.Exclusions {
-		c := exclusion{path: x.Path, args: patterns(x.Args), cookies: patterns(x.Cookies), headers: patterns(x.Headers)}
+		c := exclusion{path: cleanPrefix(x.Path), args: patterns(x.Args), cookies: patterns(x.Cookies), headers: patterns(x.Headers)}
 		for _, id := range x.RuleIDs {
 			if r, ok := byID[id]; ok {
 				c.rules.add(r.idx)
@@ -197,23 +208,36 @@ type Result struct {
 	Threshold int
 	Paranoia  int
 	Matches   []model.WAFMatch // one per rule that matched, in the order found
+	// Incomplete: inspection stopped before it saw the whole request (too
+	// many values, the work budget spent, a body in an encoding it cannot
+	// read) and the rule saying so was not excluded. The request counts as
+	// exceeding the threshold: refused in block mode, logged in detect
+	// mode.
+	Incomplete bool
+	// Busy: block mode, and the body was not inspected because the
+	// server-wide budget for buffering bodies was spent (see
+	// SetMaxBufferedBytes). The proxy answers 503; nothing was matched.
+	Busy bool
 }
 
-// Exceeded reports whether the request reached the anomaly threshold.
-func (r Result) Exceeded() bool { return r.Score >= r.Threshold }
+// Exceeded reports whether the request reached the anomaly threshold, or
+// could not be inspected completely.
+func (r Result) Exceeded() bool { return r.Score >= r.Threshold || r.Incomplete }
 
 // inspection is the state of one request's inspection.
 type inspection struct {
-	e      *Engine
-	skip   ruleSet // rules excluded for the whole request
-	fired  ruleSet // rules that matched already: each counts once
-	named  []*exclusion
-	values int
+	e     *Engine
+	skip  ruleSet // rules excluded for the whole request
+	fired ruleSet // rules that matched already: each counts once
+	named []*exclusion
+	// nArgs and nHeaders count the values inspected (see maxArgs).
+	nArgs, nHeaders int
 	// work is the text run through regular expressions so far; past the
 	// engine's budget inspection stops, and rule 920220 fires.
 	work int
-	// done: the threshold is reached (the verdict cannot change) or the
-	// budget is spent. No further value is inspected.
+	// done: the threshold is reached (the verdict cannot change), the
+	// request is known to be incomplete or, in block mode, its body could
+	// not be buffered. No further value is inspected.
 	done bool
 	res  Result
 }
@@ -223,10 +247,18 @@ type inspection struct {
 // the rest, so the application receives it whole, streamed as before.
 func (e *Engine) Inspect(r *http.Request) Result {
 	in := inspection{e: e, res: Result{Threshold: e.threshold, Paranoia: e.paranoia}}
-	path := r.URL.Path
+	var clean, sent string
+	if len(e.excl) > 0 {
+		clean, sent = requestPaths(r.URL.Path)
+	}
 	for i := range e.excl {
 		x := &e.excl[i]
-		if x.path != "" && !strings.HasPrefix(path, x.path) {
+		// Both the path as sent and the path with its dot segments
+		// resolved must be under the exclusion's: /hooks/../login is not
+		// under /hooks, and /login/../hooks/x is not either, since an
+		// application that does not resolve dot segments (Express) routes
+		// it under /login.
+		if x.path != "" && (!underPrefix(clean, x.path) || !underPrefix(sent, x.path)) {
 			continue
 		}
 		switch {
@@ -245,18 +277,51 @@ func (e *Engine) Inspect(r *http.Request) Result {
 	if !in.done {
 		in.body(r)
 	}
-	if in.values > maxValues {
-		in.request(920210, model.WAFInRequest, "", strconv.Itoa(in.values)+" values")
-	}
 	return in.res
+}
+
+// cleanPrefix is an exclusion's path as it is matched: lowercase (paths
+// are matched without regard to case, as IIS and Express do), with dot
+// segments resolved and repeated and trailing slashes removed. "" stays
+// "" (the whole site).
+func cleanPrefix(p string) string {
+	if p == "" {
+		return ""
+	}
+	return strings.ToLower(path.Clean("/" + p))
+}
+
+// requestPaths returns a request's path cleaned as cleanPrefix does, and
+// as sent: lowercase with repeated slashes collapsed, dot segments kept.
+func requestPaths(p string) (clean, sent string) {
+	var b strings.Builder
+	b.Grow(len(p) + 1)
+	prev := byte(0)
+	if !strings.HasPrefix(p, "/") {
+		b.WriteByte('/')
+		prev = '/'
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c != '/' || prev != '/' {
+			b.WriteByte(c)
+			prev = c
+		}
+	}
+	return strings.ToLower(path.Clean("/" + p)), strings.ToLower(b.String())
+}
+
+// underPrefix reports whether p is prefix or below it, on a segment
+// boundary: /api covers /api and /api/x, not /api-admin.
+func underPrefix(p, prefix string) bool {
+	if prefix == "/" {
+		return true
+	}
+	return strings.HasPrefix(p, prefix) && (len(p) == len(prefix) || p[len(prefix)] == '/')
 }
 
 // value inspects one value. raw is as received; plus: '+' is a space.
 func (in *inspection) value(t target, where, name, raw string, plus bool) {
-	if raw == "" || in.done {
-		return
-	}
-	if in.values++; in.values > maxValues {
+	if raw == "" || in.done || !in.count(t) {
 		return
 	}
 	cands := in.e.byTarget[bitIndex(t)]
@@ -319,19 +384,31 @@ func (in *inspection) value(t target, where, name, raw string, plus bool) {
 			continue
 		}
 		if in.work += len(s); in.work > in.e.budget {
-			in.done = true
+			// Not excludable: the budget is what keeps inspection cheap.
 			in.hit(byID[920220], model.WAFInRequest, "", "stopped at "+where+" "+name)
+			in.res.Incomplete, in.done = true, true
 			return
 		}
 		var snip string
+		at := -1
 		if r.re != nil {
 			loc := r.re.FindStringIndex(s)
 			if loc == nil {
 				continue
 			}
-			snip = s[loc[0]:loc[1]]
+			snip, at = s[loc[0]:loc[1]], loc[0]
 		} else if snip, ok = r.fn(s); !ok {
 			continue
+		}
+		if t == tBody {
+			// A body inspected whole has no field names to judge by: what
+			// precedes the match says whether it is in a password.
+			if at < 0 {
+				at = strings.Index(s, snip)
+			}
+			if at >= 0 && sensitiveBefore(s[:at]) {
+				snip = redacted
+			}
 		}
 		// Once the threshold is reached nothing more is inspected, but the
 		// rest of a short value's rules still run: the event then names
@@ -343,6 +420,34 @@ func (in *inspection) value(t target, where, name, raw string, plus bool) {
 		}
 		skip.add(r.idx)
 	}
+}
+
+// count counts a value towards its limit (maxArgs, maxHeaderValues) and
+// reports whether to inspect it. Past the limit rule 920210 fires and
+// inspection stops, failing closed; with the rule excluded, every value
+// is inspected.
+func (in *inspection) count(t target) bool {
+	n, limit, what := &in.nArgs, maxArgs, "arguments"
+	if t&(tHeader|tUA|tReferer|tCookie) != 0 {
+		n, limit, what = &in.nHeaders, maxHeaderValues, "headers and cookies"
+	}
+	if *n++; *n != limit+1 {
+		return true
+	}
+	return !in.incomplete(920210, "more than "+strconv.Itoa(limit)+" "+what)
+}
+
+// incomplete records a request-level rule saying that the request cannot
+// be inspected completely and, if it fired (it is active and not
+// excluded), stops inspection: the request fails closed. It reports
+// whether the rule fired.
+func (in *inspection) incomplete(id int, text string) bool {
+	in.request(id, model.WAFInRequest, "", text)
+	if !in.fired.has(byID[id].idx) {
+		return false
+	}
+	in.res.Incomplete, in.done = true, true
+	return true
 }
 
 func (x *exclusion) matches(where, name string) bool {
@@ -379,9 +484,14 @@ func (in *inspection) hit(r *rule, where, name, text string) {
 		in.done = true
 	}
 	m := model.WAFMatch{RuleID: r.ID, Category: r.Category, Severity: r.Severity, Score: r.Score, Message: r.Message, In: where, Name: snippetName(name)}
-	if sensitive(where, name) {
-		m.Snippet = "[redacted]"
-	} else {
+	switch {
+	case sensitive(where, name) || text == redacted:
+		m.Snippet = redacted
+	case where == model.WAFInBody:
+		m.Snippet = snippet(redactPairs(text))
+	case where == model.WAFInPath:
+		m.Snippet = snippet(redactPath(text))
+	default:
 		m.Snippet = snippet(text)
 	}
 	in.res.Matches = append(in.res.Matches, m)
@@ -416,9 +526,21 @@ func sensitive(where, name string) bool {
 	if name == "" || where == model.WAFInArgName || where == model.WAFInFile {
 		return false
 	}
+	return sensitiveName(name)
+}
+
+// sensitiveName reports whether a field, cookie or header name suggests a
+// password, a token or a session ID: session cookies (connect.sid,
+// PHPSESSID, JSESSIONID, ASP.NET_SessionId...) included.
+func sensitiveName(name string) bool {
 	n := strings.ToLower(name)
 	for _, s := range []string{"pass", "pwd", "secret", "token", "apikey", "api_key", "api-key", "auth", "sess", "jwt", "csrf", "xsrf", "cvv", "card", "credential", "private"} {
 		if strings.Contains(n, s) {
+			return true
+		}
+	}
+	for _, s := range []string{".sid", "_sid", "-sid"} {
+		if strings.HasSuffix(n, s) {
 			return true
 		}
 	}

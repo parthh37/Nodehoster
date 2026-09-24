@@ -70,7 +70,10 @@ type WAFConfig struct {
 
 // WAFExclusion stops rules from firing where they are known to be wrong,
 // like ModSecurity's ctl:ruleRemoveById/ruleRemoveTargetById or Azure WAF
-// exclusions. Under Path (a prefix; "" = the whole site):
+// exclusions. Under Path (a prefix of whole segments, "/api" covering
+// "/api/x" but not "/api-admin", matched without regard to case against
+// the request's path both as sent and with its dot segments resolved;
+// "" = the whole site):
 //
 //   - with Args, Cookies or Headers: those are not inspected, by the listed
 //     rules and categories or, when none are listed, by any rule (a CMS
@@ -262,21 +265,28 @@ const (
 // WAFEvent is a request the firewall blocked (or, in detect mode, would
 // have). ID is the request ID shown on the block page.
 type WAFEvent struct {
-	Seq       int64      `json:"seq"` // for paging: list with before=seq
-	ID        string     `json:"id"`
-	Time      time.Time  `json:"time"`
-	SiteID    string     `json:"siteId"`
-	Action    string     `json:"action"`
-	ClientIP  string     `json:"clientIp"`
-	Method    string     `json:"method"`
-	Host      string     `json:"host"`
-	Path      string     `json:"path"` // without the query string, which may carry secrets
+	Seq      int64     `json:"seq"` // for paging: list with before=seq
+	ID       string    `json:"id"`
+	Time     time.Time `json:"time"`
+	SiteID   string    `json:"siteId"`
+	Slot     string    `json:"slot,omitempty"` // the deployment slot that served it; "" = production
+	Action   string    `json:"action"`
+	ClientIP string    `json:"clientIp"`
+	Method   string    `json:"method"`
+	Host     string    `json:"host"`
+	// Path is without the query string, which may carry secrets, and with
+	// token-like segments replaced by WAFRedacted.
+	Path      string     `json:"path"`
 	UserAgent string     `json:"userAgent,omitempty"`
 	Score     int        `json:"score"`
 	Threshold int        `json:"threshold"`
 	Paranoia  int        `json:"paranoiaLevel"`
 	Matches   []WAFMatch `json:"matches"`
 }
+
+// WAFRedacted stands for what an event does not keep: a secret-looking
+// value in a match's snippet, a token in the path.
+const WAFRedacted = "[redacted]"
 
 // Where a rule matched.
 const (
@@ -330,12 +340,26 @@ func (m WAFMatch) Where() string {
 	return "the request"
 }
 
+// SiteName is how lists show an event's site: its name (the ID if name
+// is ""), with the slot that served it: "shop [staging]".
+func (ev *WAFEvent) SiteName(name string) string {
+	if name == "" {
+		name = ev.SiteID
+	}
+	if ev.Slot != "" {
+		name += " [" + ev.Slot + "]"
+	}
+	return name
+}
+
 // SuggestExclusion is the narrowest exclusion that would have let an
 // event's request through: its rules, under its path, and, when every
 // match was in a named argument, cookie or header, only for those. The
-// console's and NodeHoster Manager's "exclude" start from it.
+// console's and NodeHoster Manager's "exclude" start from it. A path with
+// a redacted segment is cut before it ("/reset/[redacted]" -> "/reset/").
 func (ev *WAFEvent) SuggestExclusion() WAFExclusion {
-	x := WAFExclusion{Path: ev.Path, Comment: "From request " + ev.ID}
+	p, _, _ := strings.Cut(ev.Path, WAFRedacted)
+	x := WAFExclusion{Path: p, Comment: "From request " + ev.ID}
 	named := len(ev.Matches) > 0
 	for _, m := range ev.Matches {
 		if !slices.Contains(x.RuleIDs, m.RuleID) {

@@ -67,8 +67,14 @@ func TestEveryRuleFires(t *testing.T) {
 		920180: func() *http.Request { return httptest.NewRequest("GET", "/", nil) },
 		920190: func() *http.Request { return browser("POST", "/", "x", "text/plain; ===") },
 		920200: func() *http.Request { return browser("POST", "/", `{"a":`+"\x01}", "application/json") },
-		920210: func() *http.Request { return get("/x?" + strings.Repeat("a=1&", maxValues+10))() },
+		920205: func() *http.Request { return browser("POST", "/", strings.Repeat("[", 100), "application/json") },
+		920210: func() *http.Request { return get("/x?" + strings.Repeat("a=1&", maxArgs/2+10))() },
 		920220: nil, // TestWorkBudget
+		920240: func() *http.Request {
+			r := browser("POST", "/", `{"a":"b"}`, "application/json")
+			r.Header.Set("Content-Encoding", "br")
+			return r
+		},
 		930100: arg("../../x"),
 		930110: get("/x?a=..%c0%afetc"),
 		930120: arg("/etc/shadow"),
@@ -401,13 +407,14 @@ func TestBodyReplay(t *testing.T) {
 		t.Error("binary body was buffered")
 	}
 
-	// Compressed: not read.
-	r = browser("POST", "/", "gzipped", "application/json")
-	r.Header.Set("Content-Encoding", "gzip")
+	// In an encoding the rules cannot read: not read (and refused, see
+	// TestUnreadableEncodingFailsClosed).
+	r = browser("POST", "/", "brotli", "application/json")
+	r.Header.Set("Content-Encoding", "br")
 	orig = r.Body
 	e.Inspect(r)
 	if r.Body != orig {
-		t.Error("compressed body was buffered")
+		t.Error("brotli body was buffered")
 	}
 
 	// A read error reaches the application after what was read.

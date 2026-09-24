@@ -73,6 +73,14 @@ func TestWAFSuggestExclusion(t *testing.T) {
 	if x := ev.SuggestExclusion(); len(x.Args)+len(x.Cookies) != 0 || len(x.RuleIDs) != 4 {
 		t.Errorf("with a path match = %+v", x)
 	}
+	if ev.SiteName("shop") != "shop" || (&WAFEvent{SiteID: "s1", Slot: "staging"}).SiteName("") != "s1 [staging]" {
+		t.Error("SiteName")
+	}
+	// A redacted token is not part of the suggested path.
+	ev.Path = "/reset/" + WAFRedacted + "/confirm"
+	if x := ev.SuggestExclusion(); x.Path != "/reset/" {
+		t.Errorf("redacted path = %q", x.Path)
+	}
 	for _, tc := range []struct {
 		x    WAFExclusion
 		want string
