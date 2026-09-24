@@ -666,4 +666,3 @@ func TestPreviewStatusTokenFromStore(t *testing.T) {
 		}
 	}
 }
-
