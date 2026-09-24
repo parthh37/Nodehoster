@@ -109,7 +109,8 @@ function Check-Running($what) {
 }
 
 Write-Host "Install"
-Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall,statusicon,autoupdate`"") 0
+# GitHub's runners have Node.js and Git, so deps finds them and downloads nothing.
+Invoke-Setup $Setup @("/TASKS=`"addtopath,firewall,statusicon,autoupdate,deps`"") 0
 Check (Test-Path "$App\nodehoster.exe") "nodehoster.exe is installed"
 Check (Test-Path "$App\nodehoster-manager.exe") "nodehoster-manager.exe is installed"
 Check-Running "install"
@@ -123,6 +124,8 @@ Check-Module "install"
 & "$App\nodehoster.exe" site list | Out-Null
 Check ($LASTEXITCODE -eq 0) "nodehoster site list talks to the service"
 Check ((AutoUpdate) -eq $true) "the autoupdate task turned automatic updates on"
+$deps = & "$App\nodehoster.exe" --json deps | Out-String | ConvertFrom-Json
+Check ($LASTEXITCODE -eq 0 -and @($deps | Where-Object { -not $_.installed }).Count -eq 0) "nodehoster deps finds Node.js and Git ($(($deps | ForEach-Object { "$($_.name) $($_.version)" }) -join ', '))"
 # An administrator turns them off; upgrades must not turn them back on.
 & "$App\nodehoster.exe" update auto off | Out-Null
 Check ($LASTEXITCODE -eq 0 -and (AutoUpdate) -eq $false) "nodehoster update auto off turns them off"

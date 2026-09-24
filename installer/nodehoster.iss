@@ -11,6 +11,13 @@
 ; every user, in {commonpf64}\WindowsPowerShell\Modules. A first
 ; installation asks whether NodeHoster may install its own updates (Settings
 ; → Updates changes it later; upgrades leave the choice alone).
+; Once the service runs, setup checks what sites need besides NodeHoster and
+; installs what is missing (nodehoster deps install): Node.js, the current
+; LTS from nodejs.org, made the server default, and Git (MinGit from Git for
+; Windows' GitHub release) for deployments from a repository. Both downloads
+; are checked against their published SHA-256. A server that already has
+; them downloads nothing; one that cannot get them (no internet) still gets
+; a working NodeHoster, and setup says what to run later.
 ; Upgrades stop the service first and start it again afterwards; installing
 ; an older version over a newer one asks first. Uninstalling removes the
 ; service, the firewall rule, the PATH entry, the status icon and the
@@ -18,14 +25,18 @@
 ; %ProgramData%\NodeHoster is kept unless the user chooses to remove it.
 ;
 ; Unattended install (for scripts and remote management):
-;   NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall"
-; (add autoupdate to /TASKS to turn automatic updates on).
+;   NodeHoster-1.2.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="addtopath,firewall,deps"
+; (add autoupdate to /TASKS to turn automatic updates on; leave deps out to
+; install no Node.js or Git).
 ; Exit codes: 0 installed and the service is running; 1 installed, but the
 ; service did not start; 7 not installed, because a newer version is
 ; installed (add /ALLOWDOWNGRADE to install it anyway). Other codes are Inno
 ; Setup's own. Setup writes a log to %TEMP%\Setup Log *.txt.
 ; Unattended uninstall (keeps the data):
 ;   "C:\Program Files\NodeHoster\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+; A missing dependency setup could not install does not change the exit
+; code (NodeHoster itself works); the log says what failed, and
+; `nodehoster deps` exits with 1 while something is missing.
 ;
 ; installer\test.ps1 installs, upgrades, downgrades and uninstalls the built
 ; setup and checks the result; CI runs it on every build.
@@ -82,6 +93,7 @@ SetupLogging=yes
 Name: "addtopath"; Description: "Add nodehoster to the system PATH"; Flags: checkedonce
 Name: "firewall"; Description: "Allow NodeHoster through Windows Firewall"; Flags: checkedonce
 Name: "statusicon"; Description: "Show the NodeHoster status icon in the notification area at sign-in (all users)"; Flags: checkedonce
+Name: "deps"; Description: "Install what is missing: Node.js LTS to run sites, Git to deploy from repositories"; Flags: checkedonce
 ; Only offered by a first installation: afterwards the setting belongs to
 ; the consoles, and an upgrade (including an automatic one) must not undo
 ; what an administrator chose there.
@@ -116,7 +128,7 @@ Filename: "{app}\nodehoster.exe"; Parameters: "service install"; StatusMsg: "Reg
 ; The old rule goes even when the task is now unchecked.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""NodeHoster"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""NodeHoster"" dir=in action=allow program=""{app}\nodehoster.exe"" enable=yes profile=any"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated; Tasks: firewall
-Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated; AfterInstall: VerifyServiceRunning
+Filename: "{app}\nodehoster.exe"; Parameters: "service start"; StatusMsg: "Starting NodeHoster..."; Flags: runhidden waituntilterminated; AfterInstall: AfterServiceStart
 ; Through the running service; saved in its database directly if it did
 ; not start. Off is the default, so only "on" needs recording.
 Filename: "{app}\nodehoster.exe"; Parameters: "update auto on"; StatusMsg: "Turning on automatic updates..."; Flags: runhidden waituntilterminated; Tasks: autoupdate
@@ -149,6 +161,7 @@ var
   InstalledVersion: string;
   Downgrade: Boolean;
   ServiceStartFailed: Boolean;
+  DependenciesFailed: Boolean;
 
 function ServiceExists: Boolean;
 var
@@ -182,6 +195,29 @@ begin
   end;
   ServiceStartFailed := True;
   Log('NodeHoster service did not start.');
+end;
+
+// Node.js installs through the running service, so this waits for it. The
+// output (what was found, downloaded, or failed) goes to setup's log.
+procedure InstallDependencies;
+var
+  ResultCode: Integer;
+begin
+  WizardForm.StatusLabel.Caption := 'Checking for Node.js and Git, and installing what is missing...';
+  if not ExecAndLogOutput(ExpandConstant('{app}\nodehoster.exe'), 'deps install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode, nil) then
+    ResultCode := -1;
+  if ResultCode <> 0 then
+  begin
+    DependenciesFailed := True;
+    Log('A dependency could not be installed (exit code ' + IntToStr(ResultCode) + ').');
+  end;
+end;
+
+procedure AfterServiceStart;
+begin
+  VerifyServiceRunning;
+  if not ServiceStartFailed and WizardIsTaskSelected('deps') then
+    InstallDependencies;
 end;
 
 // Exit code for unattended installs: 1 = installed, but the service is not running.
@@ -407,6 +443,12 @@ begin
       'fix the problem, then run: nodehoster service start', mbError, MB_OK, IDOK);
     exit;
   end;
+  if DependenciesFailed then
+    SuppressibleMsgBox('NodeHoster is running, but Node.js or Git could not be installed (details are in the setup log; ' +
+      'is this computer offline?).' + #13#10#13#10 +
+      'Sites need Node.js, and deployments from a repository need Git. To install them later, run from an elevated prompt:' + #13#10 +
+      '  nodehoster deps install' + #13#10 +
+      'or install Node.js from the Node.js page of NodeHoster Manager or the web console.', mbInformation, MB_OK, IDOK);
   // Only a first installation has a new administrator password to show; on
   // an upgrade the file, if still there, is stale.
   if WizardSilent or (InstalledVersion <> '') then
