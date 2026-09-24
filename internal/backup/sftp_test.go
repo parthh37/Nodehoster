@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -117,7 +118,10 @@ func TestSFTPTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cfg := srv.dest(filepath.ToSlash(filepath.Join(root, "backups", "web")))
+	// Relative to the server's working directory (root): SFTP paths are
+	// POSIX paths, and the test server on Windows would read "C:/..." as a
+	// relative name.
+	cfg := srv.dest("backups/web")
 	tg, err := dialSFTP(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +195,9 @@ func TestFolderTarget(t *testing.T) {
 
 func TestFolderTargetExplainsAccessDenied(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores a directory's mode bits; its ACLs decide access")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores permissions")
 	}
